@@ -116,10 +116,10 @@ public:
         glNamedBufferStorage(ibo_, static_cast<GLsizeiptr>(idx.size() * 4), idx.data(), 0);
         glVertexArrayElementBuffer(vao_, ibo_);
 
-        // Узел плитки - три целых (Р20)
+        // Узел плитки - четыре целых (Р20, Р25)
         glCreateVertexArrays(1, &tileVao_);
         glEnableVertexArrayAttrib(tileVao_, 0);
-        glVertexArrayAttribIFormat(tileVao_, 0, 3, GL_UNSIGNED_INT, 0);
+        glVertexArrayAttribIFormat(tileVao_, 0, 4, GL_UNSIGNED_INT, 0);
         glVertexArrayAttribBinding(tileVao_, 0, 0);
         // Индексы плитки общие, по четвертям подряд: четверть q - отрезок [q·1536, (q+1)·1536). Диагональ
         // квадрата везде одна, (i, j)-(i+1, j+1): тогда сползшая плитка складывается в грубую с той же диагональю.
@@ -226,7 +226,7 @@ public:
                 glProgramUniform1i(tileProgram_, 1, t->spacing);
                 glProgramUniform2f(tileProgram_, 2, t->morphStart, t->morphEnd);
                 glProgramUniform1i(tileProgram_, 3, t->level);
-                glVertexArrayVertexBuffer(tileVao_, 0, m.vbo, 0, 12);
+                glVertexArrayVertexBuffer(tileVao_, 0, m.vbo, 0, 16);
                 if (t->quadrants == 0xF) {
                     glDrawElements(GL_TRIANGLES, 4 * QUAD_INDICES, GL_UNSIGNED_SHORT, nullptr);
                     ++stats.drawCalls;

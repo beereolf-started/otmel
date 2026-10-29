@@ -98,7 +98,7 @@ int main(int argc, char** argv) {
             const float depthK = wet ? std::clamp(1.0f - float(p.seaLevel - r.height) / (60.0f * world::VOXELS_PER_BLOCK), 0.45f, 1.0f) : 1.0f;
             const float* c = wet ? water : colors[std::min<int>(cov[i].top, 5)];
             for (int k = 0; k < 3; ++k)
-                img[i * 3 + k] = uint8_t(std::clamp(wet ? c[k] * depthK * 255.0f : c[k] * light * alt * 255.0f, 0.0f, 255.0f));
+                img[i * 3 + k] = uint8_t(std::clamp(wet ? c[k] * depthK * (0.6f + 0.4f * light) * 255.0f : c[k] * light * alt * 255.0f, 0.0f, 255.0f));
             if (wet) ++sea;
             // 2) зоны: равнины - зелёный, холмы - охра, горы - бурый, смешанные - в пропорции весов
             const float wp = r.wPlains / 65536.0f, wh = r.wHills / 65536.0f, wm = r.wMount / 65536.0f;

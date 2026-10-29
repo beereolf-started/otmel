@@ -1,7 +1,7 @@
 #version 460
 // Узел плитки дальнего уровня (Р20): три числа - высоты (своя и уровня L+1), наклоны, покров.
 // Положение по x и z - из номера узла в плитке; морфинг CDLOD - здесь же.
-layout(location = 0) in uvec3 aData;
+layout(location = 0) in uvec4 aData;
 
 layout(std140, binding = 0) uniform Frame {
     mat4 viewProj;
@@ -55,11 +55,11 @@ void main() {
     int h = bitfieldExtract(int(aData.x), 0, 16), hc = bitfieldExtract(int(aData.x), 16, 16);
     vec3 world = vec3(xz.x, (mix(float(h), float(hc), k) + 1.0) / 16.0, xz.y);   // верх верхнего вокселя
 
-    vec2 g = vec2(bitfieldExtract(int(aData.y), 0, 8), bitfieldExtract(int(aData.y), 8, 8)) / 16.0;
-    vec2 gc = vec2(bitfieldExtract(int(aData.y), 16, 8), bitfieldExtract(int(aData.y), 24, 8)) / 16.0;
+    vec2 g = vec2(bitfieldExtract(int(aData.y), 0, 16), bitfieldExtract(int(aData.y), 16, 16)) / 256.0;
+    vec2 gc = vec2(bitfieldExtract(int(aData.z), 0, 16), bitfieldExtract(int(aData.z), 16, 16)) / 256.0;
     vec3 view = normalize(eye.xyz - world);
-    vec3 cf = stairColor(g, aData.z & 15u, (aData.z >> 4) & 15u, view);
-    vec3 cc = stairColor(gc, (aData.z >> 8) & 15u, (aData.z >> 12) & 15u, view);
+    vec3 cf = stairColor(g, aData.w & 15u, (aData.w >> 4) & 15u, view);
+    vec3 cc = stairColor(gc, (aData.w >> 8) & 15u, (aData.w >> 12) & 15u, view);
     vColor = mix(cf, cc, k);
     if (uDebug == 1) vColor *= LEVEL_TINT[uLevel % 4];
     vWorld = world;

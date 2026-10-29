@@ -6,11 +6,11 @@
 namespace world {
 namespace {
 
-// наклон (разность высот через 2 шага) в 1/16 вокселя на воксель, с округлением, в пределах int8
-inline int32_t slope16(int32_t dh, int64_t stepVoxels) {
-    const int64_t num = int64_t(dh) * 16, den = 2 * stepVoxels;
+// наклон (разность высот через 2 шага) в 1/256 вокселя на воксель, с округлением, в пределах int16
+inline uint32_t slope256(int32_t dh, int64_t stepVoxels) {
+    const int64_t num = int64_t(dh) * 256, den = 2 * stepVoxels;
     const int64_t g = (num >= 0 ? num + den / 2 : num - den / 2) / den;
-    return int32_t(std::clamp<int64_t>(g, -127, 127));
+    return uint32_t(uint16_t(int16_t(std::clamp<int64_t>(g, -32767, 32767))));
 }
 inline uint32_t h16(int32_t h) { return uint32_t(uint16_t(int16_t(std::clamp(h, -32768, 32767)))); }
 
@@ -44,12 +44,11 @@ void buildTile(const TerrainParams& p, TileKey k, TileMesh& out) {
         for (int i = -1; i <= CV; ++i)
             hc[j + 1][i + 1] = reliefAt(p, int32_t(x0 + i * 2 * step), int32_t(z0 + j * 2 * step), coarseCut).height;
     // наклон и покров уровня L+1 - в чётных узлах
-    static thread_local uint32_t coarseWord1[CV][CV], coarseCover[CV][CV];
+    static thread_local uint32_t coarseGrad[CV][CV], coarseCover[CV][CV];
     for (int j = 0; j < CV; ++j)
         for (int i = 0; i < CV; ++i) {
-            const int32_t gx = slope16(hc[j + 1][i + 2] - hc[j + 1][i], 2 * step);
-            const int32_t gz = slope16(hc[j + 2][i + 1] - hc[j][i + 1], 2 * step);
-            coarseWord1[j][i] = uint32_t(uint8_t(int8_t(gx))) | uint32_t(uint8_t(int8_t(gz))) << 8;
+            coarseGrad[j][i] = slope256(hc[j + 1][i + 2] - hc[j + 1][i], 2 * step) |
+                               slope256(hc[j + 2][i + 1] - hc[j][i + 1], 2 * step) << 16;
             const int32_t wx = int32_t(x0 + i * 2 * step), wz = int32_t(z0 + j * 2 * step);
             const Cover c = coverAt(p, climateAt(p, wx, wz, slowFine(wx, wz)), hc[j + 1][i + 1]);   // климату отсечка октав не нужна
             coarseCover[j][i] = uint32_t(c.top) | uint32_t(c.under) << 4;
@@ -64,13 +63,13 @@ void buildTile(const TerrainParams& p, TileKey k, TileMesh& out) {
             // куда сползает узел: нечётный номер - к меньшему чётному соседу, т.е. в чётный узел (i/2, j/2)
             const int ci = i >> 1, cj = j >> 1;
             const int32_t hcT = hc[cj + 1][ci + 1];
-            const int32_t gx = slope16(hf[j + 1][i + 2] - hf[j + 1][i], step);
-            const int32_t gz = slope16(hf[j + 2][i + 1] - hf[j][i + 1], step);
+
             const Cover c = coverAt(p, climateAt(p, int32_t(x0 + i * step), int32_t(z0 + j * step), slowFine(x0 + i * step, z0 + j * step)), h);
             uint32_t* w = &out.data[(size_t(j) * TILE_VERTS + i) * TILE_WORDS];
             w[0] = h16(h) | h16(hcT) << 16;
-            w[1] = uint32_t(uint8_t(int8_t(gx))) | uint32_t(uint8_t(int8_t(gz))) << 8 | coarseWord1[cj][ci] << 16;
-            w[2] = uint32_t(c.top) | uint32_t(c.under) << 4 | coarseCover[cj][ci] << 8;
+            w[1] = slope256(hf[j + 1][i + 2] - hf[j + 1][i], step) | slope256(hf[j + 2][i + 1] - hf[j][i + 1], step) << 16;
+            w[2] = coarseGrad[cj][ci];
+            w[3] = uint32_t(c.top) | uint32_t(c.under) << 4 | coarseCover[cj][ci] << 8;
             out.minH = std::min({out.minH, h, hcT});
             out.maxH = std::max({out.maxH, h, hcT});
         }

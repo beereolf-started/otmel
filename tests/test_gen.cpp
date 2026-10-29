@@ -298,7 +298,7 @@ int main() {
         bool same0 = true;
         for (int j = 0; j < world::TILE_VERTS; ++j)
             for (int i = 0; i < world::TILE_VERTS; ++i) {
-                const int32_t h = int16_t(t0.data[(j * world::TILE_VERTS + i) * 3] & 0xFFFF);
+                const int32_t h = int16_t(t0.data[(j * world::TILE_VERTS + i) * world::TILE_WORDS] & 0xFFFF);
                 const int32_t x = (-3 * 32 + i) * 16, z = (5 * 32 + j) * 16;
                 if (h != world::reliefAt(tp, x, z).height) same0 = false;
             }
@@ -318,9 +318,9 @@ int main() {
             for (int j = 0; j < world::TILE_VERTS; ++j)
                 for (int i = 0; i < world::TILE_VERTS; ++i) {
                     const int pi = ((k.tx & 1) * world::TILE + (i & ~1)) / 2, pj = ((k.tz & 1) * world::TILE + (j & ~1)) / 2;
-                    const uint32_t* c = &child.data[(j * world::TILE_VERTS + i) * 3];
-                    const uint32_t* pv = &par.data[(pj * world::TILE_VERTS + pi) * 3];
-                    if ((c[0] >> 16) != (pv[0] & 0xFFFF) || (c[1] >> 16) != (pv[1] & 0xFFFF) || ((c[2] >> 8) & 0xFF) != (pv[2] & 0xFF))
+                    const uint32_t* c = &child.data[(j * world::TILE_VERTS + i) * world::TILE_WORDS];
+                    const uint32_t* pv = &par.data[(pj * world::TILE_VERTS + pi) * world::TILE_WORDS];
+                    if ((c[0] >> 16) != (pv[0] & 0xFFFF) || c[2] != pv[1] || ((c[3] >> 8) & 0xFF) != (pv[3] & 0xFF))
                         morphOk = false;
                     ++checked;
                 }
