@@ -1,20 +1,26 @@
 #include "world/mesher.h"
 
+#include <bit>
 #include <cstring>
+
+#include "world/bits.h"
 
 namespace world {
 namespace {
 
-// Твёрдый ли воксель (x, y, z) в координатах куска, с каймой [-1..32]. Внутри куска - по вокселям,
-// снаружи - по карте высот: у рельефа всё, что не выше поверхности, твёрдое.
-inline bool solidAt(const Chunk& c, const ColumnHeights& hm, int x, int y, int z) {
-    if (x >= 0 && x < CHUNK && y >= 0 && y < CHUNK && z >= 0 && z < CHUNK) return c.at(x, y, z) != AIR;
-    return c.pos.y * CHUNK + y <= hm.h[z + 1][x + 1];
+constexpr uint64_t ALL34 = (uint64_t(1) << 34) - 1;
+
+// Маска вертикального столбца ФОРМУЛОЙ (Р18): у нетронутого рельефа твёрдо всё не выше поверхности top -
+// сплошные единицы снизу. Бит i - воксель y = y0 - 1 + i (кайма снизу и сверху). n единиц снизу = 2^n - 1.
+inline uint64_t columnFromHeight(int32_t top, int32_t y0) {
+    const int64_t n = int64_t(top) - (y0 - 1) + 1;
+    if (n <= 0) return 0;
+    if (n >= 34) return ALL34;
+    return (uint64_t(1) << n) - 1;
 }
 
-// Оси граней. Для каждой оси d плоскость грани задаётся осями (u, v) так, что u × v = +d (правая тройка) -
-// тогда обход p0 → p0+u·w → p0+u·w+v·h → p0+v·h идёт против часовой стрелки, если смотреть снаружи.
-//   X: u = y, v = z      Y: u = z, v = x      Z: u = x, v = y
+// Оси граней: для оси d плоскость - оси (u, v) с u × v = +d (правая тройка), обход p0 → +u·w → +u·w+v·h → +v·h
+// идёт против часовой стрелки снаружи.   X: u = y, v = z      Y: u = z, v = x      Z: u = x, v = y
 struct Axis { int d, u, v; };
 constexpr Axis AXES[3] = {{0, 1, 2}, {1, 2, 0}, {2, 0, 1}};
 
@@ -22,92 +28,134 @@ inline uint32_t pack(int x, int y, int z, int normal, Material m) {
     return uint32_t(x) | uint32_t(y) << 6 | uint32_t(z) << 12 | uint32_t(normal) << 18 | uint32_t(m) << 21;
 }
 
+struct MatRows { Material mat; uint32_t rows[CHUNK]; };
+
 }  // namespace
 
 void buildMesh(const Chunk& c, const ColumnHeights& hm, std::vector<uint32_t>& out, MeshStats& stats) {
     out.clear();
     stats = {};
-    // столбец вдоль оси d: 34 бита (кайма + 32 + кайма), бит i - воксель с координатой i-1 по оси d
-    static thread_local uint64_t col[CHUNK][CHUNK];
-    static thread_local Material plane[CHUNK][CHUNK];
-    static thread_local bool used[CHUNK][CHUNK];
+    const int32_t y0 = c.pos.y * CHUNK;
 
+    // ─── 1. Маски столбцов вдоль трёх осей: 34 бита (кайма + 32 + кайма) ─────────
+    // col[axis][u][v] - столбец вдоль оси d в точке (u, v) её плоскости
+    static thread_local uint64_t col[3][CHUNK][CHUNK];
+    uint64_t (&colX)[CHUNK][CHUNK] = col[0];   // [u = y][v = z], биты по x
+    uint64_t (&colY)[CHUNK][CHUNK] = col[1];   // [u = z][v = x], биты по y
+    uint64_t (&colZ)[CHUNK][CHUNK] = col[2];   // [u = x][v = y], биты по z
+
+    // вертикаль: формулой от высоты; правленый кусок - из его вокселей (кайма по высоте - по карте высот)
+    for (int z = 0; z < CHUNK; ++z) {
+        for (int x = 0; x < CHUNK; ++x) {
+            const int32_t top = hm.h[z + 1][x + 1];
+            uint64_t b;
+            if (!c.edited) {
+                b = columnFromHeight(top, y0);
+            } else {
+                b = 0;
+                for (int y = 0; y < CHUNK; ++y) if (c.at(x, y, z) != AIR) b |= uint64_t(1) << (y + 1);
+                if (y0 - 1 <= top) b |= 1;
+                if (y0 + CHUNK <= top) b |= uint64_t(1) << 33;
+            }
+            colY[z][x] = b;
+        }
+    }
+    // горизонтали - поворотом таблиц из вертикальных масок (внутренние 32 бита), кайма по x/z - по карте высот
+    uint32_t t[CHUNK];
+    for (int z = 0; z < CHUNK; ++z) {                       // ось X: для каждого z таблица [x][биты y] -> [y][биты x]
+        for (int x = 0; x < CHUNK; ++x) t[x] = uint32_t(colY[z][x] >> 1);
+        transpose32(t);
+        for (int y = 0; y < CHUNK; ++y) {
+            uint64_t b = uint64_t(t[y]) << 1;
+            if (y0 + y <= hm.h[z + 1][0]) b |= 1;                         // x = -1
+            if (y0 + y <= hm.h[z + 1][CHUNK + 1]) b |= uint64_t(1) << 33; // x = 32
+            colX[y][z] = b;
+        }
+    }
+    for (int x = 0; x < CHUNK; ++x) {                       // ось Z: для каждого x таблица [z][биты y] -> [y][биты z]
+        for (int z = 0; z < CHUNK; ++z) t[z] = uint32_t(colY[z][x] >> 1);
+        transpose32(t);
+        for (int y = 0; y < CHUNK; ++y) {
+            uint64_t b = uint64_t(t[y]) << 1;
+            if (y0 + y <= hm.h[0][x + 1]) b |= 1;                         // z = -1
+            if (y0 + y <= hm.h[CHUNK + 1][x + 1]) b |= uint64_t(1) << 33; // z = 32
+            colZ[x][y] = b;
+        }
+    }
+
+    // ─── 2-4. По направлениям: видимые грани, строки слоёв поворотом, слияние на битах ──
+    static thread_local uint32_t layerRows[CHUNK][CHUNK];   // [слой d][строка v], бит u
+    static thread_local MatRows mats[64];
     for (int ai = 0; ai < 3; ++ai) {
         const Axis ax = AXES[ai];
-        // 1. Маски столбцов: для каждой точки плоскости (u, v) - 34 бита твёрдости вдоль d
-        for (int u = 0; u < CHUNK; ++u) {
-            for (int v = 0; v < CHUNK; ++v) {
-                uint64_t bits = 0;
-                int p[3];
-                p[ax.u] = u;
-                p[ax.v] = v;
-                for (int i = 0; i < CHUNK + 2; ++i) {
-                    p[ax.d] = i - 1;
-                    if (solidAt(c, hm, p[0], p[1], p[2])) bits |= uint64_t(1) << i;
-                }
-                col[u][v] = bits;
-            }
-        }
-        // 2. Два направления вдоль оси: грань видна, где воксель твёрдый, а сосед в сторону грани - воздух.
-        //    Для всех 32 вокселей столбца разом: «+»: col & ~(col >> 1)   «−»: col & ~(col << 1)
         for (int sign = 0; sign < 2; ++sign) {
-            const int normal = ai * 2 + sign;          // 0 +X, 1 -X, 2 +Y, 3 -Y, 4 +Z, 5 -Z
-            for (int layer = 0; layer < CHUNK; ++layer) {
-                // 3. Плоскость слоя: материал там, где есть грань, иначе 0
-                bool any = false;
+            const int normal = ai * 2 + sign;              // 0 +X, 1 -X, 2 +Y, 3 -Y, 4 +Z, 5 -Z
+            // видимые грани столбца - одной операцией для всех 32 вокселей; затем поворот таблицы [u][биты d] ->
+            // [d][биты u] для каждой строки v: грани всех 32 слоёв сразу разложены по строкам
+            for (int v = 0; v < CHUNK; ++v) {
                 for (int u = 0; u < CHUNK; ++u) {
-                    for (int v = 0; v < CHUNK; ++v) {
-                        const uint64_t b = col[u][v];
-                        const uint64_t faces = sign == 0 ? (b & ~(b >> 1)) : (b & ~(b << 1));
-                        Material m = AIR;
-                        if (faces >> (layer + 1) & 1) {
-                            int p[3];
-                            p[ax.u] = u; p[ax.v] = v; p[ax.d] = layer;
-                            m = c.at(p[0], p[1], p[2]);
-                            any = true;
-                        }
-                        plane[u][v] = m;
+                    const uint64_t b = col[ai][u][v];
+                    const uint64_t f = sign == 0 ? (b & ~(b >> 1)) : (b & ~(b << 1));
+                    t[u] = uint32_t(f >> 1);
+                }
+                transpose32(t);
+                for (int d = 0; d < CHUNK; ++d) layerRows[d][v] = t[d];
+            }
+
+            for (int layer = 0; layer < CHUNK; ++layer) {
+                uint32_t* rows = layerRows[layer];
+                uint32_t any = 0;
+                for (int v = 0; v < CHUNK; ++v) any |= rows[v];
+                if (!any) continue;
+
+                // строки - по материалам: материал читаем только у видимых граней
+                int nmats = 0;
+                for (int v = 0; v < CHUNK; ++v) {
+                    for (uint32_t r = rows[v]; r; r &= r - 1) {
+                        const int u = std::countr_zero(r);
+                        int p[3];
+                        p[ax.u] = u; p[ax.v] = v; p[ax.d] = layer;
+                        const Material m = c.at(p[0], p[1], p[2]);
+                        int k = 0;
+                        while (k < nmats && mats[k].mat != m) ++k;
+                        if (k == nmats) { mats[k].mat = m; std::memset(mats[k].rows, 0, sizeof(mats[k].rows)); ++nmats; }
+                        mats[k].rows[v] |= uint32_t(1) << u;
                     }
                 }
-                if (!any) continue;
-                // 4. Слияние: от каждой несобранной грани тянем прямоугольник вдоль u, потом вдоль v,
-                //    пока материал тот же. Один прямоугольник вместо десятков одинаковых квадратиков.
-                std::memset(used, 0, sizeof(used));
-                for (int v = 0; v < CHUNK; ++v) {
-                    for (int u = 0; u < CHUNK; ++u) {
-                        const Material m = plane[u][v];
-                        if (m == AIR || used[u][v]) continue;
-                        int w = 1;
-                        while (u + w < CHUNK && plane[u + w][v] == m && !used[u + w][v]) ++w;
-                        int h = 1;
-                        for (; v + h < CHUNK; ++h) {
-                            bool rowOk = true;
-                            for (int k = 0; k < w && rowOk; ++k) rowOk = plane[u + k][v + h] == m && !used[u + k][v + h];
-                            if (!rowOk) break;
-                        }
-                        for (int dv = 0; dv < h; ++dv)
-                            for (int du = 0; du < w; ++du) used[u + du][v + dv] = true;
 
-                        // углы: плоскость грани - на дальней стороне вокселя для «+», на ближней для «−»
-                        const int d = layer + (sign == 0 ? 1 : 0);
-                        int p0[3], p1[3], p2[3], p3[3];
-                        p0[ax.d] = p1[ax.d] = p2[ax.d] = p3[ax.d] = d;
-                        p0[ax.u] = u;     p0[ax.v] = v;
-                        p1[ax.u] = u + w; p1[ax.v] = v;
-                        p2[ax.u] = u + w; p2[ax.v] = v + h;
-                        p3[ax.u] = u;     p3[ax.v] = v + h;
-                        if (sign == 0) {   // против часовой снаружи
+                // слияние на битах: первая грань строки - ctz, ширина - длина отрезка единиц, вниз - пока строка
+                // ниже содержит весь отрезок; забранное стираем из строк
+                const int d = layer + (sign == 0 ? 1 : 0);  // плоскость: дальняя сторона вокселя для «+»
+                for (int k = 0; k < nmats; ++k) {
+                    uint32_t* r = mats[k].rows;
+                    const Material m = mats[k].mat;
+                    for (int v = 0; v < CHUNK; ++v) {
+                        while (r[v]) {
+                            const int u = std::countr_zero(r[v]);
+                            const int w = std::countr_zero(~(r[v] >> u));      // единиц подряд, начиная с u
+                            const uint32_t span = (w == 32 ? 0xFFFFFFFFu : ((uint32_t(1) << w) - 1)) << u;
+                            int h = 1;
+                            while (v + h < CHUNK && (r[v + h] & span) == span) { r[v + h] &= ~span; ++h; }
+                            r[v] &= ~span;
+
+                            int p0[3], p1[3], p2[3], p3[3];
+                            p0[ax.d] = p1[ax.d] = p2[ax.d] = p3[ax.d] = d;
+                            p0[ax.u] = u;     p0[ax.v] = v;
+                            p1[ax.u] = u + w; p1[ax.v] = v;
+                            p2[ax.u] = u + w; p2[ax.v] = v + h;
+                            p3[ax.u] = u;     p3[ax.v] = v + h;
                             out.push_back(pack(p0[0], p0[1], p0[2], normal, m));
-                            out.push_back(pack(p1[0], p1[1], p1[2], normal, m));
-                            out.push_back(pack(p2[0], p2[1], p2[2], normal, m));
-                            out.push_back(pack(p3[0], p3[1], p3[2], normal, m));
-                        } else {           // обратная сторона - обратный обход
-                            out.push_back(pack(p0[0], p0[1], p0[2], normal, m));
-                            out.push_back(pack(p3[0], p3[1], p3[2], normal, m));
-                            out.push_back(pack(p2[0], p2[1], p2[2], normal, m));
-                            out.push_back(pack(p1[0], p1[1], p1[2], normal, m));
+                            if (sign == 0) {
+                                out.push_back(pack(p1[0], p1[1], p1[2], normal, m));
+                                out.push_back(pack(p2[0], p2[1], p2[2], normal, m));
+                                out.push_back(pack(p3[0], p3[1], p3[2], normal, m));
+                            } else {
+                                out.push_back(pack(p3[0], p3[1], p3[2], normal, m));
+                                out.push_back(pack(p2[0], p2[1], p2[2], normal, m));
+                                out.push_back(pack(p1[0], p1[1], p1[2], normal, m));
+                            }
+                            ++stats.quads;
                         }
-                        ++stats.quads;
                     }
                 }
             }

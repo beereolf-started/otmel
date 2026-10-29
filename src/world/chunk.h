@@ -17,6 +17,7 @@ struct ChunkPos { int32_t x, y, z; };
 
 struct Chunk {
     ChunkPos pos{};
+    bool edited = false;   // правился (Р2): маски сетки - из вокселей, а не формулой от высоты
     // порядок: x быстрее всех, потом z, потом y - срез по высоте (слой y) лежит в памяти подряд
     std::array<Material, CHUNK * CHUNK * CHUNK> voxels{};
     Material& at(int x, int y, int z) { return voxels[(y * CHUNK + z) * CHUNK + x]; }

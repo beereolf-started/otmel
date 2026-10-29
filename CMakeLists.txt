@@ -60,6 +60,6 @@ add_dependencies(otmel otmel_shaders)
 
 # Тесты: то, что проверяется машиной (Р6)
 enable_testing()
-add_executable(otmel_tests tests/test_gen.cpp)
+add_executable(otmel_tests tests/test_gen.cpp tests/mesher_reference.cpp)
 target_link_libraries(otmel_tests PRIVATE otmel_world)
 add_test(NAME generation COMMAND otmel_tests)
