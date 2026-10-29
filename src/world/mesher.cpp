@@ -32,10 +32,13 @@ struct MatRows { Material mat; uint32_t rows[CHUNK]; };
 
 }  // namespace
 
-void buildMesh(const Chunk& c, const ColumnHeights& hm, std::vector<uint32_t>& out, MeshStats& stats) {
+namespace {
+
+// vox - воксели правленого куска; nullptr - нетронутый: маски и материалы формулой от высот и покрова
+void meshImpl(ChunkPos pos, const Chunk* vox, const ColumnHeights& hm, std::vector<uint32_t>& out, MeshStats& stats) {
     out.clear();
     stats = {};
-    const int32_t y0 = c.pos.y * CHUNK;
+    const int32_t y0 = pos.y * CHUNK;
 
     // ─── 1. Маски столбцов вдоль трёх осей: 34 бита (кайма + 32 + кайма) ─────────
     // col[axis][u][v] - столбец вдоль оси d в точке (u, v) её плоскости
@@ -49,11 +52,11 @@ void buildMesh(const Chunk& c, const ColumnHeights& hm, std::vector<uint32_t>& o
         for (int x = 0; x < CHUNK; ++x) {
             const int32_t top = hm.h[z + 1][x + 1];
             uint64_t b;
-            if (!c.edited) {
+            if (!vox) {
                 b = columnFromHeight(top, y0);
             } else {
                 b = 0;
-                for (int y = 0; y < CHUNK; ++y) if (c.at(x, y, z) != AIR) b |= uint64_t(1) << (y + 1);
+                for (int y = 0; y < CHUNK; ++y) if (vox->at(x, y, z) != AIR) b |= uint64_t(1) << (y + 1);
                 if (y0 - 1 <= top) b |= 1;
                 if (y0 + CHUNK <= top) b |= uint64_t(1) << 33;
             }
@@ -115,7 +118,8 @@ void buildMesh(const Chunk& c, const ColumnHeights& hm, std::vector<uint32_t>& o
                         const int u = std::countr_zero(r);
                         int p[3];
                         p[ax.u] = u; p[ax.v] = v; p[ax.d] = layer;
-                        const Material m = c.at(p[0], p[1], p[2]);
+                        const Material m = vox ? vox->at(p[0], p[1], p[2])
+                                               : columnMaterial(hm.h[p[2] + 1][p[0] + 1], hm.cover[p[2]][p[0]], y0 + p[1]);
                         int k = 0;
                         while (k < nmats && mats[k].mat != m) ++k;
                         if (k == nmats) { mats[k].mat = m; std::memset(mats[k].rows, 0, sizeof(mats[k].rows)); ++nmats; }
@@ -161,6 +165,16 @@ void buildMesh(const Chunk& c, const ColumnHeights& hm, std::vector<uint32_t>& o
             }
         }
     }
+}
+
+}  // namespace
+
+void buildMesh(const Chunk& c, const ColumnHeights& hm, std::vector<uint32_t>& out, MeshStats& stats) {
+    meshImpl(c.pos, c.edited ? &c : nullptr, hm, out, stats);
+}
+
+void buildMesh(ChunkPos pos, const ColumnHeights& hm, std::vector<uint32_t>& out, MeshStats& stats) {
+    meshImpl(pos, nullptr, hm, out, stats);
 }
 
 }  // namespace world

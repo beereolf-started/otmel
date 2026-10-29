@@ -14,6 +14,7 @@
 #include <array>
 #include <chrono>
 #include <cmath>
+#include <tuple>
 #include <vector>
 
 namespace world {
@@ -211,7 +212,7 @@ int main() {
         world::Chunk c;
         std::vector<uint32_t> fast, ref;
         world::MeshStats ms;
-        bool same = true, sameEdited = true;
+        bool same = true, sameEdited = true, sameNoFill = true;
         int chunks = 0;
         double fastMs = 0, refMs = 0;
         using clk = std::chrono::steady_clock;
@@ -229,6 +230,8 @@ int main() {
                     world::buildMeshReference(c, hm, ref, ms);
                     refMs += std::chrono::duration<double, std::milli>(clk::now() - t1).count();
                     if (quadSet(fast) != quadSet(ref)) same = false;
+                    world::buildMesh(c.pos, hm, fast, ms);   // без вокселей вовсе (Р22)
+                    if (quadSet(fast) != quadSet(ref)) sameNoFill = false;
                     c.edited = true;      // тот же кусок, но маски - из вокселей
                     world::buildMesh(c, hm, fast, ms);
                     if (quadSet(fast) != quadSet(ref)) sameEdited = false;
@@ -237,8 +240,39 @@ int main() {
             }
         CHECK(same, "сетка по формуле = прежняя сетка (те же прямоугольники)");
         CHECK(sameEdited, "сетка из вокселей = прежняя сетка");
+        CHECK(sameNoFill, "сетка без заполнения вокселей (материал формулой) = прежняя сетка");
         std::printf("сетка: %d кусков; прежняя %.3f мс на кусок, новая %.3f мс на кусок (в %.1f раза быстрее)\n",
                     chunks, refMs / chunks, fastMs / chunks, refMs / std::max(fastMs, 1e-9));
+    }
+
+    // замер цены столбца высот (один поток): равнины у начала и горы у вершины
+    {
+        world::TerrainParams tp;
+        world::ColumnHeights hm;
+        using clk = std::chrono::steady_clock;
+        for (const auto& [name, bx, bz] : {std::tuple{"равнины", 0, 0}, std::tuple{"горы", -419, 861}}) {
+            // по частям: высоты, заполнение кусков, сетки - на 256 столбцах
+            double tH = 0, tF = 0, tM = 0;
+            int n = 0, chunks = 0;
+            world::Chunk ch;
+            std::vector<uint32_t> verts;
+            world::MeshStats ms;
+            for (int dz = -8; dz < 8; ++dz)
+                for (int dx = -8; dx < 8; ++dx, ++n) {
+                    auto t0 = clk::now();
+                    world::columnHeights(tp, bx + dx, bz + dz, hm);
+                    tH += std::chrono::duration<double, std::milli>(clk::now() - t0).count();
+                    for (int cy = (hm.minH - 1) >> 5; cy <= (hm.maxH >> 5); ++cy, ++chunks) {
+                        ch.pos = {bx + dx, cy, bz + dz};
+                        ch.edited = false;
+                        auto t2 = clk::now();
+                        world::buildMesh(ch.pos, hm, verts, ms);   // без заполнения (Р22)
+                        tM += std::chrono::duration<double, std::milli>(clk::now() - t2).count();
+                    }
+                }
+            std::printf("столбец (%s), один поток: высоты %.3f мс + заполнение %.3f мс + сетки %.3f мс = %.3f мс (кусков в столбце %.2f)\n",
+                        name, tH / n, tF / n, tM / n, (tH + tF + tM) / n, double(chunks) / n);
+        }
     }
 
     // ─── Р20: дальние уровни ──────────────────────────────────────────────────────────────

@@ -75,7 +75,6 @@ void Builder::worker() {
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
 #endif
     world::ColumnHeights hm;
-    world::Chunk chunk;
     std::vector<uint32_t> verts;
     for (;;) {
         bool isTile = false;
@@ -113,10 +112,9 @@ void Builder::worker() {
         // по высоте - только куски, через которые проходит поверхность (с каймой), Р2
         const int cyLo = (hm.minH - 1) >> world::CHUNK_LOG2, cyHi = hm.maxH >> world::CHUNK_LOG2;
         for (int cy = cyLo; cy <= cyHi; ++cy) {
-            chunk.pos = {col.first, cy, col.second};
-            world::fillChunk(hm, chunk);
+            // нетронутый кусок: сетка прямо от высот, без заполнения вокселей (Р22)
             world::MeshStats ms;
-            world::buildMesh(chunk, hm, verts, ms);
+            world::buildMesh(world::ChunkPos{col.first, cy, col.second}, hm, verts, ms);
             if (verts.empty()) continue;
             r.chunks.push_back({{col.first * world::CHUNK, cy * world::CHUNK, col.second * world::CHUNK}, verts, ms.quads});
         }

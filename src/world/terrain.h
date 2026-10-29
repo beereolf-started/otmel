@@ -4,6 +4,7 @@
 // по медленному шуму «рельефности» - без ступеньки на границе по построению.
 // Климат (по образцу TFC): температура - пояса по z и падение с высотой, осадки - пояса по x; он задаёт покров.
 #include <cstdint>
+#include <vector>
 
 #include "gen/fixed.h"
 #include "world/chunk.h"
@@ -41,6 +42,22 @@ struct TerrainParams {
     fx::q16 desertRain = 100 * DEG, desertTemp = 15 * DEG;   // пустыня: сухо и тепло
 };
 
+// Медленные поля (Р22): рельефность и шумы климата меняются на сотнях блоков - их считаем в узлах глобальной
+// сетки через 2^SLOW_STEP_LOG2 вокселей (4 блока) и смешиваем между узлами линейно. Узлы глобальные: значение
+// в точке не зависит от того, кто его спросил (кусок, плитка, карта) - шва нет.
+constexpr int SLOW_STEP_LOG2 = 6;
+struct SlowFields {
+    fx::q16 relief, temp, rain;   // рельефность; шумы температуры и осадков (без поясов - те точные)
+};
+SlowFields slowAt(const TerrainParams& p, int32_t x, int32_t z, int minCellLog2 = 0);
+// Для плотной выборки: узлы прямоугольника [x0..x1]×[z0..z1] (воксели, включительно) - по одному разу
+struct SlowGrid {
+    int32_t nx0 = 0, nz0 = 0, w = 0, h = 0;
+    std::vector<SlowFields> nodes;
+    void build(const TerrainParams& p, int32_t x0, int32_t z0, int32_t x1, int32_t z1, int minCellLog2 = 0);
+    SlowFields at(int32_t x, int32_t z) const;   // то же, что slowAt, до бита
+};
+
 // Форма рельефа в столбце: высота поверхности (верхний твёрдый воксель) и веса трёх видов, сумма весов = 1
 struct Relief {
     int32_t height;
@@ -48,12 +65,14 @@ struct Relief {
 };
 // minCellLog2 - для дальних уровней (Р20): октавы мельче 2^minCellLog2 вокселей не считаются
 Relief reliefAt(const TerrainParams& p, int32_t x, int32_t z, int minCellLog2 = 0);
+Relief reliefAt(const TerrainParams& p, int32_t x, int32_t z, const SlowFields& slow, int minCellLog2 = 0);
 
 // Климат столбца на уровне моря: средняя годовая температура (°C) и осадки (мм в год), оба в Q16
 struct Climate {
     fx::q16 temp, rain;
 };
 Climate climateAt(const TerrainParams& p, int32_t x, int32_t z);
+Climate climateAt(const TerrainParams& p, int32_t x, int32_t z, const SlowFields& slow);
 fx::q16 temperatureAt(const TerrainParams& p, const Climate& c, int32_t height);   // с поправкой на высоту
 
 // Покров: верхний воксель и слой под ним (3 блока)
@@ -61,6 +80,16 @@ struct Cover {
     Material top, under;
 };
 Cover coverAt(const TerrainParams& p, const Climate& c, int32_t height);
+
+// Материал нетронутого рельефа - формулой от высоты поверхности и покрова столбца (Р2, Р22): выше поверхности
+// воздух, в верхнем вокселе покров, под ним 3 блока подпокровного слоя, ниже камень. Его же пишет fillChunk;
+// сетке нетронутого куска массив вокселей не нужен вовсе - материал нужен только у видимых граней.
+inline Material columnMaterial(int32_t top, Cover cv, int32_t wy) {
+    if (wy > top) return AIR;
+    if (wy == top) return cv.top;
+    if (wy >= top - 3 * VOXELS_PER_BLOCK) return cv.under;
+    return STONE;
+}
 
 // Высоты столбцов куска С КАЙМОЙ в один воксель: [-1..32] по x и z, 34×34. Кайма нужна сетке: грань на краю
 // куска видна, только если сосед за краем - воздух, а соседа считаем той же формулой, не трогая чужой кусок.

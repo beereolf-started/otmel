@@ -23,11 +23,20 @@ void buildTile(const TerrainParams& p, TileKey k, TileMesh& out) {
     // октавы мельче двух шагов не различимы: уровень L - ячейка от 2^(L+5) вокселей, уровень L+1 - от 2^(L+6)
     const int fineCut = L + 5, coarseCut = L + 6;
 
+    // медленные поля (Р22): на мелких уровнях узлы сетки общие у многих вершин - считаем их один раз;
+    // с шага 64 вокселя вершины сами стоят на узлах - каждая спрашивает ровно один узел
+    static thread_local SlowGrid grid;
+    const bool dense = step < (int64_t(1) << SLOW_STEP_LOG2);
+    if (dense) grid.build(p, int32_t(x0 - 2 * step), int32_t(z0 - 2 * step), int32_t(x0 + 34 * step), int32_t(z0 + 34 * step), fineCut);
+    const auto slowFine = [&](int64_t x, int64_t z) { return dense ? grid.at(int32_t(x), int32_t(z)) : slowAt(p, int32_t(x), int32_t(z), fineCut); };
+
     // высоты своего уровня с каймой в один узел (для наклона): [-1..33]
     static thread_local int32_t hf[TILE_VERTS + 2][TILE_VERTS + 2];
     for (int j = -1; j <= TILE_VERTS; ++j)
-        for (int i = -1; i <= TILE_VERTS; ++i)
-            hf[j + 1][i + 1] = reliefAt(p, int32_t(x0 + i * step), int32_t(z0 + j * step), fineCut).height;
+        for (int i = -1; i <= TILE_VERTS; ++i) {
+            const int64_t x = x0 + i * step, z = z0 + j * step;
+            hf[j + 1][i + 1] = reliefAt(p, int32_t(x), int32_t(z), slowFine(x, z), fineCut).height;
+        }
     // высоты уровня L+1 в чётных узлах (шаг вдвое крупнее) с каймой: [-1..17]
     constexpr int CV = TILE / 2 + 1;
     static thread_local int32_t hc[CV + 2][CV + 2];
@@ -42,7 +51,7 @@ void buildTile(const TerrainParams& p, TileKey k, TileMesh& out) {
             const int32_t gz = slope16(hc[j + 2][i + 1] - hc[j][i + 1], 2 * step);
             coarseWord1[j][i] = uint32_t(uint8_t(int8_t(gx))) | uint32_t(uint8_t(int8_t(gz))) << 8;
             const int32_t wx = int32_t(x0 + i * 2 * step), wz = int32_t(z0 + j * 2 * step);
-            const Cover c = coverAt(p, climateAt(p, wx, wz), hc[j + 1][i + 1]);
+            const Cover c = coverAt(p, climateAt(p, wx, wz, slowFine(wx, wz)), hc[j + 1][i + 1]);   // климату отсечка октав не нужна
             coarseCover[j][i] = uint32_t(c.top) | uint32_t(c.under) << 4;
         }
 
@@ -57,7 +66,7 @@ void buildTile(const TerrainParams& p, TileKey k, TileMesh& out) {
             const int32_t hcT = hc[cj + 1][ci + 1];
             const int32_t gx = slope16(hf[j + 1][i + 2] - hf[j + 1][i], step);
             const int32_t gz = slope16(hf[j + 2][i + 1] - hf[j][i + 1], step);
-            const Cover c = coverAt(p, climateAt(p, int32_t(x0 + i * step), int32_t(z0 + j * step)), h);
+            const Cover c = coverAt(p, climateAt(p, int32_t(x0 + i * step), int32_t(z0 + j * step), slowFine(x0 + i * step, z0 + j * step)), h);
             uint32_t* w = &out.data[(size_t(j) * TILE_VERTS + i) * TILE_WORDS];
             w[0] = h16(h) | h16(hcT) << 16;
             w[1] = uint32_t(uint8_t(int8_t(gx))) | uint32_t(uint8_t(int8_t(gz))) << 8 | coarseWord1[cj][ci] << 16;
