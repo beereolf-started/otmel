@@ -34,6 +34,8 @@ target_include_directories(otmel_world PUBLIC src)
 add_executable(otmel
     src/main.cpp
     src/journal.cpp
+    src/voxel_zone.cpp
+    src/builder.cpp
     src/render/gl/gl_backend.cpp
 )
 target_include_directories(otmel PRIVATE src)

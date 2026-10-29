@@ -6,16 +6,21 @@ layout(std140, binding = 0) uniform Frame {
     mat4 viewProj;
     vec4 sunDir;
     vec4 eye;
-    vec4 voxelZone;
+    vec4 voxelZone;   // окно маски: minX, minZ (блоки), столбцов по стороне, блоков в столбце
     vec4 fade;
     vec4 sky;
 };
 
+layout(binding = 0) uniform usampler2D uVoxelMask;   // 1 - столбец вокселей готов
+
 layout(location = 0) out vec4 outColor;
 
 void main() {
-    // над зоной вокселей гладкой поверхности нет: там рисуют воксели (плитки целиком внутри отброшены раньше)
-    if (vWorld.x > voxelZone.x && vWorld.x < voxelZone.z && vWorld.z > voxelZone.y && vWorld.z < voxelZone.w) discard;
+    // над готовыми столбцами вокселей гладкой поверхности нет: там рисуют воксели (Р21). Где столбец ещё
+    // не построен - остаётся гладкий рельеф той же формы. Четверти плиток целиком над вокселями отброшены раньше.
+    ivec2 c = ivec2(floor((vWorld.xz - voxelZone.xy) / voxelZone.w));
+    int side = int(voxelZone.z);
+    if (all(greaterThanEqual(c, ivec2(0))) && all(lessThan(c, ivec2(side))) && texelFetch(uVoxelMask, c, 0).r != 0u) discard;
     // у края видимости рельеф растворяется в небе - конец мира не обрывается стеной
     float d = distance(eye.xz, vWorld.xz);
     outColor = vec4(mix(vColor, sky.rgb, smoothstep(fade.x, fade.y, d)), 1.0);

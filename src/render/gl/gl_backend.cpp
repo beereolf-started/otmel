@@ -85,6 +85,7 @@ public:
         glDeleteVertexArrays(1, &tileVao_);
         glDeleteProgram(program_);
         glDeleteProgram(tileProgram_);
+        if (maskTex_) glDeleteTextures(1, &maskTex_);
         destroyTargets();
         SDL_GL_DestroyContext(context_);
     }
@@ -144,6 +145,8 @@ public:
         glDepthFunc(GL_GREATER);
         glEnable(GL_CULL_FACE);   // задние грани не рисуем: обход вершин - против часовой снаружи
         createTargets(w, h);
+        const uint8_t none = 0;
+        updateVoxelMask(1, {&none, 1});   // пока вокселей нет - маска 1×1 из нуля
         return true;
     }
 
@@ -162,6 +165,17 @@ public:
     }
 
     void setDebug(int mode) override { glProgramUniform1i(tileProgram_, 4, mode); }
+
+    void updateVoxelMask(int side, std::span<const uint8_t> mask) override {
+        if (side != maskSide_) {
+            if (maskTex_) glDeleteTextures(1, &maskTex_);
+            glCreateTextures(GL_TEXTURE_2D, 1, &maskTex_);
+            glTextureStorage2D(maskTex_, 1, GL_R8UI, side, side);
+            maskSide_ = side;
+        }
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+        glTextureSubImage2D(maskTex_, 0, 0, 0, side, side, GL_RED_INTEGER, GL_UNSIGNED_BYTE, mask.data());
+    }
 
     void execute(const CommandList& list, FrameStats& stats) override {
         stats = {};
@@ -197,7 +211,12 @@ public:
             } else if (auto* t = std::get_if<CmdDrawTile>(&cmd)) {
                 const Mesh& m = meshes_[t->mesh];
                 if (!m.vbo) continue;
-                if (current != tileProgram_) { glUseProgram(tileProgram_); glBindVertexArray(tileVao_); current = tileProgram_; }
+                if (current != tileProgram_) {
+                    glUseProgram(tileProgram_);
+                    glBindVertexArray(tileVao_);
+                    glBindTextureUnit(0, maskTex_);
+                    current = tileProgram_;
+                }
                 glProgramUniform2i(tileProgram_, 0, t->originBlocks.x, t->originBlocks.y);
                 glProgramUniform1i(tileProgram_, 1, t->spacing);
                 glProgramUniform2f(tileProgram_, 2, t->morphStart, t->morphEnd);
@@ -283,7 +302,8 @@ private:
     SDL_Window* window_;
     SDL_GLContext context_;
     GLuint program_ = 0, tileProgram_ = 0, vao_ = 0, tileVao_ = 0, ibo_ = 0, tileIbo_ = 0, ubo_ = 0;
-    GLuint fbo_ = 0, colorRb_ = 0, depthRb_ = 0;
+    GLuint fbo_ = 0, colorRb_ = 0, depthRb_ = 0, maskTex_ = 0;
+    int maskSide_ = 0;
     int width_ = 1, height_ = 1;
     std::vector<Mesh> meshes_;
     std::vector<MeshId> free_;

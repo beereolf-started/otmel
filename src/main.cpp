@@ -20,154 +20,76 @@
 #include <glm/vec4.hpp>
 #include <glm/mat4x4.hpp>
 
+#include "frustum.h"
 #include "journal.h"
 #include "render/render.h"
 #include "world/lod.h"
-#include "world/mesher.h"
 #include "world/terrain.h"
+#include "builder.h"
+#include "voxel_zone.h"
 
 namespace {
 
 using clock_t_ = std::chrono::steady_clock;
 double msSince(clock_t_::time_point t) { return std::chrono::duration<double, std::milli>(clock_t_::now() - t).count(); }
 
-struct ChunkDraw { render::MeshId mesh; glm::ivec3 origin; };
-
-struct WorldStats {
-    int columns = 0, chunks = 0, meshed = 0, threads = 1;
-    int64_t quads = 0;
-    double genMs = 0, meshMs = 0;   // суммарное время всех потоков (работа), а не по часам
-};
-
-// Мир (2R)×(2R) столбцов кусков вокруг столбца (atX, atZ): высоты, заполнение, сетка - и в видеопамять.
-// Столбцы считают все ядра: генерация - чистая функция координат (Р2), порядок счёта на результат не влияет.
-// Видеокарта - только из главного потока, поэтому идём полосами строк: посчитали полосу - выгрузили - забыли.
-std::vector<ChunkDraw> buildWorld(render::Backend& gpu, const world::TerrainParams& tp, int atX, int atZ, int radius,
-                                  WorldStats& st) {
-    struct Built { glm::ivec3 origin; std::vector<uint32_t> verts; };
-    struct Worker {
-        std::vector<Built> done;
-        world::ColumnHeights hm;
-        world::Chunk chunk;
-        WorldStats st;
-    };
-    const int threads = std::max(1u, std::thread::hardware_concurrency());
-    std::vector<std::unique_ptr<Worker>> workers;
-    for (int t = 0; t < threads; ++t) workers.push_back(std::make_unique<Worker>());
-    std::vector<ChunkDraw> draws;
-    constexpr int BAND = 8;   // строк столбцов в полосе
-    const int side = 2 * radius;
-    for (int band = 0; band < side; band += BAND) {
-        std::atomic<int> next{0};
-        const int count = std::min(BAND, side - band) * side;
-        auto work = [&](Worker& w) {
-            std::vector<uint32_t> verts;
-            for (int k; (k = next++) < count;) {
-                const int cx = atX - radius + k % side, cz = atZ - radius + band + k / side;
-                auto t0 = clock_t_::now();
-                world::columnHeights(tp, cx, cz, w.hm);
-                w.st.genMs += msSince(t0);
-                ++w.st.columns;
-                // по высоте - только куски, через которые проходит поверхность (с каймой): ниже - сплошной камень
-                // без видимых граней, выше - воздух. Р2: нетронутое не стоит ничего.
-                const int cyLo = (w.hm.minH - 1) >> world::CHUNK_LOG2, cyHi = w.hm.maxH >> world::CHUNK_LOG2;
-                for (int cy = cyLo; cy <= cyHi; ++cy) {
-                    w.chunk.pos = {cx, cy, cz};
-                    auto t1 = clock_t_::now();
-                    world::fillChunk(w.hm, w.chunk);
-                    w.st.genMs += msSince(t1);
-                    auto t2 = clock_t_::now();
-                    world::MeshStats ms;
-                    world::buildMesh(w.chunk, w.hm, verts, ms);
-                    w.st.meshMs += msSince(t2);
-                    ++w.st.chunks;
-                    if (verts.empty()) continue;
-                    ++w.st.meshed;
-                    w.st.quads += ms.quads;
-                    w.done.push_back({{cx * world::CHUNK, cy * world::CHUNK, cz * world::CHUNK}, verts});
-                }
-            }
-        };
-        std::vector<std::thread> pool;
-        for (int t = 0; t < threads; ++t) pool.emplace_back(work, std::ref(*workers[t]));
-        for (auto& t : pool) t.join();
-        for (auto& w : workers) {
-            for (Built& b : w->done) draws.push_back({gpu.uploadChunkMesh(b.verts), b.origin});
-            w->done.clear();
-        }
-    }
-    for (auto& w : workers) {
-        st.columns += w->st.columns; st.chunks += w->st.chunks; st.meshed += w->st.meshed;
-        st.quads += w->st.quads; st.genMs += w->st.genMs; st.meshMs += w->st.meshMs;
-    }
-    st.threads = threads;
-    return draws;
-}
-
-// Пирамида видимости из матрицы камеры (Гриббс - Хартманн): шесть плоскостей, точка внутри - если со всеми >= 0.
-// Глубина у нас в [0, 1] (обратная, Р20), поэтому плоскости по z - строка 2 и строка 3 минус строка 2.
-struct Frustum {
-    glm::vec4 planes[6];
-    explicit Frustum(const glm::mat4& m) {
-        const auto row = [&](int r) { return glm::vec4(m[0][r], m[1][r], m[2][r], m[3][r]); };
-        planes[0] = row(3) + row(0);
-        planes[1] = row(3) - row(0);
-        planes[2] = row(3) + row(1);
-        planes[3] = row(3) - row(1);
-        planes[4] = row(2);
-        planes[5] = row(3) - row(2);
-    }
-    // коробка видна, если её самый «передний» угол (по нормали плоскости) не позади ни одной плоскости
-    bool visible(glm::vec3 lo, glm::vec3 hi) const {
-        for (const glm::vec4& p : planes) {
-            const glm::vec3 v(p.x >= 0 ? hi.x : lo.x, p.y >= 0 ? hi.y : lo.y, p.z >= 0 ? hi.z : lo.z);
-            if (p.x * v.x + p.y * v.y + p.z * v.z + p.w < 0) return false;
-        }
-        return true;
-    }
-};
-
-// Дальний рельеф (Р20): плитки CDLOD. Каждый кадр - выбор по расстоянию, отсечение по пирамиде видимости,
-// недостающие плитки строятся на всех ядрах (чистая функция координат), лишние вытесняются.
+// Дальний рельеф (Р20): плитки CDLOD. Каждый кадр - выбор по расстоянию, отсечение по пирамиде видимости.
+// Недостающие плитки заказываются общему пулу (Р21); пока плитки нет, её место закрывает та же четверть
+// плитки-родителя - грубее, но без дыры. Лишние плитки вытесняются.
 class FarTerrain {
 public:
-    struct Stats { int built = 0; double buildMs = 0; size_t cached = 0; };
+    struct Stats { int built = 0; double workMs = 0; size_t cached = 0; int substituted = 0; };
 
-    FarTerrain(render::Backend& gpu, const world::TerrainParams& tp) : gpu_(gpu), tp_(tp) {}
+    FarTerrain(render::Backend& gpu, Builder& builder) : gpu_(gpu), builder_(builder) {}
     ~FarTerrain() { for (auto& [k, e] : cache_) gpu_.destroyMesh(e.mesh); }
 
-    void frame(const world::LodSettings& s, glm::vec3 eye, const Frustum& fr, render::CommandList& out, Stats& st) {
+    void frame(const world::LodSettings& s, glm::vec3 eye, const Frustum& fr, const VoxelZone& voxels,
+               render::CommandList& out, Stats& st) {
         ++frame_;
+        // готовые плитки - в видеопамять (дёшево: 13 КБ на плитку)
+        Builder::TileResult r;
+        for (int n = 0; n < 512 && builder_.popTile(r); ++n) {
+            Entry e;
+            e.mesh = gpu_.uploadTile(r.mesh.data);
+            e.minY = float(r.mesh.minH) / world::VOXELS_PER_BLOCK;
+            e.maxY = float(r.mesh.maxH + 1) / world::VOXELS_PER_BLOCK;
+            e.used = frame_;
+            if (Entry* old = find(r.key)) gpu_.destroyMesh(old->mesh);
+            cache_[world::tileHash(r.key)] = e;
+            ++st.built;
+            st.workMs += r.ms;
+        }
+
         world::selectTiles(s, eye.x, eye.z, sel_);
-        // отсечение по четвертям; высоту коробки берём из готовой плитки, у неготовой - весь диапазон мира (Р10)
-        visible_.clear();
         missing_.clear();
+        st.substituted = 0;
         for (world::TileDraw d : sel_) {
             const int64_t size = world::tileBlocks(d.key.level), half = size / 2;
             const int64_t x0 = int64_t(d.key.tx) * size, z0 = int64_t(d.key.tz) * size;
-            auto it = cache_.find(world::tileHash(d.key));
-            const bool ready = it != cache_.end();
-            const float lo = ready ? it->second.minY : -500.0f, hi = ready ? it->second.maxY : 1000.0f;
+            Entry* e = find(d.key);
+            // отсечение по четвертям; высота коробки - из готовой плитки, у неготовой - весь диапазон мира (Р10)
+            const float lo = e ? e->minY : -500.0f, hi = e ? e->maxY : 1000.0f;
+            const uint8_t wanted = d.quadrants;
             for (int q = 0; q < 4; ++q)
                 if (d.quadrants >> q & 1) {
-                    const float qx = float(x0 + (q & 1) * half), qz = float(z0 + (q >> 1) * half);
-                    if (!fr.visible({qx, lo, qz}, {qx + float(half), hi, qz + float(half)})) d.quadrants &= uint8_t(~(1 << q));
+                    const int64_t qx = x0 + (q & 1) * half, qz = z0 + (q >> 1) * half;
+                    // целиком над готовыми вокселями (Р21) или вне взгляда - не рисуем
+                    if (voxels.covered(qx, qz, half) ||
+                        !fr.visible({float(qx), lo, float(qz)}, {float(qx + half), hi, float(qz + half)}))
+                        d.quadrants &= uint8_t(~(1 << q));
                 }
             if (!d.quadrants) continue;
-            visible_.push_back(d);
-            if (!ready) missing_.push_back(d.key);
+            if (e) { emit(s, *e, d.key, d.quadrants, out); continue; }
+            missing_.push_back(d.key);
+            // подмена: плитка целиком (все 4 четверти её) = одна четверть родителя - рисуем её, если родитель готов
+            const world::TileKey parent{d.key.level + 1, d.key.tx >> 1, d.key.tz >> 1};
+            Entry* p = wanted == 0xF ? find(parent) : nullptr;
+            if (p) {
+                emit(s, *p, parent, uint8_t(1 << ((d.key.tx & 1) | (d.key.tz & 1) << 1)), out);
+                ++st.substituted;
+            }
         }
-        build(st);
-        for (const world::TileDraw& d : visible_) {
-            Entry& e = cache_[world::tileHash(d.key)];
-            e.used = frame_;
-            const int L = d.key.level;
-            const float end = float(world::lodRange(s, L));
-            // морфинг - на последних 30% промежутка между дальностями уровней L-1 и L
-            const float start = end - 0.3f * (end - end / 2);
-            out.drawTile({e.mesh, {int(int64_t(d.key.tx) * world::tileBlocks(L)), int(int64_t(d.key.tz) * world::tileBlocks(L))},
-                          1 << L, L, start, end, d.quadrants});
-        }
+        builder_.requestTiles(missing_);
         evict();
         st.cached = cache_.size();
     }
@@ -175,27 +97,18 @@ public:
 private:
     struct Entry { render::MeshId mesh = render::NO_MESH; float minY = 0, maxY = 0; uint64_t used = 0; };
 
-    void build(Stats& st) {
-        if (missing_.empty()) return;
-        const auto t0 = clock_t_::now();
-        std::vector<world::TileMesh> meshes(missing_.size());
-        std::atomic<size_t> next{0};
-        auto work = [&] {
-            for (size_t k; (k = next++) < missing_.size();) world::buildTile(tp_, missing_[k], meshes[k]);
-        };
-        const size_t threads = std::min<size_t>(missing_.size(), std::max(1u, std::thread::hardware_concurrency()));
-        std::vector<std::thread> pool;
-        for (size_t t = 0; t < threads; ++t) pool.emplace_back(work);
-        for (auto& t : pool) t.join();
-        for (size_t k = 0; k < missing_.size(); ++k) {
-            Entry e;
-            e.mesh = gpu_.uploadTile(meshes[k].data);
-            e.minY = float(meshes[k].minH) / world::VOXELS_PER_BLOCK;
-            e.maxY = float(meshes[k].maxH + 1) / world::VOXELS_PER_BLOCK;
-            cache_[world::tileHash(missing_[k])] = e;
-        }
-        st.built += int(missing_.size());
-        st.buildMs += msSince(t0);
+    Entry* find(world::TileKey k) {
+        auto it = cache_.find(world::tileHash(k));
+        return it == cache_.end() ? nullptr : &it->second;
+    }
+    void emit(const world::LodSettings& s, Entry& e, world::TileKey k, uint8_t quadrants, render::CommandList& out) {
+        e.used = frame_;
+        const int L = k.level;
+        const float end = float(world::lodRange(s, L));
+        // морфинг - на последних 30% промежутка между дальностями уровней L-1 и L
+        const float start = end - 0.3f * (end - end / 2);
+        out.drawTile({e.mesh, {int(int64_t(k.tx) * world::tileBlocks(L)), int(int64_t(k.tz) * world::tileBlocks(L))},
+                      1 << L, L, start, end, quadrants});
     }
 
     // вытеснение: держим не больше LIMIT плиток, выбрасываем давно не нужные
@@ -212,9 +125,9 @@ private:
     }
 
     render::Backend& gpu_;
-    const world::TerrainParams& tp_;
+    Builder& builder_;
     std::unordered_map<uint64_t, Entry> cache_;
-    std::vector<world::TileDraw> sel_, visible_;
+    std::vector<world::TileDraw> sel_;
     std::vector<world::TileKey> missing_;
     uint64_t frame_ = 0;
 };
@@ -239,9 +152,10 @@ int main(int argc, char** argv) {
     //   --draw B     дальность видимости, блоков (8192)
     //   --detail K   детальность дальних уровней: дальность уровня 0, блоков (128; не меньше 65 - иначе щели)
     //   --at X Z     точка старта, блоки;  --eye x y z yaw pitch - камера;  --shot - снимок и выход
+    //   --fly V      (со --shot) облёт: камера летит вперёд со скоростью V блоков/с 10 секунд, замер отставания
     bool shot = false;
     int voxelBlocks = 128;
-    float atX = 0, atZ = 0;
+    float atX = 0, atZ = 0, flySpeed = 0;
     world::LodSettings lod;
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
@@ -250,6 +164,7 @@ int main(int argc, char** argv) {
         if (a == "--draw" && i + 1 < argc) lod.drawDistance = std::max(256, std::stoi(argv[i + 1]));
         if (a == "--detail" && i + 1 < argc) lod.detail = std::max(65, std::stoi(argv[i + 1]));
         if (a == "--at" && i + 2 < argc) { atX = std::stof(argv[i + 1]); atZ = std::stof(argv[i + 2]); }
+        if (a == "--fly" && i + 1 < argc) flySpeed = std::stof(argv[i + 1]);
     }
     if (!SDL_Init(SDL_INIT_VIDEO)) { journal::error("окно", "SDL не запустился: {}", SDL_GetError()); return 1; }
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 4);
@@ -267,23 +182,12 @@ int main(int argc, char** argv) {
     auto gpu = render::createGL(window, shaderDir.c_str());
     if (!gpu) return 1;
 
-    // Зона вокселей: (2R)×(2R) столбцов кусков (столбец - 2×2 блока) вокруг точки старта
+    // Зона вокселей едет за камерой (Р21): ±R столбцов кусков (столбец - 2×2 блока); строят фоновые потоки
     const int blocksPerColumn = world::CHUNK / world::VOXELS_PER_BLOCK;
-    const int radius = std::max(1, voxelBlocks / blocksPerColumn);
-    const int atCX = int(std::floor(atX / blocksPerColumn)), atCZ = int(std::floor(atZ / blocksPerColumn));
     world::TerrainParams tp;
-    WorldStats ws;
-    const auto tw = clock_t_::now();
-    auto draws = buildWorld(*gpu, tp, atCX, atCZ, radius, ws);
-    const double wallMs = msSince(tw);
-    journal::info("мир", "воксели: столбцов {}, кусков {} (с гранями {}), прямоугольников {}; работа: генерация {:.1f} мс ({:.3f} на кусок), сетки {:.1f} мс ({:.3f} на кусок); по часам {:.0f} мс на {} потоках",
-                  ws.columns, ws.chunks, ws.meshed, ws.quads, ws.genMs, ws.genMs / std::max(1, ws.chunks), ws.meshMs,
-                  ws.meshMs / std::max(1, ws.chunks), wallMs, ws.threads);
-    lod.holeMinX = int64_t(atCX - radius) * blocksPerColumn;
-    lod.holeMinZ = int64_t(atCZ - radius) * blocksPerColumn;
-    lod.holeMaxX = int64_t(atCX + radius) * blocksPerColumn;
-    lod.holeMaxZ = int64_t(atCZ + radius) * blocksPerColumn;
-    FarTerrain farTerrain(*gpu, tp);
+    Builder builder(tp);
+    VoxelZone voxels(*gpu, builder, std::max(1, voxelBlocks / blocksPerColumn));
+    FarTerrain farTerrain(*gpu, builder);
 
     // Камера: в блоках. Мышь - взгляд, WASD - движение, пробел/Ctrl - вверх/вниз, Shift - быстрее,
     // колесо - скорость, L - раскраска дальних уровней, Esc - выход. Старт - в 40 блоках над землёй.
@@ -301,7 +205,11 @@ int main(int argc, char** argv) {
     // в режиме снимка - без ожидания обновления экрана: замер времени кадра не упирается в 60 Гц
     if (shot) SDL_GL_SetSwapInterval(0);
     int frameNo = 0;
-    double shotMs = 0;
+    double shotMs = 0, shotMaxMs = 0;
+    int maxPending = 0;
+    bool warm = false;                       // снимок: зона вокселей достроена
+    double part[3] = {};                     // худшее за кадр: зона вокселей, дальние плитки, отрисовка
+    auto shotStart = clock_t_::now();
 
     const render::Color sky{0.55f, 0.72f, 0.88f, 1.0f};
     render::CommandList frame;
@@ -343,51 +251,77 @@ int main(int argc, char** argv) {
         if (keys[SDL_SCANCODE_A]) eye -= right * speed;
         if (keys[SDL_SCANCODE_SPACE]) eye.y += speed;
         if (keys[SDL_SCANCODE_LCTRL]) eye.y -= speed;
+        if (shot && warm && flySpeed > 0) eye += glm::normalize(glm::vec3(fwd.x, 0, fwd.z)) * flySpeed * dt;
 
         // обратная глубина (Р20): ближняя и дальняя плоскости переставлены местами
         const float farPlane = float(lod.drawDistance) * 1.5f;
         const glm::mat4 proj = glm::perspectiveRH_ZO(glm::radians(70.0f), float(width) / float(std::max(1, height)), farPlane, 0.05f);
         const glm::mat4 viewProj = proj * glm::lookAt(eye, eye + fwd, glm::vec3(0, 1, 0));
         const Frustum fr(viewProj);
+        const auto tUpd = clock_t_::now();
+        voxels.update(eye, fr, 4.0);   // выгрузка готовых столбцов - не дольше 4 мс за кадр
+        part[0] = std::max(part[0], msSince(tUpd));
 
         frame.reset();
         frame.clear(sky);
-        frame.camera({viewProj, glm::vec3(0.4f, 1.0f, 0.25f), eye,
-                      glm::vec4(float(lod.holeMinX), float(lod.holeMinZ), float(lod.holeMaxX), float(lod.holeMaxZ)),
+        frame.camera({viewProj, glm::vec3(0.4f, 1.0f, 0.25f), eye, voxels.window(),
                       float(lod.drawDistance) * 0.75f, float(lod.drawDistance), sky});
-        chunksDrawn = 0;
-        for (const ChunkDraw& d : draws) {
-            const glm::vec3 lo = glm::vec3(d.origin) / float(world::VOXELS_PER_BLOCK);
-            if (!fr.visible(lo, lo + glm::vec3(float(blocksPerColumn)))) continue;
-            frame.drawChunk(d.mesh, d.origin);
-            ++chunksDrawn;
-        }
-        farTerrain.frame(lod, eye, fr, frame, farStats);
+        chunksDrawn = voxels.draw(fr, frame);
+        const auto tFar = clock_t_::now();
+        farTerrain.frame(lod, eye, fr, voxels, frame, farStats);
+        part[1] = std::max(part[1], msSince(tFar));
+        const auto tExe = clock_t_::now();
         gpu->execute(frame, fs);
-        // снимок: 5 кадров на разгон, снимок, затем 60 кадров на замер времени кадра
+        part[2] = std::max(part[2], msSince(tExe));
+        // снимок: ждём, пока зона вокселей достроится (не дольше 2 минут), затем 5 кадров - снимок; с --fly -
+        // 10 секунд облёта с замером отставания и времени кадра, снимок в конце; без --fly - замер 60 кадров
         if (shot) {
-            ++frameNo;
-            if (frameNo > 5) shotMs += double(dt) * 1000.0;
-            if (frameNo == 5) {
-                saveShot(*gpu, width, height, "shot.bmp");
-                journal::info("окно", "кадр: кусков {}, прямоугольников {}; плиток {}, треугольников {}; вызовов {}; плиток построено {} за {:.0f} мс",
-                              chunksDrawn, fs.quads, fs.tiles, fs.tileTriangles, fs.drawCalls, farStats.built, farStats.buildMs);
-            }
-            if (frameNo == 66) {
-                journal::info("окно", "время кадра (60 кадров, без ожидания экрана): {:.2f} мс", shotMs / 60);
-                running = false;
+            if (!warm) {
+                if (voxels.stats().pending == 0 || msSince(shotStart) > 120000) {
+                    warm = true;
+                    journal::info("мир", "зона вокселей готова за {:.0f} мс: столбцов {}, кусков {}, прямоугольников {}; работа потоков {:.0f} мс ({:.2f} мс на столбец)",
+                                  msSince(shotStart), voxels.stats().ready, voxels.stats().chunks, voxels.stats().quads,
+                                  voxels.stats().workMs, voxels.stats().workMs / std::max(1, voxels.stats().built));
+                    shotStart = clock_t_::now();
+                    part[0] = part[1] = part[2] = 0;
+                    voxels.resetWorst();
+                }
+            } else {
+                ++frameNo;
+                const bool flying = flySpeed > 0;
+                if (frameNo > 5 || flying) {
+                    shotMs += double(dt) * 1000.0;
+                    shotMaxMs = std::max(shotMaxMs, double(dt) * 1000.0);
+                    maxPending = std::max(maxPending, voxels.stats().pending);
+                }
+                const bool done = flying ? msSince(shotStart) > 10000 : frameNo == 66;
+                if ((!flying && frameNo == 5) || (flying && done)) {
+                    saveShot(*gpu, width, height, "shot.bmp");
+                    journal::info("окно", "кадр: кусков {}, прямоугольников {}; плиток {}, треугольников {}; вызовов {}",
+                                  chunksDrawn, fs.quads, fs.tiles, fs.tileTriangles, fs.drawCalls);
+                }
+                if (done) {
+                    const int n = flying ? frameNo : 60;
+                    const int side = 2 * std::max(1, voxelBlocks / blocksPerColumn);
+                    journal::info("окно", "время кадра ({} кадров, без ожидания экрана): среднее {:.2f} мс, худшее {:.2f} мс; не успевших столбцов - до {} из {}",
+                                  n, shotMs / n, shotMaxMs, maxPending, side * side);
+                    journal::info("окно", "худшее за кадр по частям: зона вокселей {:.2f} мс (сдвиг окна {:.2f}, очередь {:.2f}, выгрузка {:.2f}, маска {:.2f}), дальние плитки {:.2f} мс, отрисовка {:.2f} мс",
+                                  part[0], voxels.stats().worstMs[0], voxels.stats().worstMs[1], voxels.stats().worstMs[2],
+                                  voxels.stats().worstMs[3], part[1], part[2]);
+                    running = false;
+                }
             }
         }
         gpu->present();
 
         if (now - titleAt > std::chrono::milliseconds(500)) {
             const double ms = sumMs / frames;
-            SDL_SetWindowTitle(window, std::format("Отмель — кадр {:.2f} мс | кусков {} ({} прямоуг.) | плиток {} ({} тр.) | вызовов {} | "
-                                                   "построено плиток {} за {:.0f} мс, в памяти {}",
-                                                   ms, chunksDrawn, fs.quads, fs.tiles, fs.tileTriangles, fs.drawCalls,
-                                                   farStats.built, farStats.buildMs, farStats.cached).c_str());
+            SDL_SetWindowTitle(window, std::format("Отмель — кадр {:.2f} мс | воксели: столбцов {} (ждут {}), кусков {} ({} прямоуг.) | "
+                                                   "плиток {} ({} тр.) | вызовов {}",
+                                                   ms, voxels.stats().ready, voxels.stats().pending, chunksDrawn, fs.quads,
+                                                   fs.tiles, fs.tileTriangles, fs.drawCalls).c_str());
             farStats.built = 0;
-            farStats.buildMs = 0;
+            farStats.workMs = 0;
             sumMs = 0;
             frames = 0;
             titleAt = now;

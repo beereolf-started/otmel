@@ -27,7 +27,7 @@ struct CmdCamera {
     glm::mat4 viewProj;
     glm::vec3 sunDir;
     glm::vec3 eye;            // положение камеры, блоки
-    glm::vec4 voxelZone;      // квадрат вокселей (minX, minZ, maxX, maxZ), блоки: плитки внутри него не видны
+    glm::vec4 voxelZone;      // окно маски вокселей: minX, minZ (блоки), столбцов по стороне, блоков в столбце (Р21)
     float fadeStart, fadeEnd; // дальний край видимости: рельеф растворяется в небе
     Color sky;
 };
@@ -61,6 +61,8 @@ public:
     // плитка дальнего уровня: 33×33 узла по 3 числа (см. world/lod.h)
     virtual MeshId uploadTile(std::span<const uint32_t> words) = 0;
     virtual void destroyMesh(MeshId id) = 0;
+    // маска готовых столбцов вокселей (Р21): side×side байт, строка - по z; над единицами плитки не рисуются
+    virtual void updateVoxelMask(int side, std::span<const uint8_t> mask) = 0;
     // параметр отладки шейдеров: 1 - раскрасить плитки по уровням
     virtual void setDebug(int mode) = 0;
     virtual void execute(const CommandList& list, FrameStats& stats) = 0;

@@ -7,7 +7,7 @@ layout(std140, binding = 0) uniform Frame {
     mat4 viewProj;
     vec4 sunDir;
     vec4 eye;         // камера, блоки
-    vec4 voxelZone;   // minX, minZ, maxX, maxZ
+    vec4 voxelZone;   // окно маски вокселей (Р21)
     vec4 fade;        // начало и конец растворения вдали
     vec4 sky;
 };
