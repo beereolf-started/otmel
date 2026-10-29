@@ -46,7 +46,8 @@ struct Relief {
     int32_t height;
     fx::q16 wPlains, wHills, wMount;
 };
-Relief reliefAt(const TerrainParams& p, int32_t x, int32_t z);
+// minCellLog2 - для дальних уровней (Р20): октавы мельче 2^minCellLog2 вокселей не считаются
+Relief reliefAt(const TerrainParams& p, int32_t x, int32_t z, int minCellLog2 = 0);
 
 // Климат столбца на уровне моря: средняя годовая температура (°C) и осадки (мм в год), оба в Q16
 struct Climate {

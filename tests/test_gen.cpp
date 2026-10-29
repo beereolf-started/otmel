@@ -6,12 +6,14 @@
 #include "gen/hash.h"
 #include "gen/noise.h"
 #include "world/bits.h"
+#include "world/lod.h"
 #include "world/mesher.h"
 #include "world/terrain.h"
 
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cmath>
 #include <vector>
 
 namespace world {
@@ -237,6 +239,90 @@ int main() {
         CHECK(sameEdited, "сетка из вокселей = прежняя сетка");
         std::printf("сетка: %d кусков; прежняя %.3f мс на кусок, новая %.3f мс на кусок (в %.1f раза быстрее)\n",
                     chunks, refMs / chunks, fastMs / chunks, refMs / std::max(fastMs, 1e-9));
+    }
+
+    // ─── Р20: дальние уровни ──────────────────────────────────────────────────────────────
+    {
+        world::TerrainParams tp;
+        // плитка уровня 0: шаг 1 блок, отброшенных октав нет - высоты узлов = высоты столбцов вокселей
+        world::TileMesh t0;
+        world::buildTile(tp, {0, -3, 5}, t0);
+        bool same0 = true;
+        for (int j = 0; j < world::TILE_VERTS; ++j)
+            for (int i = 0; i < world::TILE_VERTS; ++i) {
+                const int32_t h = int16_t(t0.data[(j * world::TILE_VERTS + i) * 3] & 0xFFFF);
+                const int32_t x = (-3 * 32 + i) * 16, z = (5 * 32 + j) * 16;
+                if (h != world::reliefAt(tp, x, z).height) same0 = false;
+            }
+        CHECK(same0, "плитка уровня 0: высоты узлов = высоты столбцов вокселей");
+
+        // ГЛАВНОЕ: сползшая плитка совпадает с родителем. «Высота уровня L+1» узла = высота той же точки в
+        // плитке уровня L+1; то же для наклона и покрова. Иначе на смене уровней - щель или скачок цвета.
+        bool morphOk = true;
+        int checked = 0;
+        const int keys[][3] = {{0, 7, -3}, {1, -2, 9}, {2, 3, 3}, {3, -1, -1}, {4, 0, 1}, {5, -1, 0}, {1, 70, -61}, {0, -31, 54}};
+        for (const auto& kk : keys) {
+            const world::TileKey k{kk[0], kk[1], kk[2]};
+            const world::TileKey parent{k.level + 1, k.tx >> 1, k.tz >> 1};
+            world::TileMesh child, par;
+            world::buildTile(tp, k, child);
+            world::buildTile(tp, parent, par);
+            for (int j = 0; j < world::TILE_VERTS; ++j)
+                for (int i = 0; i < world::TILE_VERTS; ++i) {
+                    const int pi = ((k.tx & 1) * world::TILE + (i & ~1)) / 2, pj = ((k.tz & 1) * world::TILE + (j & ~1)) / 2;
+                    const uint32_t* c = &child.data[(j * world::TILE_VERTS + i) * 3];
+                    const uint32_t* pv = &par.data[(pj * world::TILE_VERTS + pi) * 3];
+                    if ((c[0] >> 16) != (pv[0] & 0xFFFF) || (c[1] >> 16) != (pv[1] & 0xFFFF) || ((c[2] >> 8) & 0xFF) != (pv[2] & 0xFF))
+                        morphOk = false;
+                    ++checked;
+                }
+        }
+        std::printf("морфинг: проверено %d узлов на уровнях 0..5\n", checked);
+        CHECK(morphOk, "сползший узел = узел плитки уровня выше: высота, наклон, покров (без щелей)");
+
+        world::TileMesh t1;
+        world::buildTile(tp, {3, -1, -1}, t1);
+        world::TileMesh t2;
+        world::buildTile(tp, {3, -1, -1}, t2);
+        CHECK(t1.data == t2.data, "плитка из одного зерна дважды - одинакова");
+
+        // выбор плиток: каждая точка видимости вне зоны вокселей покрыта ровно одной четвертью; соседние
+        // точки - уровни различаются не больше чем на 1 (условие CDLOD)
+        world::LodSettings ls;
+        ls.drawDistance = 4096;
+        ls.holeMinX = -128; ls.holeMinZ = -128; ls.holeMaxX = 128; ls.holeMaxZ = 128;
+        const double cx = 37.5, cz = -12.25;
+        std::vector<world::TileDraw> sel;
+        world::selectTiles(ls, cx, cz, sel);
+        constexpr int G = 256, STEP = 32;   // сетка проверки 256×256 точек через 32 блока
+        std::vector<int> cover(G * G, 0), level(G * G, -1);
+        for (const world::TileDraw& d : sel) {
+            const int64_t size = world::tileBlocks(d.key.level), half = size / 2;
+            for (int qd = 0; qd < 4; ++qd) {
+                if (!(d.quadrants >> qd & 1)) continue;
+                const int64_t x0 = int64_t(d.key.tx) * size + (qd & 1) * half, z0 = int64_t(d.key.tz) * size + (qd >> 1) * half;
+                for (int gz = 0; gz < G; ++gz)
+                    for (int gx = 0; gx < G; ++gx) {
+                        const double px = (gx - G / 2) * STEP + 0.5, pz = (gz - G / 2) * STEP + 0.5;
+                        if (px >= x0 && px < x0 + half && pz >= z0 && pz < z0 + half) { ++cover[gz * G + gx]; level[gz * G + gx] = d.key.level; }
+                    }
+            }
+        }
+        bool once = true, neighbours = true;
+        for (int gz = 0; gz < G; ++gz)
+            for (int gx = 0; gx < G; ++gx) {
+                const double px = (gx - G / 2) * STEP + 0.5, pz = (gz - G / 2) * STEP + 0.5;
+                const bool inHole = px > -128 && px < 128 && pz > -128 && pz < 128;
+                const double d = std::hypot(px - cx, pz - cz);
+                const int n = cover[gz * G + gx];
+                if (d < ls.drawDistance - 64 && !inHole && n != 1) once = false;
+                if (n > 1) once = false;
+                if (gx > 0 && level[gz * G + gx] >= 0 && level[gz * G + gx - 1] >= 0 && std::abs(level[gz * G + gx] - level[gz * G + gx - 1]) > 1)
+                    neighbours = false;
+            }
+        std::printf("выбор плиток: %zu плиток при видимости %d блоков\n", sel.size(), ls.drawDistance);
+        CHECK(once, "каждая точка видимости вне вокселей покрыта ровно одной плиткой");
+        CHECK(neighbours, "соседние уровни различаются не больше чем на 1");
     }
 
     std::printf(g_fail ? "\nНЕ ГОДНО: %d\n" : "\nВСЁ ГОДНО\n", g_fail);

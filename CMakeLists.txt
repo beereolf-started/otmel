@@ -27,6 +27,7 @@ add_library(otmel_world STATIC
     src/gen/noise.cpp
     src/world/terrain.cpp
     src/world/mesher.cpp
+    src/world/lod.cpp
 )
 target_include_directories(otmel_world PUBLIC src)
 
@@ -44,7 +45,7 @@ find_program(GLSLC glslc HINTS $ENV{VULKAN_SDK}/Bin ${GLSLC_CANDIDATES})
 if(NOT GLSLC)
     list(GET GLSLC_CANDIDATES 0 GLSLC)
 endif()
-set(SHADERS terrain.vert terrain.frag)
+set(SHADERS terrain.vert terrain.frag tile.vert tile.frag)
 set(SPV_FILES)
 foreach(S ${SHADERS})
     set(OUT ${CMAKE_CURRENT_BINARY_DIR}/shaders/${S}.spv)

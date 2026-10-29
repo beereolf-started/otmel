@@ -73,12 +73,13 @@ inline fx::q16 clampOne(int64_t v) {
 // Общая сумма октав для любого базового шума: размахи 1, 1/2, 1/4, ... - сдвигом; их сумма 2 - 2^(1-n),
 // нормируем делением на неё.
 template <fx::q16 (*Noise)(int32_t, int32_t, int, uint32_t)>
-fx::q16 fbm(int32_t x, int32_t z, int firstCellLog2, int octaves, uint32_t seed) {
+fx::q16 fbm(int32_t x, int32_t z, int firstCellLog2, int octaves, uint32_t seed, int minCellLog2) {
     int64_t sum = 0, norm = 0;
     for (int o = 0; o < octaves && firstCellLog2 - o >= 1; ++o) {
+        norm += static_cast<int64_t>(fx::ONE) >> o;
+        if (firstCellLog2 - o < minCellLog2) continue;   // слишком мелкая для этого уровня - выпадает
         const fx::q16 n = Noise(x, z, firstCellLog2 - o, octaveSeed(seed, o));
         sum += static_cast<int64_t>(n) >> o;
-        norm += static_cast<int64_t>(fx::ONE) >> o;
     }
     return static_cast<fx::q16>((sum << fx::SHIFT) / norm);
 }
@@ -132,30 +133,31 @@ fx::q16 value2(int32_t x, int32_t z, int cellLog2, uint32_t seed) {
     return fx::lerp(top, bot, w);
 }
 
-fx::q16 fbm2(int32_t x, int32_t z, int firstCellLog2, int octaves, uint32_t seed) {
-    return fbm<perlin2>(x, z, firstCellLog2, octaves, seed);
+fx::q16 fbm2(int32_t x, int32_t z, int firstCellLog2, int octaves, uint32_t seed, int minCellLog2) {
+    return fbm<perlin2>(x, z, firstCellLog2, octaves, seed, minCellLog2);
 }
-fx::q16 fbmSimplex2(int32_t x, int32_t z, int firstCellLog2, int octaves, uint32_t seed) {
-    return fbm<simplex2>(x, z, firstCellLog2, octaves, seed);
+fx::q16 fbmSimplex2(int32_t x, int32_t z, int firstCellLog2, int octaves, uint32_t seed, int minCellLog2) {
+    return fbm<simplex2>(x, z, firstCellLog2, octaves, seed, minCellLog2);
 }
-fx::q16 fbmValue2(int32_t x, int32_t z, int firstCellLog2, int octaves, uint32_t seed) {
-    return fbm<value2>(x, z, firstCellLog2, octaves, seed);
+fx::q16 fbmValue2(int32_t x, int32_t z, int firstCellLog2, int octaves, uint32_t seed, int minCellLog2) {
+    return fbm<value2>(x, z, firstCellLog2, octaves, seed, minCellLog2);
 }
 
-fx::q16 ridged2(int32_t x, int32_t z, int firstCellLog2, int octaves, uint32_t seed) {
+fx::q16 ridged2(int32_t x, int32_t z, int firstCellLog2, int octaves, uint32_t seed, int minCellLog2) {
     // Гребень там, где шум проходит через ноль: 1 - |n| даёт острый излом, квадрат - сужает гребень.
     // Вес следующей октавы = 2 · (вклад предыдущей), не больше 1: на склонах и гребнях - мелкие гребешки,
     // в долинах (вклад мал) мелочь гаснет - дно ровное, как у настоящих гор.
     int64_t sum = 0, norm = 0;
     int64_t weight = fx::ONE;
     for (int o = 0; o < octaves && firstCellLog2 - o >= 1; ++o) {
+        norm += static_cast<int64_t>(fx::ONE) >> o;
+        if (firstCellLog2 - o < minCellLog2) break;   // дальше только мельче
         const fx::q16 n = simplex2(x, z, firstCellLog2 - o, octaveSeed(seed, o));
         int64_t r = fx::ONE - (n < 0 ? -n : n);   // [0, 1]
         r = (r * r) >> 16;
         r = (r * weight) >> 16;
         weight = r * 2 > fx::ONE ? fx::ONE : r * 2;
         sum += r >> o;
-        norm += static_cast<int64_t>(fx::ONE) >> o;
     }
     return static_cast<fx::q16>((sum << fx::SHIFT) / norm);
 }

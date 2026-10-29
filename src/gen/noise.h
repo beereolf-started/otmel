@@ -18,12 +18,15 @@ fx::q16 value2(int32_t x, int32_t z, int cellLog2, uint32_t seed);
 
 // Суммы октав (fBm): ячейка каждой следующей вдвое мельче (точно - сдвигом), размах - вдвое меньше.
 // firstCellLog2 - размер ячейки первой октавы (11 -> 2048 вокселей = 128 блоков). Ответ - Q16 в [-1, 1].
-fx::q16 fbm2(int32_t x, int32_t z, int firstCellLog2, int octaves, uint32_t seed);        // Перлин
-fx::q16 fbmSimplex2(int32_t x, int32_t z, int firstCellLog2, int octaves, uint32_t seed);
-fx::q16 fbmValue2(int32_t x, int32_t z, int firstCellLog2, int octaves, uint32_t seed);
+// minCellLog2 - октавы с ячейкой мельче 2^minCellLog2 не считаются (дальние уровни, Р20): их не различить
+// при шаге узлов вдвое крупнее, а выборка их «ловила» бы случайно - рябь. Нормировка - по полному набору,
+// чтобы размах оставшихся октав не менялся: отброшенное просто выпадает из суммы.
+fx::q16 fbm2(int32_t x, int32_t z, int firstCellLog2, int octaves, uint32_t seed, int minCellLog2 = 0);   // Перлин
+fx::q16 fbmSimplex2(int32_t x, int32_t z, int firstCellLog2, int octaves, uint32_t seed, int minCellLog2 = 0);
+fx::q16 fbmValue2(int32_t x, int32_t z, int firstCellLog2, int octaves, uint32_t seed, int minCellLog2 = 0);
 
 // Хребты: октавы (1 - |симплекс|)², каждая следующая - с весом по предыдущей (мелкие гребни - на крупных,
 // а в долинах гладко). Ответ - Q16 в [0, 1]: 1 - гребень, 0 - дно долины.
-fx::q16 ridged2(int32_t x, int32_t z, int firstCellLog2, int octaves, uint32_t seed);
+fx::q16 ridged2(int32_t x, int32_t z, int firstCellLog2, int octaves, uint32_t seed, int minCellLog2 = 0);
 
 }  // namespace gen

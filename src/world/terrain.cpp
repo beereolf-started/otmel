@@ -29,24 +29,24 @@ inline int32_t scaled(int32_t base, fx::q16 n, int32_t amp) {
 
 }  // namespace
 
-Relief reliefAt(const TerrainParams& p, int32_t x, int32_t z) {
+Relief reliefAt(const TerrainParams& p, int32_t x, int32_t z, int minCellLog2) {
     Relief r;
     // веса: плавные ступени по рельефности; горы забирают свою долю первыми, холмы - из остатка,
     // равнины - всё оставшееся. Сумма = 1 точно, по построению.
-    const fx::q16 m = gen::fbmValue2(x, z, p.reliefCellLog2, p.reliefOctaves, layerSeed(p.seed, RELIEF));
+    const fx::q16 m = gen::fbmValue2(x, z, p.reliefCellLog2, p.reliefOctaves, layerSeed(p.seed, RELIEF), minCellLog2);
     r.wMount = fx::smoothstep(p.mountFrom, p.mountTo, m);
     r.wHills = fx::mul(fx::smoothstep(p.hillsFrom, p.hillsTo, m), fx::ONE - r.wMount);
     r.wPlains = fx::ONE - r.wMount - r.wHills;
     // высота - сумма видов с весами; вид с нулевым весом не считаем вовсе (в чистой зоне - одна формула)
     int64_t h = 0;
     if (r.wPlains > 0)
-        h += int64_t(r.wPlains) * scaled(p.baseHeight, gen::fbm2(x, z, p.firstCellLog2, p.octaves, p.seed), p.amplitude);
+        h += int64_t(r.wPlains) * scaled(p.baseHeight, gen::fbm2(x, z, p.firstCellLog2, p.octaves, p.seed, minCellLog2), p.amplitude);
     if (r.wHills > 0)
         h += int64_t(r.wHills) *
-             scaled(p.hillsBase, gen::fbmSimplex2(x, z, p.hillsCellLog2, p.hillsOctaves, layerSeed(p.seed, HILLS)), p.hillsAmp);
+             scaled(p.hillsBase, gen::fbmSimplex2(x, z, p.hillsCellLog2, p.hillsOctaves, layerSeed(p.seed, HILLS), minCellLog2), p.hillsAmp);
     if (r.wMount > 0)
         h += int64_t(r.wMount) *
-             scaled(p.mountBase, gen::ridged2(x, z, p.mountCellLog2, p.mountOctaves, layerSeed(p.seed, MOUNT)), p.mountAmp);
+             scaled(p.mountBase, gen::ridged2(x, z, p.mountCellLog2, p.mountOctaves, layerSeed(p.seed, MOUNT), minCellLog2), p.mountAmp);
     r.height = static_cast<int32_t>(h >> fx::SHIFT);
     return r;
 }

@@ -5,6 +5,10 @@ layout(location = 0) in uint aPacked;
 layout(std140, binding = 0) uniform Frame {
     mat4 viewProj;     // камера
     vec4 sunDir;       // направление на солнце (xyz)
+    vec4 eye;          // остальное - для плиток дальних уровней (tile.vert)
+    vec4 voxelZone;
+    vec4 fade;
+    vec4 sky;
 };
 layout(location = 0) uniform ivec3 uChunk;   // начало куска в вокселях
 
