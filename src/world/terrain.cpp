@@ -10,7 +10,7 @@ namespace {
 
 // Зерно слоя: у каждого шума своё, перемешанное хешем - слои не повторяют друг друга.
 // Равнины берут само зерно мира - их вид остался прежним.
-enum Layer : int32_t { HILLS = 1, MOUNT, RELIEF, TEMP, RAIN, BELT, UPLIFT };
+enum Layer : int32_t { HILLS = 1, MOUNT, RELIEF, TEMP, RAIN, BELT, UPLIFT, CHAIN };
 inline uint32_t layerSeed(uint32_t seed, Layer l) { return gen::hash2(l, 0x51ED, seed); }
 
 // Треугольная волна периода 2·band: 0 в нуле, +1 на band/2, -1 на -band/2. Пояса климата - линейные,
@@ -38,7 +38,8 @@ SlowFields slowNode(const TerrainParams& p, int32_t nx, int32_t nz, int minCellL
     return {gen::fbmValue2(x, z, p.reliefCellLog2, p.reliefOctaves, layerSeed(p.seed, RELIEF), minCellLog2),
             gen::fbmValue2(x, z, p.climateCellLog2, p.climateOctaves, layerSeed(p.seed, TEMP)),
             gen::fbmValue2(x, z, p.climateCellLog2, p.climateOctaves, layerSeed(p.seed, RAIN)), fx::ONE - soft,
-            gen::fbmSimplex2(x, z, p.upliftCellLog2, p.upliftOctaves, layerSeed(p.seed, UPLIFT))};
+            gen::fbmSimplex2(x, z, p.upliftCellLog2, p.upliftOctaves, layerSeed(p.seed, UPLIFT)),
+            gen::fbmSimplex2(x, z, p.chainCellLog2, p.chainOctaves, layerSeed(p.seed, CHAIN))};
 }
 
 // Линейное смешивание четырёх узлов. Узел с нулевым весом не нужен (точка на линии сетки) - его и не
@@ -50,7 +51,7 @@ SlowFields bilerp(int32_t x, int32_t z, Node node) {
     const fx::q16 fx_ = (x & mask) << (fx::SHIFT - SLOW_STEP_LOG2), fz = (z & mask) << (fx::SHIFT - SLOW_STEP_LOG2);
     const auto mix = [](const SlowFields& a, const SlowFields& b, fx::q16 t) {
         return SlowFields{fx::lerp(a.relief, b.relief, t), fx::lerp(a.temp, b.temp, t), fx::lerp(a.rain, b.rain, t),
-                          fx::lerp(a.belt, b.belt, t), fx::lerp(a.uplift, b.uplift, t)};
+                          fx::lerp(a.belt, b.belt, t), fx::lerp(a.uplift, b.uplift, t), fx::lerp(a.chain, b.chain, t)};
     };
     SlowFields top = node(nx, nz);
     if (fx_) top = mix(top, node(nx + 1, nz), fx_);
@@ -91,15 +92,17 @@ Relief reliefAt(const TerrainParams& p, int32_t x, int32_t z, const SlowFields& 
     const fx::q16 m = slow.relief;
     fx::q16 core = 0;   // 0 у края цепи, 1 на её оси (вид 2: профиль массива)
     fx::q16 up = 0;     // высокогорье: 0..1
+    fx::q16 gate = 0;   // присутствие цепи: 0..1 (Р24)
     if (p.mountainStyle == 0) {
         r.wMount = fx::smoothstep(p.mountFrom, p.mountTo, m);
         r.wHills = fx::mul(fx::smoothstep(p.hillsFrom, p.hillsTo, m), fx::ONE - r.wMount);
     } else {
-        // Р23: горы - вдоль пояса цепи; цепь прерывается, где рельефность низка; по бокам - предгорья-холмы
+        // Р23: горы - вдоль пояса цепи; по бокам - предгорья-холмы. Р24: цепь есть, где есть её «присутствие»
+        // (свой медленный шум) - конец цепи растянут на километры, и рост цепи тоже умножается на присутствие
         // высокогорье: порог пояса ниже (цепь шире), рост - вдвое (ниже)
         up = fx::smoothstep(p.upliftFrom, p.upliftTo, slow.uplift);
         const fx::q16 from = p.chainFrom - fx::mul(up, p.upliftWiden), to = p.chainTo - fx::mul(up, p.upliftWiden);
-        const fx::q16 gate = std::max(fx::smoothstep(p.gateFrom, p.gateTo, m), up);   // в высокогорье цепь не рвётся
+        gate = std::max(fx::smoothstep(p.gateFrom, p.gateTo, slow.chain), up);   // в высокогорье цепь не рвётся
         r.wMount = fx::mul(fx::smoothstep(from, to, slow.belt), gate);
         const fx::q16 foot = fx::mul(fx::smoothstep(from - p.footWidth, from, slow.belt), gate);
         r.wHills = fx::mul(std::max(fx::smoothstep(p.hillsFrom, p.hillsTo, m), foot), fx::ONE - r.wMount);
@@ -120,10 +123,11 @@ Relief reliefAt(const TerrainParams& p, int32_t x, int32_t z, const SlowFields& 
         } else {
             // массив: гладкий подъём к оси цепи; гребни без квадрата, сильнее у оси (25% у края, 100% на оси);
             // «колено»: выше peakKnee каждый воксель даёт половину - иглы оседают в плечи и купола
-            const fx::q16 ridge = gen::ridged2(x, z, p.mountCellLog2, p.mountOctaves, layerSeed(p.seed, MOUNT), minCellLog2, false);
+            const fx::q16 ridge =
+                gen::ridged2(x, z, p.mountCellLog2, p.mountOctaves, layerSeed(p.seed, MOUNT), minCellLog2, false, p.mountGain);
             const fx::q16 ridgeShare = fx::ONE / 4 + fx::mul(core, fx::ONE * 3 / 4);
-            // высокогорье - вдвое: и массив, и гребни, и колено
-            const int64_t scale = fx::ONE + up;
+            // высокогорье - вдвое: и массив, и гребни, и колено; затухающая цепь - ниже (оседает, а не обрывается)
+            const int64_t scale = fx::mul(fx::ONE + up, gate);
             const int32_t rise = int32_t((int64_t(core) * p.massifAmp) >> fx::SHIFT) +
                                  int32_t((int64_t(fx::mul(ridge, ridgeShare)) * p.ridgeAmp) >> fx::SHIFT);
             hm = p.mountBase + int32_t((rise * scale) >> fx::SHIFT);

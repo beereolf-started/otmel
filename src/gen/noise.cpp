@@ -144,21 +144,24 @@ fx::q16 fbmValue2(int32_t x, int32_t z, int firstCellLog2, int octaves, uint32_t
     return fbm<value2>(x, z, firstCellLog2, octaves, seed, minCellLog2);
 }
 
-fx::q16 ridged2(int32_t x, int32_t z, int firstCellLog2, int octaves, uint32_t seed, int minCellLog2, bool squared) {
+fx::q16 ridged2(int32_t x, int32_t z, int firstCellLog2, int octaves, uint32_t seed, int minCellLog2, bool squared,
+                fx::q16 gain) {
     // Гребень там, где шум проходит через ноль: 1 - |n| даёт острый излом, квадрат - сужает гребень.
     // Вес следующей октавы = 2 · (вклад предыдущей), не больше 1: на склонах и гребнях - мелкие гребешки,
     // в долинах (вклад мал) мелочь гаснет - дно ровное, как у настоящих гор.
+    // размах октавы amp: 1, gain, gain², ... (при gain = 0.5 - ровно прежние сдвиги: 2^16 делится нацело)
     int64_t sum = 0, norm = 0;
     int64_t weight = fx::ONE;
-    for (int o = 0; o < octaves && firstCellLog2 - o >= 1; ++o) {
-        norm += static_cast<int64_t>(fx::ONE) >> o;
+    int64_t amp = fx::ONE;
+    for (int o = 0; o < octaves && firstCellLog2 - o >= 1; ++o, amp = (amp * gain) >> fx::SHIFT) {
+        norm += amp;
         if (firstCellLog2 - o < minCellLog2) break;   // дальше только мельче
         const fx::q16 n = simplex2(x, z, firstCellLog2 - o, octaveSeed(seed, o));
         int64_t r = fx::ONE - (n < 0 ? -n : n);   // [0, 1]
         if (squared) r = (r * r) >> 16;
         r = (r * weight) >> 16;
         weight = r * 2 > fx::ONE ? fx::ONE : r * 2;
-        sum += r >> o;
+        sum += (r * amp) >> fx::SHIFT;
     }
     return static_cast<fx::q16>((sum << fx::SHIFT) / norm);
 }
