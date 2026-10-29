@@ -77,7 +77,7 @@ int main(int argc, char** argv) {
     std::vector<uint8_t> img(size_t(n) * n * 3), zones(size_t(n) * n * 3);
     const float colors[6][3] = {{1, 0, 1}, {0.47f, 0.47f, 0.5f}, {0.45f, 0.32f, 0.2f}, {0.36f, 0.58f, 0.25f},
                                 {0.85f, 0.8f, 0.55f}, {0.93f, 0.95f, 0.98f}};
-    int64_t cnt[3] = {}, mixed = 0, snow = 0, sand = 0;
+    int64_t cnt[3] = {}, mixed = 0, snow = 0, sand = 0, sea = 0;
     int32_t hmin = INT32_MAX, hmax = INT32_MIN;
     int topX = 0, topZ = 0;
     for (int z = 0; z < n; ++z)
@@ -93,8 +93,13 @@ int main(int argc, char** argv) {
             const float sx = (H(x + 1, z) - H(x - 1, z)) / step, sz = (H(x, z + 1) - H(x, z - 1)) / step;   // свет с северо-запада
             const float light = std::clamp(0.72f + 0.9f * (sx + sz), 0.25f, 1.25f);
             const float alt = std::clamp(0.8f + 0.2f * float(r.height) / float(160 * world::VOXELS_PER_BLOCK), 0.6f, 1.15f);
-            const float* c = colors[std::min<int>(cov[i].top, 5)];
-            for (int k = 0; k < 3; ++k) img[i * 3 + k] = uint8_t(std::clamp(c[k] * light * alt * 255.0f, 0.0f, 255.0f));
+            const float water[3] = {0.16f, 0.32f, 0.52f};
+            const bool wet = r.height < p.seaLevel;   // Р25: под водой - синий, темнее с глубиной
+            const float depthK = wet ? std::clamp(1.0f - float(p.seaLevel - r.height) / (60.0f * world::VOXELS_PER_BLOCK), 0.45f, 1.0f) : 1.0f;
+            const float* c = wet ? water : colors[std::min<int>(cov[i].top, 5)];
+            for (int k = 0; k < 3; ++k)
+                img[i * 3 + k] = uint8_t(std::clamp(wet ? c[k] * depthK * 255.0f : c[k] * light * alt * 255.0f, 0.0f, 255.0f));
+            if (wet) ++sea;
             // 2) зоны: равнины - зелёный, холмы - охра, горы - бурый, смешанные - в пропорции весов
             const float wp = r.wPlains / 65536.0f, wh = r.wHills / 65536.0f, wm = r.wMount / 65536.0f;
             const float zc[3][3] = {{0.45f, 0.7f, 0.35f}, {0.85f, 0.7f, 0.35f}, {0.45f, 0.3f, 0.25f}};
@@ -112,6 +117,7 @@ int main(int argc, char** argv) {
     std::printf("карта %d×%d точек по %d блоков (%d×%d блоков), центр (%d, %d)\n", n, n, bpp, n * bpp, n * bpp, cx, cz);
     std::printf("преобладают: равнины %.1f%%, холмы %.1f%%, горы %.1f%%; в переходе (смесь) %.1f%%\n",
                 100 * cnt[0] / all, 100 * cnt[1] / all, 100 * cnt[2] / all, 100 * mixed / all);
+    std::printf("море: %.1f%%\n", 100 * sea / all);
     std::printf("покров: снег %.1f%%, песок %.1f%%; высоты %.1f .. %.1f блоков\n", 100 * snow / all, 100 * sand / all,
                 hmin / 16.0, hmax / 16.0);
     std::printf("высшая точка - блок (%d, %d)\n", topX, topZ);

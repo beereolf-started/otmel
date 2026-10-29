@@ -42,7 +42,9 @@ struct CmdDrawTile {
     float morphStart, morphEnd;
     uint8_t quadrants;
 };
-using Command = std::variant<CmdClear, CmdCamera, CmdDrawChunk, CmdDrawTile>;
+// Море (Р25): полупрозрачная плоскость на уровне level (блоки), квадрат ±extent вокруг камеры; рисуется последней
+struct CmdDrawWater { float level, extent; };
+using Command = std::variant<CmdClear, CmdCamera, CmdDrawChunk, CmdDrawTile, CmdDrawWater>;
 
 struct CommandList {
     std::vector<Command> commands;
@@ -50,6 +52,7 @@ struct CommandList {
     void camera(const CmdCamera& c) { commands.push_back(c); }
     void drawChunk(MeshId m, glm::ivec3 origin) { commands.push_back(CmdDrawChunk{m, origin}); }
     void drawTile(const CmdDrawTile& t) { commands.push_back(t); }
+    void drawWater(float level, float extent) { commands.push_back(CmdDrawWater{level, extent}); }
     void reset() { commands.clear(); }
 };
 

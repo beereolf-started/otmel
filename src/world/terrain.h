@@ -50,13 +50,24 @@ struct TerrainParams {
     int upliftCellLog2 = 18, upliftOctaves = 2;
     fx::q16 upliftFrom = fx::ONE * 30 / 100, upliftTo = fx::ONE * 55 / 100;
     fx::q16 upliftWiden = fx::ONE * 17 / 100;                           // на столько ниже порог пояса - цепь шире
+    // моря и плато (Р25). Материковость - медленный шум (ячейка 16 км): ниже oceanFrom - океан, выше oceanTo -
+    // суша, между - берег (тем же смешением, без ступеньки). Суша - на landRise выше моря.
+    int continentCellLog2 = 18, continentOctaves = 3;
+    fx::q16 oceanFrom = -fx::ONE * 22 / 100, oceanTo = -fx::ONE * 10 / 100;
+    int32_t landRise = 16 * VOXELS_PER_BLOCK;          // равнины суши - в среднем на 16 блоков выше моря
+    int32_t oceanDepth = 40 * VOXELS_PER_BLOCK;        // дно океана - на 40 блоков ниже моря (± 6)
+    // плато: медленный шум (ячейка 4096 блоков) поднимает ВЕСЬ рельеф суши на 0..plateauRise - широкие
+    // спокойные равнины на разных высотах, переходы между ними - километры
+    int plateauCellLog2 = 16, plateauOctaves = 2;
+    fx::q16 plateauFrom = -fx::ONE * 15 / 100, plateauTo = fx::ONE * 45 / 100;
+    int32_t plateauRise = 90 * VOXELS_PER_BLOCK;
     // климат
     int32_t climateBand = 20000 * VOXELS_PER_BLOCK;   // от самого холодного пояса до самого жаркого (как в TFC)
     fx::q16 tempMid = 8 * DEG, tempSwing = 22 * DEG;  // на уровне моря: от -14 до +30 °C по поясам
     fx::q16 tempNoise = 5 * DEG;                       // местные отклонения ±5 °C
     fx::q16 rainMid = 250 * DEG, rainSwing = 250 * DEG, rainNoise = 75 * DEG;   // осадки 0..500 мм в год
     int climateCellLog2 = 15, climateOctaves = 2;      // шум климата: ячейка 2048 блоков
-    int32_t seaLevel = 32 * VOXELS_PER_BLOCK;          // от него отсчёт падения температуры с высотой
+    int32_t seaLevel = 32 * VOXELS_PER_BLOCK;          // уровень моря (Р25); от него же - падение температуры с высотой
     fx::q16 lapsePerVoxel = 184;                       // 0.045 °C на блок: снег в умеренном поясе - с ~220 блоков
     fx::q16 snowBelow = -2 * DEG;                      // снег - где средняя температура ниже
     fx::q16 desertRain = 100 * DEG, desertTemp = 15 * DEG;   // пустыня: сухо и тепло
@@ -71,6 +82,7 @@ struct SlowFields {
     fx::q16 belt;                 // пояс горной цепи (Р23): 1 на оси цепи, к краям падает
     fx::q16 uplift;               // поднятие (Р23): шум высокогорья
     fx::q16 chain;                // присутствие цепей (Р24)
+    fx::q16 continent, plateau;   // материковость и плато (Р25)
 };
 SlowFields slowAt(const TerrainParams& p, int32_t x, int32_t z, int minCellLog2 = 0);
 // Для плотной выборки: узлы прямоугольника [x0..x1]×[z0..z1] (воксели, включительно) - по одному разу
@@ -84,7 +96,8 @@ struct SlowGrid {
 // Форма рельефа в столбце: высота поверхности (верхний твёрдый воксель) и веса трёх видов, сумма весов = 1
 struct Relief {
     int32_t height;
-    fx::q16 wPlains, wHills, wMount;
+    fx::q16 wPlains, wHills, wMount;   // веса видов рельефа СУШИ (их сумма = 1)
+    fx::q16 land;                      // доля суши: 0 - океан, 1 - суша, между - берег (Р25)
 };
 // minCellLog2 - для дальних уровней (Р20): октавы мельче 2^minCellLog2 вокселей не считаются
 Relief reliefAt(const TerrainParams& p, int32_t x, int32_t z, int minCellLog2 = 0);

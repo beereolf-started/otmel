@@ -271,6 +271,7 @@ int main(int argc, char** argv) {
         chunksDrawn = voxels.draw(fr, frame);
         const auto tFar = clock_t_::now();
         farTerrain.frame(lod, eye, fr, voxels, frame, farStats);
+        frame.drawWater(float(tp.seaLevel) / world::VOXELS_PER_BLOCK, float(lod.drawDistance));   // Р25: море - последним
         part[1] = std::max(part[1], msSince(tFar));
         const auto tExe = clock_t_::now();
         gpu->execute(frame, fs);

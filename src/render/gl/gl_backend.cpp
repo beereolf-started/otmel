@@ -85,6 +85,8 @@ public:
         glDeleteVertexArrays(1, &tileVao_);
         glDeleteProgram(program_);
         glDeleteProgram(tileProgram_);
+        glDeleteProgram(waterProgram_);
+        glDeleteVertexArrays(1, &emptyVao_);
         if (maskTex_) glDeleteTextures(1, &maskTex_);
         destroyTargets();
         SDL_GL_DestroyContext(context_);
@@ -93,7 +95,9 @@ public:
     bool init(const std::string& shaderDir, int w, int h) {
         program_ = loadProgram(shaderDir, "terrain");
         tileProgram_ = loadProgram(shaderDir, "tile");
-        if (!program_ || !tileProgram_) return false;
+        waterProgram_ = loadProgram(shaderDir, "water");
+        if (!program_ || !tileProgram_ || !waterProgram_) return false;
+        glCreateVertexArrays(1, &emptyVao_);   // вода - без вершин: углы из номера вершины
 
         // Вершина куска - одно целое: атрибут 0, uint, без перевода в float
         glCreateVertexArrays(1, &vao_);
@@ -237,6 +241,21 @@ public:
                         }
                 }
                 ++stats.tiles;
+            } else if (auto* w = std::get_if<CmdDrawWater>(&cmd)) {
+                // полупрозрачная: смешивание по альфе, глубину не пишем (видно дно), видна с обеих сторон
+                glUseProgram(waterProgram_);
+                glBindVertexArray(emptyVao_);
+                current = waterProgram_;
+                glProgramUniform2f(waterProgram_, 0, w->level, w->extent);
+                glEnable(GL_BLEND);
+                glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+                glDepthMask(GL_FALSE);
+                glDisable(GL_CULL_FACE);
+                glDrawArrays(GL_TRIANGLES, 0, 6);
+                glEnable(GL_CULL_FACE);
+                glDepthMask(GL_TRUE);
+                glDisable(GL_BLEND);
+                ++stats.drawCalls;
             }
         }
     }
@@ -302,7 +321,7 @@ private:
 
     SDL_Window* window_;
     SDL_GLContext context_;
-    GLuint program_ = 0, tileProgram_ = 0, vao_ = 0, tileVao_ = 0, ibo_ = 0, tileIbo_ = 0, ubo_ = 0;
+    GLuint program_ = 0, tileProgram_ = 0, waterProgram_ = 0, emptyVao_ = 0, vao_ = 0, tileVao_ = 0, ibo_ = 0, tileIbo_ = 0, ubo_ = 0;
     GLuint fbo_ = 0, colorRb_ = 0, depthRb_ = 0, maskTex_ = 0;
     int maskSide_ = 0;
     int width_ = 1, height_ = 1;

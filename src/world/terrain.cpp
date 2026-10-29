@@ -10,7 +10,7 @@ namespace {
 
 // Зерно слоя: у каждого шума своё, перемешанное хешем - слои не повторяют друг друга.
 // Равнины берут само зерно мира - их вид остался прежним.
-enum Layer : int32_t { HILLS = 1, MOUNT, RELIEF, TEMP, RAIN, BELT, UPLIFT, CHAIN };
+enum Layer : int32_t { HILLS = 1, MOUNT, RELIEF, TEMP, RAIN, BELT, UPLIFT, CHAIN, CONTINENT, PLATEAU };
 inline uint32_t layerSeed(uint32_t seed, Layer l) { return gen::hash2(l, 0x51ED, seed); }
 
 // Треугольная волна периода 2·band: 0 в нуле, +1 на band/2, -1 на -band/2. Пояса климата - линейные,
@@ -39,7 +39,9 @@ SlowFields slowNode(const TerrainParams& p, int32_t nx, int32_t nz, int minCellL
             gen::fbmValue2(x, z, p.climateCellLog2, p.climateOctaves, layerSeed(p.seed, TEMP)),
             gen::fbmValue2(x, z, p.climateCellLog2, p.climateOctaves, layerSeed(p.seed, RAIN)), fx::ONE - soft,
             gen::fbmSimplex2(x, z, p.upliftCellLog2, p.upliftOctaves, layerSeed(p.seed, UPLIFT)),
-            gen::fbmSimplex2(x, z, p.chainCellLog2, p.chainOctaves, layerSeed(p.seed, CHAIN))};
+            gen::fbmSimplex2(x, z, p.chainCellLog2, p.chainOctaves, layerSeed(p.seed, CHAIN)),
+            gen::fbmSimplex2(x, z, p.continentCellLog2, p.continentOctaves, layerSeed(p.seed, CONTINENT)),
+            gen::fbmSimplex2(x, z, p.plateauCellLog2, p.plateauOctaves, layerSeed(p.seed, PLATEAU))};
 }
 
 // Линейное смешивание четырёх узлов. Узел с нулевым весом не нужен (точка на линии сетки) - его и не
@@ -51,7 +53,8 @@ SlowFields bilerp(int32_t x, int32_t z, Node node) {
     const fx::q16 fx_ = (x & mask) << (fx::SHIFT - SLOW_STEP_LOG2), fz = (z & mask) << (fx::SHIFT - SLOW_STEP_LOG2);
     const auto mix = [](const SlowFields& a, const SlowFields& b, fx::q16 t) {
         return SlowFields{fx::lerp(a.relief, b.relief, t), fx::lerp(a.temp, b.temp, t), fx::lerp(a.rain, b.rain, t),
-                          fx::lerp(a.belt, b.belt, t), fx::lerp(a.uplift, b.uplift, t), fx::lerp(a.chain, b.chain, t)};
+                          fx::lerp(a.belt, b.belt, t), fx::lerp(a.uplift, b.uplift, t), fx::lerp(a.chain, b.chain, t),
+                          fx::lerp(a.continent, b.continent, t), fx::lerp(a.plateau, b.plateau, t)};
     };
     SlowFields top = node(nx, nz);
     if (fx_) top = mix(top, node(nx + 1, nz), fx_);
@@ -90,29 +93,39 @@ Relief reliefAt(const TerrainParams& p, int32_t x, int32_t z, const SlowFields& 
     // веса: плавные ступени по рельефности; горы забирают свою долю первыми, холмы - из остатка,
     // равнины - всё оставшееся. Сумма = 1 точно, по построению.
     const fx::q16 m = slow.relief;
+    // Р25: суша или океан. В глубоком океане рельеф суши не считаем вовсе - только дно.
+    r.land = fx::smoothstep(p.oceanFrom, p.oceanTo, slow.continent);
+    const fx::q16 base = gen::fbm2(x, z, p.firstCellLog2, p.octaves, p.seed, minCellLog2);   // шум равнин - он же дна
+    const int32_t floorH = p.seaLevel - p.oceanDepth + int32_t((int64_t(base) * (6 * VOXELS_PER_BLOCK)) >> fx::SHIFT);
+    if (r.land == 0) {
+        r.wPlains = fx::ONE;
+        r.wHills = r.wMount = 0;
+        r.height = floorH;
+        return r;
+    }
     fx::q16 core = 0;   // 0 у края цепи, 1 на её оси (вид 2: профиль массива)
     fx::q16 up = 0;     // высокогорье: 0..1
     fx::q16 gate = 0;   // присутствие цепи: 0..1 (Р24)
     if (p.mountainStyle == 0) {
-        r.wMount = fx::smoothstep(p.mountFrom, p.mountTo, m);
-        r.wHills = fx::mul(fx::smoothstep(p.hillsFrom, p.hillsTo, m), fx::ONE - r.wMount);
+        r.wMount = fx::mul(fx::smoothstep(p.mountFrom, p.mountTo, m), r.land);
+        r.wHills = fx::mul(fx::mul(fx::smoothstep(p.hillsFrom, p.hillsTo, m), fx::ONE - r.wMount), r.land);
     } else {
         // Р23: горы - вдоль пояса цепи; по бокам - предгорья-холмы. Р24: цепь есть, где есть её «присутствие»
         // (свой медленный шум) - конец цепи растянут на километры, и рост цепи тоже умножается на присутствие
         // высокогорье: порог пояса ниже (цепь шире), рост - вдвое (ниже)
         up = fx::smoothstep(p.upliftFrom, p.upliftTo, slow.uplift);
         const fx::q16 from = p.chainFrom - fx::mul(up, p.upliftWiden), to = p.chainTo - fx::mul(up, p.upliftWiden);
-        gate = std::max(fx::smoothstep(p.gateFrom, p.gateTo, slow.chain), up);   // в высокогорье цепь не рвётся
+        gate = fx::mul(std::max(fx::smoothstep(p.gateFrom, p.gateTo, slow.chain), up), r.land);   // в высокогорье цепь не рвётся; у моря - гаснет
         r.wMount = fx::mul(fx::smoothstep(from, to, slow.belt), gate);
         const fx::q16 foot = fx::mul(fx::smoothstep(from - p.footWidth, from, slow.belt), gate);
-        r.wHills = fx::mul(std::max(fx::smoothstep(p.hillsFrom, p.hillsTo, m), foot), fx::ONE - r.wMount);
+        r.wHills = fx::mul(fx::mul(std::max(fx::smoothstep(p.hillsFrom, p.hillsTo, m), foot), fx::ONE - r.wMount), r.land);
         core = fx::smoothstep(from, fx::ONE, slow.belt);
     }
     r.wPlains = fx::ONE - r.wMount - r.wHills;
     // высота - сумма видов с весами; вид с нулевым весом не считаем вовсе (в чистой зоне - одна формула)
     int64_t h = 0;
     if (r.wPlains > 0)
-        h += int64_t(r.wPlains) * scaled(p.baseHeight, gen::fbm2(x, z, p.firstCellLog2, p.octaves, p.seed, minCellLog2), p.amplitude);
+        h += int64_t(r.wPlains) * scaled(p.baseHeight, base, p.amplitude);
     if (r.wHills > 0)
         h += int64_t(r.wHills) *
              scaled(p.hillsBase, gen::fbmSimplex2(x, z, p.hillsCellLog2, p.hillsOctaves, layerSeed(p.seed, HILLS), minCellLog2), p.hillsAmp);
@@ -136,7 +149,17 @@ Relief reliefAt(const TerrainParams& p, int32_t x, int32_t z, const SlowFields& 
         }
         h += int64_t(r.wMount) * hm;
     }
-    r.height = static_cast<int32_t>(h >> fx::SHIFT);
+    // Р25: суша поднята над морем на landRise плюс плато (0..plateauRise); формулы видов рельефа отсчитаны от
+    // прежней базы 32 блока - сдвигаем весь рельеф суши разом (и равнины, и холмы, и подножия гор)
+    const int32_t ground = p.seaLevel + p.landRise - 32 * VOXELS_PER_BLOCK +
+                           int32_t((int64_t(fx::smoothstep(p.plateauFrom, p.plateauTo, slow.plateau)) * p.plateauRise) >> fx::SHIFT);
+    const int32_t landH = static_cast<int32_t>(h >> fx::SHIFT) + ground;
+    // берег: суша плавно уходит на дно - то же смешивание весом, без ступеньки
+    int32_t hh = floorH + int32_t((int64_t(r.land) * (landH - floorH)) >> fx::SHIFT);
+    // мягкий потолок мира (Р10: до 1000 блоков): выше 960 каждый блок даёт четверть
+    constexpr int32_t CEIL = 960 * VOXELS_PER_BLOCK;
+    if (hh > CEIL) hh = CEIL + (hh - CEIL) / 4;
+    r.height = hh;
     return r;
 }
 
@@ -160,6 +183,8 @@ fx::q16 temperatureAt(const TerrainParams& p, const Climate& c, int32_t height) 
 }
 
 Cover coverAt(const TerrainParams& p, const Climate& c, int32_t height) {
+    // Р25: дно и берег - песок (до 2 блоков над водой)
+    if (height < p.seaLevel + 2 * VOXELS_PER_BLOCK) return {SAND, SAND};
     const fx::q16 t = temperatureAt(p, c, height);
     if (t < p.snowBelow) return {SNOW, DIRT};
     if (c.rain < p.desertRain && t > p.desertTemp) return {SAND, SAND};

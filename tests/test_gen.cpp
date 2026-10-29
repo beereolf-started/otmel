@@ -185,16 +185,22 @@ int main() {
     // Эта сумма должна совпадать в отладочной и быстрой сборке и на любой машине (Р2, Р16)
     std::printf("сумма куска (3,%d,-5) при зерне 1337: %016llx\n", cy0, static_cast<unsigned long long>(a));
     {
-        // горный кусок у вершины цепи (блок 3896, 828; Р23): хребты, симплекс, пояс цепи, смешение весов,
-        // климат и снег - тоже до бита
+        // горный кусок у самой высокой вершины округи (ищем сами - тест не зависит от того, где сейчас горы):
+        // хребты, симплекс, пояс цепи, смешение весов, климат и снег - тоже до бита
+        int bx = 0, bz = 0, best = INT32_MIN;
+        for (int z = -16; z < 16; ++z)
+            for (int x = -16; x < 16; ++x) {
+                const int32_t h = world::reliefAt(p, x * 16 * 1024, z * 16 * 1024).height;   // через 1024 блока
+                if (h > best) { best = h; bx = x * 512; bz = z * 512; }
+            }
         world::ColumnHeights hm;
-        world::columnHeights(p, 1948, 414, hm);
+        world::columnHeights(p, bx, bz, hm);
         const int cy = (hm.maxH >> world::CHUNK_LOG2) - 1;
         bool snow = false;
         for (auto& row : hm.cover) for (auto& cv : row) if (cv.top == world::SNOW) snow = true;
         CHECK(snow && hm.maxH > 150 * world::VOXELS_PER_BLOCK, "у вершины цепи - горы выше 150 блоков и снег");
-        std::printf("сумма горного куска (1948,%d,414) при зерне 1337: %016llx\n", cy,
-                    static_cast<unsigned long long>(chunkSum(p, 1948, cy, 414)));
+        std::printf("сумма горного куска (%d,%d,%d) при зерне 1337: %016llx (вершина %.0f блоков)\n", bx, cy, bz,
+                    static_cast<unsigned long long>(chunkSum(p, bx, cy, bz)), hm.maxH / 16.0);
     }
 
     // поворот битовой таблицы 32×32 - против побитового эталона на случайных таблицах
