@@ -2,3 +2,5 @@ build/
 out/
 .vs/
 *.user
+build-log.txt
+*.log
