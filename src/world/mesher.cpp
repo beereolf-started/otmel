@@ -1,5 +1,6 @@
 #include "world/mesher.h"
 
+#include <algorithm>
 #include <bit>
 #include <cstring>
 
@@ -41,11 +42,12 @@ void meshImpl(ChunkPos pos, const Chunk* vox, const ColumnHeights& hm, const uin
     stats = {};
     const int32_t y0 = pos.y * CHUNK;
     // Твёрдость столбцов с каймой по x и z (34×34), 34 бита по y: по высоте - формулой, минус воздух пещер
-    // (Р26). Из них - и внутренние столбцы, и кайма горизонтальных масок.
+    // (Р26). Из них - и внутренние столбцы, и кайма горизонтальных масок. Р28: вода над дном - тоже «твёрдое»
+    // для граней (пока непрозрачна): поверхность столбца - max(дно, вода); пещеры - только в грунте, под дном.
     static thread_local uint64_t solid[CHUNK + 2][CHUNK + 2];
     for (int z = 0; z < CHUNK + 2; ++z)
         for (int x = 0; x < CHUNK + 2; ++x)
-            solid[z][x] = columnFromHeight(hm.h[z][x], y0) & ~(air ? air[z][x] : 0);
+            solid[z][x] = columnFromHeight(std::max(hm.h[z][x], hm.water[z][x]), y0) & ~(air ? air[z][x] : 0);
 
     // ─── 1. Маски столбцов вдоль трёх осей: 34 бита (кайма + 32 + кайма) ─────────
     // col[axis][u][v] - столбец вдоль оси d в точке (u, v) её плоскости
@@ -126,7 +128,8 @@ void meshImpl(ChunkPos pos, const Chunk* vox, const ColumnHeights& hm, const uin
                         int p[3];
                         p[ax.u] = u; p[ax.v] = v; p[ax.d] = layer;
                         const Material m = vox ? vox->at(p[0], p[1], p[2])
-                                               : columnMaterial(hm.h[p[2] + 1][p[0] + 1], hm.cover[p[2]][p[0]], y0 + p[1]);
+                                               : columnMaterial(hm.h[p[2] + 1][p[0] + 1], hm.cover[p[2]][p[0]], y0 + p[1],
+                                                                hm.water[p[2] + 1][p[0] + 1]);
                         int k = 0;
                         while (k < nmats && mats[k].mat != m) ++k;
                         if (k == nmats) { mats[k].mat = m; std::memset(mats[k].rows, 0, sizeof(mats[k].rows)); ++nmats; }

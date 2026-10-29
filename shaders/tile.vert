@@ -20,7 +20,7 @@ layout(location = 4) uniform int uDebug;      // 1 - раскраска по у�
 layout(location = 0) out vec3 vColor;
 layout(location = 1) out vec3 vWorld;
 
-const vec3 COLORS[6] = vec3[](vec3(1, 0, 1), vec3(0.47, 0.47, 0.5), vec3(0.45, 0.32, 0.2), vec3(0.36, 0.58, 0.25), vec3(0.85, 0.8, 0.55), vec3(0.93, 0.95, 0.98));
+const vec3 COLORS[7] = vec3[](vec3(1, 0, 1), vec3(0.47, 0.47, 0.5), vec3(0.45, 0.32, 0.2), vec3(0.36, 0.58, 0.25), vec3(0.85, 0.8, 0.55), vec3(0.93, 0.95, 0.98), vec3(0.16, 0.36, 0.56));
 const vec3 LEVEL_TINT[4] = vec3[](vec3(1.3, 0.8, 0.8), vec3(0.8, 1.3, 0.8), vec3(0.8, 0.8, 1.3), vec3(1.3, 1.3, 0.7));
 
 float lightOf(vec3 n) { return 0.35 + 0.65 * max(dot(n, normalize(sunDir.xyz)), 0.0); }
@@ -32,7 +32,7 @@ float lightOf(vec3 n) { return 0.35 + 0.65 * max(dot(n, normalize(sunDir.xyz)), 
 // Боковина ступеньки высотой |g|: верхний воксель - покров, остальное - слой под ним.
 vec3 stairColor(vec2 g, uint top, uint under, vec3 view) {
     const vec3 up = vec3(0, 1, 0);
-    vec3 ct = COLORS[min(top, 5u)], cu = COLORS[min(under, 5u)];
+    vec3 ct = COLORS[min(top, 6u)], cu = COLORS[min(under, 6u)];
     float ax = abs(g.x), az = abs(g.y);
     vec3 nx = vec3(-sign(g.x), 0, 0), nz = vec3(0, 0, -sign(g.y));
     float wt = max(view.y, 0.0);

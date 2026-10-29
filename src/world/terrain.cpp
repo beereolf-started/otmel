@@ -200,10 +200,13 @@ void columnHeights(const TerrainParams& p, int32_t chunkX, int32_t chunkZ, Colum
     out.maxH = INT32_MIN;
     for (int z = 0; z < CHUNK + 2; ++z) {
         for (int x = 0; x < CHUNK + 2; ++x) {
-            const int32_t h = reliefAt(p, x0 + x, z0 + z, slow.at(x0 + x, z0 + z)).height;
-            out.h[z][x] = h;
-            out.minH = std::min(out.minH, h);
-            out.maxH = std::max(out.maxH, h);
+            const Relief r = reliefAt(p, x0 + x, z0 + z, slow.at(x0 + x, z0 + z));
+            const int32_t w = waterLevelAt(p, r);
+            out.h[z][x] = r.height;
+            out.water[z][x] = w;
+            const int32_t surface = std::max(r.height, w);   // Р28: поверхность - дно или вода над ним
+            out.minH = std::min(out.minH, surface);
+            out.maxH = std::max(out.maxH, surface);
         }
     }
     // климат и покров - только своим столбцам, не кайме
@@ -217,7 +220,12 @@ void fillChunk(const ColumnHeights& heights, Chunk& c) {
     for (int z = 0; z < CHUNK; ++z)
         for (int x = 0; x < CHUNK; ++x)
             for (int y = 0; y < CHUNK; ++y)
-                c.at(x, y, z) = columnMaterial(heights.h[z + 1][x + 1], heights.cover[z][x], y0 + y);
+                c.at(x, y, z) = columnMaterial(heights.h[z + 1][x + 1], heights.cover[z][x], y0 + y, heights.water[z + 1][x + 1]);
+}
+
+int32_t waterLevelAt(const TerrainParams& p, const Relief& r) {
+    // море - в океанических областях и на их берегах (доля суши < 1); на материке ниже уровня моря - сухо
+    return r.land < fx::ONE ? p.seaLevel - 1 : NO_WATER;
 }
 
 uint64_t checksum(const Chunk& c) {

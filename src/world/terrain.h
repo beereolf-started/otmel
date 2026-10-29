@@ -136,8 +136,10 @@ Cover coverAt(const TerrainParams& p, const Climate& c, int32_t height);
 // Материал нетронутого рельефа - формулой от высоты поверхности и покрова столбца (Р2, Р22): выше поверхности
 // воздух, в верхнем вокселе покров, под ним 3 блока подпокровного слоя, ниже камень. Его же пишет fillChunk;
 // сетке нетронутого куска массив вокселей не нужен вовсе - материал нужен только у видимых граней.
-inline Material columnMaterial(int32_t top, Cover cv, int32_t wy) {
-    if (wy > top) return AIR;
+// Р28: выше дна до уровня воды столбца (water - верхний воксель воды, NO_WATER - сухо) - вода.
+constexpr int32_t NO_WATER = INT32_MIN;
+inline Material columnMaterial(int32_t top, Cover cv, int32_t wy, int32_t water = NO_WATER) {
+    if (wy > top) return wy <= water ? WATER : AIR;
     if (wy == top) return cv.top;
     if (wy >= top - 3 * VOXELS_PER_BLOCK) return cv.under;
     return STONE;
@@ -146,10 +148,16 @@ inline Material columnMaterial(int32_t top, Cover cv, int32_t wy) {
 // Высоты столбцов куска С КАЙМОЙ в один воксель: [-1..32] по x и z, 34×34. Кайма нужна сетке: грань на краю
 // куска видна, только если сосед за краем - воздух, а соседа считаем той же формулой, не трогая чужой кусок.
 struct ColumnHeights {
-    int32_t h[CHUNK + 2][CHUNK + 2];   // [z+1][x+1], высота поверхности в вокселях (верхний твёрдый воксель)
+    int32_t h[CHUNK + 2][CHUNK + 2];   // [z+1][x+1], высота дна (верхний воксель грунта), воксели
+    int32_t water[CHUNK + 2][CHUNK + 2];   // Р28: верхний воксель воды столбца или NO_WATER
     Cover cover[CHUNK][CHUNK];         // [z][x], только без каймы: покров нужен лишь своим вокселям
-    int32_t minH, maxH;
+    int32_t minH, maxH;                // по поверхности - max(дно, вода)
 };
+
+// Уровень воды столбца (Р28) - поле, как высота рельефа: вода не одна на мир, а там, где её даёт биом.
+// Сейчас - море в океанических областях (доля суши < 1); низина ниже уровня моря на материке - сухая.
+// Верхний воксель воды или NO_WATER; вода есть, только если он выше дна.
+int32_t waterLevelAt(const TerrainParams& p, const Relief& r);
 
 void columnHeights(const TerrainParams& p, int32_t chunkX, int32_t chunkZ, ColumnHeights& out);
 
