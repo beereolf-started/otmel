@@ -4,6 +4,7 @@
 
 #include "gen/hash.h"
 #include "gen/noise.h"
+#include "world/rivers.h"
 
 namespace world {
 namespace {
@@ -85,10 +86,22 @@ SlowFields SlowGrid::at(int32_t x, int32_t z) const {
 }
 
 Relief reliefAt(const TerrainParams& p, int32_t x, int32_t z, int minCellLog2) {
-    return reliefAt(p, x, z, slowAt(p, x, z, minCellLog2), minCellLog2);
+    RiverSet rivers;
+    rivers.build(p, x, z, x, z);
+    return reliefAt(p, x, z, slowAt(p, x, z, minCellLog2), minCellLog2, &rivers);
 }
 
-Relief reliefAt(const TerrainParams& p, int32_t x, int32_t z, const SlowFields& slow, int minCellLog2) {
+Relief reliefAt(const TerrainParams& p, int32_t x, int32_t z, const SlowFields& slow, int minCellLog2,
+                const RiverSet* rivers) {
+    Relief r = baseReliefAt(p, x, z, slow, minCellLog2);
+    // Р28: море - в океанических областях и на их берегах (доля суши < 1); на материке ниже уровня моря - сухо
+    r.water = r.land < fx::ONE ? p.seaLevel - 1 : NO_WATER;
+    // Р29: реки и озёра - прорезают долины, дают свою воду
+    if (rivers) rivers->apply(p, x, z, r.height, r.water, r.shore);
+    return r;
+}
+
+Relief baseReliefAt(const TerrainParams& p, int32_t x, int32_t z, const SlowFields& slow, int minCellLog2) {
     Relief r;
     // веса: плавные ступени по рельефности; горы забирают свою долю первыми, холмы - из остатка,
     // равнины - всё оставшееся. Сумма = 1 точно, по построению.
@@ -196,23 +209,29 @@ void columnHeights(const TerrainParams& p, int32_t chunkX, int32_t chunkZ, Colum
     // медленные поля - по узлам сетки: на столбец с каймой (34×34 вокселя) - 2-3 узла по стороне вместо 1156
     static thread_local SlowGrid slow;
     slow.build(p, x0, z0, x0 + CHUNK + 1, z0 + CHUNK + 1);
+    // Р29: звенья рек и озёра, задевающие кусок, - один раз на кусок
+    static thread_local RiverSet rivers;
+    rivers.build(p, x0, z0, x0 + CHUNK + 1, z0 + CHUNK + 1);
+    static thread_local bool shore[CHUNK + 2][CHUNK + 2];
     out.minH = INT32_MAX;
     out.maxH = INT32_MIN;
     for (int z = 0; z < CHUNK + 2; ++z) {
         for (int x = 0; x < CHUNK + 2; ++x) {
-            const Relief r = reliefAt(p, x0 + x, z0 + z, slow.at(x0 + x, z0 + z));
-            const int32_t w = waterLevelAt(p, r);
+            const Relief r = reliefAt(p, x0 + x, z0 + z, slow.at(x0 + x, z0 + z), 0, &rivers);
             out.h[z][x] = r.height;
-            out.water[z][x] = w;
-            const int32_t surface = std::max(r.height, w);   // Р28: поверхность - дно или вода над ним
+            out.water[z][x] = r.water;
+            shore[z][x] = r.shore;
+            const int32_t surface = std::max(r.height, r.water);   // Р28: поверхность - дно или вода над ним
             out.minH = std::min(out.minH, surface);
             out.maxH = std::max(out.maxH, surface);
         }
     }
-    // климат и покров - только своим столбцам, не кайме
+    // климат и покров - только своим столбцам, не кайме; у воды рек и озёр - песок (Р29)
     for (int z = 0; z < CHUNK; ++z)
         for (int x = 0; x < CHUNK; ++x)
-            out.cover[z][x] = coverAt(p, climateAt(p, x0 + 1 + x, z0 + 1 + z, slow.at(x0 + 1 + x, z0 + 1 + z)), out.h[z + 1][x + 1]);
+            out.cover[z][x] = shore[z + 1][x + 1]
+                                  ? Cover{SAND, SAND}
+                                  : coverAt(p, climateAt(p, x0 + 1 + x, z0 + 1 + z, slow.at(x0 + 1 + x, z0 + 1 + z)), out.h[z + 1][x + 1]);
 }
 
 void fillChunk(const ColumnHeights& heights, Chunk& c) {
@@ -223,10 +242,7 @@ void fillChunk(const ColumnHeights& heights, Chunk& c) {
                 c.at(x, y, z) = columnMaterial(heights.h[z + 1][x + 1], heights.cover[z][x], y0 + y, heights.water[z + 1][x + 1]);
 }
 
-int32_t waterLevelAt(const TerrainParams& p, const Relief& r) {
-    // море - в океанических областях и на их берегах (доля суши < 1); на материке ниже уровня моря - сухо
-    return r.land < fx::ONE ? p.seaLevel - 1 : NO_WATER;
-}
+int32_t waterLevelAt(const TerrainParams&, const Relief& r) { return r.water; }
 
 uint64_t checksum(const Chunk& c) {
     // FNV-1a по всем вокселям: любое расхождение хоть в одном вокселе меняет сумму

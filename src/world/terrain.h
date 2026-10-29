@@ -114,10 +114,18 @@ struct Relief {
     int32_t height;
     fx::q16 wPlains, wHills, wMount;   // веса видов рельефа СУШИ (их сумма = 1)
     fx::q16 land;                      // доля суши: 0 - океан, 1 - суша, между - берег (Р25)
+    int32_t water = INT32_MIN;         // Р28: верхний воксель воды (море, река, озеро) или NO_WATER
+    bool shore = false;                // Р29: у воды - берег или дно русла (песок)
 };
-// minCellLog2 - для дальних уровней (Р20): октавы мельче 2^minCellLog2 вокселей не считаются
+struct RiverSet;
+// minCellLog2 - для дальних уровней (Р20): октавы мельче 2^minCellLog2 вокселей не считаются.
+// Итоговый рельеф: исходный + море + реки и озёра (Р29). rivers - звенья рек, собранные на кусок или плитку
+// (world/rivers.h); без них (первый вариант) - собираются на одну точку (медленнее, для карт и проверок).
 Relief reliefAt(const TerrainParams& p, int32_t x, int32_t z, int minCellLog2 = 0);
-Relief reliefAt(const TerrainParams& p, int32_t x, int32_t z, const SlowFields& slow, int minCellLog2 = 0);
+Relief reliefAt(const TerrainParams& p, int32_t x, int32_t z, const SlowFields& slow, int minCellLog2,
+                const RiverSet* rivers);
+// Исходный рельеф - без воды и рек (по нему же реки и текут)
+Relief baseReliefAt(const TerrainParams& p, int32_t x, int32_t z, const SlowFields& slow, int minCellLog2 = 0);
 
 // Климат столбца на уровне моря: средняя годовая температура (°C) и осадки (мм в год), оба в Q16
 struct Climate {
@@ -155,7 +163,7 @@ struct ColumnHeights {
 };
 
 // Уровень воды столбца (Р28) - поле, как высота рельефа: вода не одна на мир, а там, где её даёт биом.
-// Сейчас - море в океанических областях (доля суши < 1); низина ниже уровня моря на материке - сухая.
+// Море - в океанических областях (доля суши < 1); реки и озёра - Р29; низина ниже уровня моря на материке - сухая.
 // Верхний воксель воды или NO_WATER; вода есть, только если он выше дна.
 int32_t waterLevelAt(const TerrainParams& p, const Relief& r);
 

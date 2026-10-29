@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <cmath>
 
+#include "world/rivers.h"
+
 namespace world {
 namespace {
 
@@ -30,28 +32,35 @@ void buildTile(const TerrainParams& p, TileKey k, TileMesh& out) {
     if (dense) grid.build(p, int32_t(x0 - 2 * step), int32_t(z0 - 2 * step), int32_t(x0 + 34 * step), int32_t(z0 + 34 * step), fineCut);
     const auto slowFine = [&](int64_t x, int64_t z) { return dense ? grid.at(int32_t(x), int32_t(z)) : slowAt(p, int32_t(x), int32_t(z), fineCut); };
 
+    // Р29: звенья рек и озёра, задевающие плитку (с каймой), - один раз на плитку
+    static thread_local RiverSet rivers;
+    rivers.build(p, int32_t(x0 - 2 * step), int32_t(z0 - 2 * step), int32_t(x0 + 34 * step), int32_t(z0 + 34 * step));
+
     // высоты своего уровня с каймой в один узел (для наклона): [-1..33]. Р28: высота поверхности -
-    // max(дно, вода); где вода над дном - покров «вода»
+    // max(дно, вода); где вода над дном - покров «вода», у воды рек и озёр - песок (Р29)
     static thread_local int32_t hf[TILE_VERTS + 2][TILE_VERTS + 2];
-    static thread_local bool wetF[TILE_VERTS + 2][TILE_VERTS + 2];
+    static thread_local bool wetF[TILE_VERTS + 2][TILE_VERTS + 2], shoreF[TILE_VERTS + 2][TILE_VERTS + 2];
     for (int j = -1; j <= TILE_VERTS; ++j)
         for (int i = -1; i <= TILE_VERTS; ++i) {
             const int64_t x = x0 + i * step, z = z0 + j * step;
-            const Relief r = reliefAt(p, int32_t(x), int32_t(z), slowFine(x, z), fineCut);
+            const Relief r = reliefAt(p, int32_t(x), int32_t(z), slowFine(x, z), fineCut, &rivers);
             const int32_t w = waterLevelAt(p, r);
             hf[j + 1][i + 1] = std::max(r.height, w);
             wetF[j + 1][i + 1] = w > r.height;
+            shoreF[j + 1][i + 1] = r.shore;
         }
     // высоты уровня L+1 в чётных узлах (шаг вдвое крупнее) с каймой: [-1..17]
     constexpr int CV = TILE / 2 + 1;
     static thread_local int32_t hc[CV + 2][CV + 2];
-    static thread_local bool wetC[CV + 2][CV + 2];
+    static thread_local bool wetC[CV + 2][CV + 2], shoreC[CV + 2][CV + 2];
     for (int j = -1; j <= CV; ++j)
         for (int i = -1; i <= CV; ++i) {
-            const Relief r = reliefAt(p, int32_t(x0 + i * 2 * step), int32_t(z0 + j * 2 * step), coarseCut);
+            const int32_t cx = int32_t(x0 + i * 2 * step), cz = int32_t(z0 + j * 2 * step);
+            const Relief r = reliefAt(p, cx, cz, slowAt(p, cx, cz, coarseCut), coarseCut, &rivers);
             const int32_t w = waterLevelAt(p, r);
             hc[j + 1][i + 1] = std::max(r.height, w);
             wetC[j + 1][i + 1] = w > r.height;
+            shoreC[j + 1][i + 1] = r.shore;
         }
     // наклон и покров уровня L+1 - в чётных узлах
     static thread_local uint32_t coarseGrad[CV][CV], coarseCover[CV][CV];
@@ -60,8 +69,9 @@ void buildTile(const TerrainParams& p, TileKey k, TileMesh& out) {
             coarseGrad[j][i] = slope256(hc[j + 1][i + 2] - hc[j + 1][i], 2 * step) |
                                slope256(hc[j + 2][i + 1] - hc[j][i + 1], 2 * step) << 16;
             const int32_t wx = int32_t(x0 + i * 2 * step), wz = int32_t(z0 + j * 2 * step);
-            const Cover c = wetC[j + 1][i + 1] ? Cover{WATER, WATER}
-                                               : coverAt(p, climateAt(p, wx, wz, slowFine(wx, wz)), hc[j + 1][i + 1]);   // климату отсечка октав не нужна
+            const Cover c = wetC[j + 1][i + 1]     ? Cover{WATER, WATER}
+                            : shoreC[j + 1][i + 1] ? Cover{SAND, SAND}
+                                                   : coverAt(p, climateAt(p, wx, wz, slowFine(wx, wz)), hc[j + 1][i + 1]);   // климату отсечка октав не нужна
             coarseCover[j][i] = uint32_t(c.top) | uint32_t(c.under) << 4;
         }
 
@@ -75,8 +85,9 @@ void buildTile(const TerrainParams& p, TileKey k, TileMesh& out) {
             const int ci = i >> 1, cj = j >> 1;
             const int32_t hcT = hc[cj + 1][ci + 1];
 
-            const Cover c = wetF[j + 1][i + 1] ? Cover{WATER, WATER}
-                                               : coverAt(p, climateAt(p, int32_t(x0 + i * step), int32_t(z0 + j * step),
+            const Cover c = wetF[j + 1][i + 1]     ? Cover{WATER, WATER}
+                            : shoreF[j + 1][i + 1] ? Cover{SAND, SAND}
+                                                   : coverAt(p, climateAt(p, int32_t(x0 + i * step), int32_t(z0 + j * step),
                                                                       slowFine(x0 + i * step, z0 + j * step)), h);
             uint32_t* w = &out.data[(size_t(j) * TILE_VERTS + i) * TILE_WORDS];
             w[0] = h16(h) | h16(hcT) << 16;

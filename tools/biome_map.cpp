@@ -94,8 +94,8 @@ int main(int argc, char** argv) {
             const float light = std::clamp(0.72f + 0.9f * (sx + sz), 0.25f, 1.25f);
             const float alt = std::clamp(0.8f + 0.2f * float(r.height) / float(160 * world::VOXELS_PER_BLOCK), 0.6f, 1.15f);
             const float water[3] = {0.16f, 0.32f, 0.52f};
-            const bool wet = r.height < p.seaLevel;   // Р25: под водой - синий, темнее с глубиной
-            const float depthK = wet ? std::clamp(1.0f - float(p.seaLevel - r.height) / (60.0f * world::VOXELS_PER_BLOCK), 0.45f, 1.0f) : 1.0f;
+            const bool wet = r.water > r.height;   // Р25, Р29: под водой (море, река, озеро) - синий, темнее с глубиной
+            const float depthK = wet ? std::clamp(1.0f - float(r.water - r.height) / (60.0f * world::VOXELS_PER_BLOCK), 0.45f, 1.0f) : 1.0f;
             const float* c = wet ? water : colors[std::min<int>(cov[i].top, 5)];
             for (int k = 0; k < 3; ++k)
                 img[i * 3 + k] = uint8_t(std::clamp(wet ? c[k] * depthK * (0.6f + 0.4f * light) * 255.0f : c[k] * light * alt * 255.0f, 0.0f, 255.0f));

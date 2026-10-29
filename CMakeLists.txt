@@ -29,6 +29,7 @@ add_library(otmel_world STATIC
     src/world/mesher.cpp
     src/world/lod.cpp
     src/world/caves.cpp
+    src/world/rivers.cpp
 )
 target_include_directories(otmel_world PUBLIC src)
 

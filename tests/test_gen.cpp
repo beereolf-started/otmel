@@ -8,6 +8,7 @@
 #include "gen/noise.h"
 #include "world/bits.h"
 #include "world/caves.h"
+#include "world/rivers.h"
 #include "world/lod.h"
 #include "world/mesher.h"
 #include "world/terrain.h"
@@ -386,6 +387,40 @@ int main() {
         CHECK(repeat, "пещеры из одного зерна дважды - одинаковы");
         CHECK(exact, "сетка с пещерами: площадь прямоугольников = видимые грани в лоб (с каймой)");
         CHECK(shallowAll == 0 || shallowAir * 20 < shallowAll, "у поверхности пещер мало (только входы)");
+    }
+
+    // ─── Р29: реки и озёра ───────────────────────────────────────────────────────────────
+    {
+        world::TerrainParams tp;
+        // сток: только вниз - у каждого звена сглаженная высота соседа строго ниже, уровень воды не растёт
+        bool downhill = true, levels = true;
+        int rivers = 0, lakes = 0, maxArea = 0;
+        for (int32_t j = -12; j < 12; ++j)
+            for (int32_t i = -12; i < 12; ++i) {
+                const world::RiverNode n = world::riverNode(tp, i, j);
+                if (n.sea) continue;
+                maxArea = std::max(maxArea, n.area);
+                if (n.down < 0) { if (n.area >= 3) ++lakes; continue; }
+                int32_t ni, nj;
+                world::riverNeighbor(i, j, n.down, ni, nj);
+                const world::RiverNode t = world::riverNode(tp, ni, nj);
+                if (t.smooth >= n.smooth) downhill = false;
+                if (!t.sea && t.down >= 0 && t.level > n.level) levels = false;
+                if (n.area >= 3) ++rivers;
+            }
+        std::printf("реки: узлов с рекой %d, озёр в котловинах %d, наибольший водосбор %d узлов\n", rivers, lakes, maxArea);
+        CHECK(downhill, "реки текут только вниз (сглаженная высота соседа строго ниже)");
+        CHECK(levels, "уровень воды вниз по течению не растёт");
+        CHECK(rivers > 0, "на суше есть реки");
+        // на суше есть вода выше уровня моря (реки, озёра)
+        int wetLand = 0;
+        for (int32_t z = -200000; z < 200000; z += 1777)
+            for (int32_t x = -200000; x < 200000; x += 1999) {
+                const world::Relief r = world::reliefAt(tp, x, z);
+                if (r.water > r.height && r.water > tp.seaLevel - 1) ++wetLand;
+            }
+        std::printf("реки: точек выборки с водой выше моря %d\n", wetLand);
+        CHECK(wetLand > 0, "вода рек и озёр выше уровня моря - есть");
     }
 
     // ─── Р20: дальние уровни ──────────────────────────────────────────────────────────────
