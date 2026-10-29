@@ -62,6 +62,109 @@ int main() {
         }
     CHECK(inRange, "сумма октав в [-1, 1]");
 
+    // ─── Р19: новые шумы ─────────────────────────────────────────────────────────────
+    {
+        // симплекс: в [-1, 1], множитель растяжения верен (наибольшее близко к 1, обрезка почти не срабатывает),
+        // непрерывен (соседние воксели - почти одно значение) и в среднем около нуля
+        fx::q16 lo = 0, hi = 0;
+        int clipped = 0, samples = 0;
+        int64_t sum = 0;
+        fx::q16 maxStep = 0;
+        for (int i = -3000; i < 3000; i += 3)
+            for (int j = -3000; j < 3000; j += 7) {
+                const fx::q16 n = gen::simplex2(i, j, 8, 7);
+                lo = std::min(lo, n); hi = std::max(hi, n);
+                if (n == fx::ONE || n == -fx::ONE) ++clipped;
+                sum += n; ++samples;
+                maxStep = std::max(maxStep, std::abs(gen::simplex2(i + 1, j, 8, 7) - n));
+            }
+        std::printf("симплекс: от %.3f до %.3f, среднее %.4f, наибольший шаг между соседними вокселями %.4f\n",
+                    lo / 65536.0, hi / 65536.0, double(sum) / samples / 65536.0, maxStep / 65536.0);
+        CHECK(lo >= -fx::ONE && hi <= fx::ONE && hi > fx::ONE * 85 / 100 && lo < -fx::ONE * 85 / 100,
+              "симплекс: размах почти весь [-1, 1] и не шире");
+        CHECK(clipped * 1000 < samples, "симплекс: обрезка по краю - реже 0.1% точек");
+        CHECK(maxStep < fx::ONE / 20, "симплекс непрерывен: шаг на воксель меньше 0.05 при ячейке 256");
+
+        // шум значений: в [-1, 1]
+        bool valueOk = true;
+        for (int i = -40; i < 40; ++i) {
+            const fx::q16 n = gen::value2(i * 37, i * 53, 6, 3);
+            if (n < -fx::ONE || n > fx::ONE) valueOk = false;
+        }
+        CHECK(valueOk, "шум значений в [-1, 1]");
+
+        // хребты: в [0, 1]
+        fx::q16 rlo = fx::ONE, rhi = 0;
+        for (int i = -4000; i < 4000; i += 13)
+            for (int j = -4000; j < 4000; j += 17) {
+                const fx::q16 r = gen::ridged2(i, j, 13, 7, 9);
+                rlo = std::min(rlo, r); rhi = std::max(rhi, r);
+            }
+        std::printf("хребты: от %.3f до %.3f\n", rlo / 65536.0, rhi / 65536.0);
+        CHECK(rlo >= 0 && rhi <= fx::ONE, "хребты в [0, 1]");
+
+        // плавная ступень: концы, середина, монотонность
+        bool mono = true;
+        for (fx::q16 v = -fx::ONE, prev = -1; v <= fx::ONE; v += 97) {
+            const fx::q16 s = fx::smoothstep(-fx::ONE / 2, fx::ONE / 2, v);
+            if (s < prev) mono = false;
+            prev = s;
+        }
+        CHECK(fx::smoothstep(0, fx::ONE, 0) == 0 && fx::smoothstep(0, fx::ONE, fx::ONE) == fx::ONE &&
+                  fx::smoothstep(0, fx::ONE, fx::ONE / 2) == fx::ONE / 2 && mono,
+              "плавная ступень: 0 -> 0, 1 -> 1, середина -> 0.5, не убывает");
+    }
+
+    // ─── Р19: смешение рельефа и климат ───────────────────────────────────────────────
+    {
+        // веса: каждый в [0, 1], сумма ровно 1; на длинном проходе через все зоны - ни одного скачка
+        // ни веса, ни высоты (ступенька на границе зон дала бы скачок в десятки блоков)
+        world::TerrainParams tp;
+        bool sumOk = true, rangeOk = true;
+        fx::q16 maxW = 0;
+        int32_t maxStep = 0, maxStepPure = 0;
+        int zonesSeen[3] = {};
+        world::Relief prev = world::reliefAt(tp, -400000, 12345);
+        for (int32_t x = -400000 + 1; x < 400000; ++x) {
+            const world::Relief r = world::reliefAt(tp, x, 12345);
+            if (r.wPlains + r.wHills + r.wMount != fx::ONE) sumOk = false;
+            for (fx::q16 w : {r.wPlains, r.wHills, r.wMount}) if (w < 0 || w > fx::ONE) rangeOk = false;
+            maxW = std::max({maxW, std::abs(r.wPlains - prev.wPlains), std::abs(r.wHills - prev.wHills),
+                             std::abs(r.wMount - prev.wMount)});
+            const int32_t step = std::abs(r.height - prev.height);
+            maxStep = std::max(maxStep, step);
+            if (r.wMount == fx::ONE && prev.wMount == fx::ONE) maxStepPure = std::max(maxStepPure, step);
+            if (r.wPlains == fx::ONE) zonesSeen[0] = 1;
+            if (r.wHills > fx::ONE * 9 / 10) zonesSeen[1] = 1;
+            if (r.wMount == fx::ONE) zonesSeen[2] = 1;
+            prev = r;
+        }
+        std::printf("проход 50000 блоков: наибольшее изменение веса на воксель %.5f; наибольший перепад высоты "
+                    "между соседними вокселями %d (в чистых горах %d)\n", maxW / 65536.0, maxStep, maxStepPure);
+        CHECK(sumOk, "веса видов рельефа в сумме ровно 1");
+        CHECK(rangeOk, "каждый вес в [0, 1]");
+        CHECK(zonesSeen[0] && zonesSeen[1] && zonesSeen[2], "на проходе встречаются равнины, холмы и горы");
+        // переход от 0 до 1 занимает не меньше 1/maxW вокселей: требуем не уже 32 блоков (512 вокселей)
+        std::printf("самый узкий переход между зонами - около %.0f блоков\n", 65536.0 / std::max(maxW, 1) / 16.0);
+        CHECK(maxW < fx::ONE / 512, "переход между зонами не уже 32 блоков");
+        CHECK(maxStep <= std::max(maxStepPure, 16), "на стыке зон нет ступеньки: перепад не больше, чем в самих горах");
+
+        // климат: выше - холоднее; пояса по z - от холодного к жаркому; осадки в 0..500
+        const world::Climate c = world::climateAt(tp, 0, 0);
+        CHECK(world::temperatureAt(tp, c, tp.seaLevel + 160) < world::temperatureAt(tp, c, tp.seaLevel),
+              "на 10 блоков выше уровня моря - холоднее");
+        CHECK(world::temperatureAt(tp, c, tp.seaLevel - 160) == world::temperatureAt(tp, c, tp.seaLevel),
+              "ниже уровня моря - как на уровне моря");
+        const world::Climate hot = world::climateAt(tp, 0, tp.climateBand / 2), cold = world::climateAt(tp, 0, -tp.climateBand / 2);
+        std::printf("климат: в начале %.1f °C, %.0f мм; на жарком поясе %.1f °C, на холодном %.1f °C\n",
+                    c.temp / 65536.0, c.rain / 65536.0, hot.temp / 65536.0, cold.temp / 65536.0);
+        CHECK(hot.temp > 20 * world::DEG && cold.temp < -5 * world::DEG, "пояса температуры: к +z жарко, к -z холодно");
+        bool rainOk = true;
+        for (int32_t x = -800000; x < 800000; x += 997)
+            if (const auto cl = world::climateAt(tp, x, x / 3); cl.rain < 0 || cl.rain > 500 * world::DEG) rainOk = false;
+        CHECK(rainOk, "осадки в пределах 0..500 мм");
+    }
+
     // воспроизводимость: один и тот же кусок - одна и та же сумма, в том числе на отрицательных координатах
     world::TerrainParams p;
     const uint64_t a = chunkSum(p, 3, 16, -5), b = chunkSum(p, 3, 16, -5);
@@ -71,6 +174,17 @@ int main() {
     CHECK(chunkSum(q, 3, 16, -5) != a, "другое зерно - другой кусок");
     // Эта сумма должна совпадать в отладочной и быстрой сборке и на любой машине (Р2, Р16)
     std::printf("сумма куска (3,16,-5) при зерне 1337: %016llx\n", static_cast<unsigned long long>(a));
+    {
+        // горный кусок у вершины (блок -837, 1723): хребты, симплекс, смешение весов, климат и снег - тоже до бита
+        world::ColumnHeights hm;
+        world::columnHeights(p, -419, 861, hm);
+        const int cy = (hm.maxH >> world::CHUNK_LOG2) - 1;
+        bool snow = false;
+        for (auto& row : hm.cover) for (auto& cv : row) if (cv.top == world::SNOW) snow = true;
+        CHECK(snow && hm.maxH > 200 * world::VOXELS_PER_BLOCK, "у вершины - горы выше 200 блоков и снег");
+        std::printf("сумма горного куска (-419,%d,861) при зерне 1337: %016llx\n", cy,
+                    static_cast<unsigned long long>(chunkSum(p, -419, cy, 861)));
+    }
 
     // поворот битовой таблицы 32×32 - против побитового эталона на случайных таблицах
     {

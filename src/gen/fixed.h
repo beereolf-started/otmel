@@ -24,4 +24,13 @@ constexpr q16 fade(q16 t) {
     return mul(mul(mul(t, t), t), inner);
 }
 
+// Плавная ступень: 0 при v <= a, 1 при v >= b, между - 3t² - 2t³ (t = доля пути от a к b).
+// На концах производная ноль - вес включается без излома (Р19). Деление - целое, одинаково везде.
+constexpr q16 smoothstep(q16 a, q16 b, q16 v) {
+    if (v <= a) return 0;
+    if (v >= b) return ONE;
+    const q16 t = static_cast<q16>((static_cast<int64_t>(v - a) << SHIFT) / (b - a));
+    return mul(mul(t, t), 3 * ONE - 2 * t);
+}
+
 }  // namespace fx
