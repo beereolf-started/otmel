@@ -1,11 +1,13 @@
 // Тесты генерации (Р6): то, что проверяется машиной. Главное - воспроизводимость от зерна (Р2, Р16).
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 
 #include "gen/fixed.h"
 #include "gen/hash.h"
 #include "gen/noise.h"
 #include "world/bits.h"
+#include "world/caves.h"
 #include "world/lod.h"
 #include "world/mesher.h"
 #include "world/terrain.h"
@@ -287,6 +289,103 @@ int main() {
             std::printf("столбец (%s), один поток: высоты %.3f мс + заполнение %.3f мс + сетки %.3f мс = %.3f мс (кусков в столбце %.2f)\n",
                         name, tH / n, tF / n, tM / n, (tH + tF + tM) / n, double(chunks) / n);
         }
+    }
+
+    // ─── Р26: пещеры ──────────────────────────────────────────────────────────────────────
+    {
+        // 3D-симплекс: в [-1, 1], растяжение верное, непрерывен
+        fx::q16 lo = 0, hi = 0, maxStep = 0;
+        for (int i = -600; i < 600; i += 5)
+            for (int j = -600; j < 600; j += 7)
+                for (int k = -300; k < 300; k += 23) {
+                    const fx::q16 n = gen::simplex3(i, k, j, 8, 11);
+                    lo = std::min(lo, n); hi = std::max(hi, n);
+                    maxStep = std::max(maxStep, std::abs(gen::simplex3(i + 1, k, j, 8, 11) - n));
+                }
+        std::printf("3D-симплекс: от %.3f до %.3f, наибольший шаг на воксель %.4f\n", lo / 65536.0, hi / 65536.0, maxStep / 65536.0);
+        CHECK(lo >= -fx::ONE && hi <= fx::ONE && hi > fx::ONE * 6 / 10 && lo < -fx::ONE * 6 / 10, "3D-симплекс: размах большой и не шире [-1, 1]");
+        CHECK(maxStep < fx::ONE / 20, "3D-симплекс непрерывен");
+
+        // пещеры: ищем куски с воздухом под землёй у начала мира; сетка такого куска - точна:
+        // площадь её прямоугольников = число видимых граней, посчитанных в лоб по вокселям (с каймой)
+        world::TerrainParams tp;
+        static uint64_t air[world::CHUNK + 2][world::CHUNK + 2], air2[world::CHUNK + 2][world::CHUNK + 2];
+        world::ColumnHeights hm;
+        int checked = 0, caveChunks = 0, bestRun = 0;
+        int32_t camAt[3] = {};   // для снимка: воксель в самом высоком проёме
+        bool exact = true, repeat = true;
+        int64_t airVox = 0, allVox = 0, shallowAir = 0, shallowAll = 0;
+        std::vector<uint32_t> mesh;
+        world::MeshStats ms;
+        for (int cz = -6; cz < 6 && checked < 40; ++cz)
+            for (int cx = -6; cx < 6 && checked < 40; ++cx) {
+                world::columnHeights(tp, cx * 7, cz * 7, hm);
+                const int cyLo = (hm.minH - 1) >> world::CHUNK_LOG2;
+                for (int cy = cyLo - 20; cy <= cyLo; ++cy) {
+                    const world::ChunkPos pos{cx * 7, cy, cz * 7};
+                    if (!world::caveAir(tp, pos, hm, air)) {
+                        // без пещер: все воксели под поверхностью - камень (для честной доли пустот)
+                        for (int z = 1; z <= world::CHUNK; ++z)
+                            for (int x = 1; x <= world::CHUNK; ++x) {
+                                const int32_t top = hm.h[z][x], y0c = cy * world::CHUNK;
+                                const int64_t n = std::clamp<int64_t>(int64_t(top) - y0c + 1, 0, world::CHUNK);
+                                allVox += n;
+                                const int64_t sh = std::clamp<int64_t>(int64_t(top) - std::max<int64_t>(y0c, top - tp.caves.tunnelCover + 1) + 1, 0, n);
+                                shallowAll += sh;
+                            }
+                        continue;
+                    }
+                    ++caveChunks;
+                    world::caveAir(tp, pos, hm, air2);
+                    if (std::memcmp(air, air2, sizeof(air)) != 0) repeat = false;
+                    const int32_t y0 = cy * world::CHUNK;
+                    const auto solid = [&](int x, int y, int z) {   // x, y, z в [-1..32]
+                        return y0 + y <= hm.h[z + 1][x + 1] && !(air[z + 1][x + 1] >> (y + 1) & 1);
+                    };
+                    for (int z = 0; z < world::CHUNK; ++z)
+                        for (int x = 0; x < world::CHUNK; ++x) {
+                            const int32_t top = hm.h[z + 1][x + 1];
+                            int run = 0;
+                            for (int y = 0; y < world::CHUNK; ++y) {
+                                if (y0 + y > top) break;
+                                const bool open = !solid(x, y, z);
+                                run = open ? run + 1 : 0;
+                                if (run > bestRun && top - (y0 + y) > 8 * world::VOXELS_PER_BLOCK) {
+                                    bestRun = run;
+                                    camAt[0] = pos.x * world::CHUNK + x; camAt[1] = y0 + y - run / 2; camAt[2] = pos.z * world::CHUNK + z;
+                                }
+                                ++allVox; airVox += open;
+                                if (top - (y0 + y) < tp.caves.tunnelCover) { ++shallowAll; shallowAir += open; }
+                            }
+                        }
+                    if (checked < 12) {
+                        int64_t faces = 0;
+                        for (int z = 0; z < world::CHUNK; ++z)
+                            for (int y = 0; y < world::CHUNK; ++y)
+                                for (int x = 0; x < world::CHUNK; ++x) {
+                                    if (!solid(x, y, z)) continue;
+                                    faces += !solid(x + 1, y, z) + !solid(x - 1, y, z) + !solid(x, y + 1, z) + !solid(x, y - 1, z) +
+                                             !solid(x, y, z + 1) + !solid(x, y, z - 1);
+                                }
+                        world::buildMesh(pos, hm, mesh, ms, air);
+                        int64_t area = 0;
+                        for (size_t qi = 0; qi + 3 < mesh.size(); qi += 4) {
+                            const auto v = [&](size_t i, int sh) { return int((mesh[qi + i] >> sh) & 63); };
+                            const int dx = std::abs(v(2, 0) - v(0, 0)), dy = std::abs(v(2, 6) - v(0, 6)), dz = std::abs(v(2, 12) - v(0, 12));
+                            area += int64_t(std::max(dx, 1) * std::max(dy, 1) * std::max(dz, 1));
+                        }
+                        if (area != faces) exact = false;
+                        ++checked;
+                    }
+                }
+            }
+        std::printf("пещеры: кусков с воздухом %d, сеток проверено %d; воздуха под землёй %.1f%%, в верхних 4 блоках %.2f%%\n",
+                    caveChunks, checked, 100.0 * airVox / std::max<int64_t>(allVox, 1), 100.0 * shallowAir / std::max<int64_t>(shallowAll, 1));
+        std::printf("пещера для снимка: блок (%.1f, %.1f, %.1f), проём %d вокселей\n", camAt[0] / 16.0, camAt[1] / 16.0, camAt[2] / 16.0, bestRun);
+        CHECK(caveChunks > 0, "под землёй есть пещеры");
+        CHECK(repeat, "пещеры из одного зерна дважды - одинаковы");
+        CHECK(exact, "сетка с пещерами: площадь прямоугольников = видимые грани в лоб (с каймой)");
+        CHECK(shallowAll == 0 || shallowAir * 20 < shallowAll, "у поверхности пещер мало (только входы)");
     }
 
     // ─── Р20: дальние уровни ──────────────────────────────────────────────────────────────

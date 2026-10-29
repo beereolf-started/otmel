@@ -13,6 +13,9 @@ fx::q16 perlin2(int32_t x, int32_t z, int cellLog2, uint32_t seed);
 // Симплекс-шум: треугольная сетка, 3 вершины вместо 4, без осевых швов. Ответ - Q16 в [-1, 1]. Р15: холмы, горы.
 fx::q16 simplex2(int32_t x, int32_t z, int cellLog2, uint32_t seed);
 
+// 3D-симплекс (Р26: пещеры): 4 вершины тетраэдра вместо 8 вершин куба. Ответ - Q16 в [-1, 1].
+fx::q16 simplex3(int32_t x, int32_t y, int32_t z, int cellLog2, uint32_t seed);
+
 // Шум значений: случайное число в узле, сглаженное смешивание. Самый дешёвый. Ответ - Q16 в [-1, 1]. Р15: маски.
 fx::q16 value2(int32_t x, int32_t z, int cellLog2, uint32_t seed);
 

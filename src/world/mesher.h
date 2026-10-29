@@ -18,7 +18,9 @@ struct MeshStats { int quads = 0; };
 // что и у соседа, без доступа к его вокселям. Вершины - по 4 на прямоугольник.
 // Правленый кусок (c.edited) - маски и материалы из его вокселей; нетронутый - всё формулой от высот.
 void buildMesh(const Chunk& c, const ColumnHeights& heights, std::vector<uint32_t>& vertices, MeshStats& stats);
-// Нетронутый кусок по одному положению: массив вокселей не нужен вовсе (Р2, Р22)
-void buildMesh(ChunkPos pos, const ColumnHeights& heights, std::vector<uint32_t>& vertices, MeshStats& stats);
+// Нетронутый кусок по одному положению: массив вокселей не нужен вовсе (Р2, Р22).
+// air - воздух пещер в куске с каймой (Р26, world/caves.h) или nullptr: твёрдо = ниже поверхности И не пещера.
+void buildMesh(ChunkPos pos, const ColumnHeights& heights, std::vector<uint32_t>& vertices, MeshStats& stats,
+               const uint64_t (*air)[CHUNK + 2] = nullptr);
 
 }  // namespace world

@@ -40,19 +40,23 @@ public:
 
 private:
     struct ChunkMesh { glm::ivec3 origin; render::MeshId mesh; int quads; };
+    // готовый столбец: его куски и до какой глубины он построен (Builder::NO_DEPTH - только поверхность)
+    struct Column { std::vector<ChunkMesh> chunks; int32_t builtMin = Builder::NO_DEPTH; };
 
     static uint64_t key(int32_t cx, int32_t cz) { return uint64_t(uint32_t(cx)) << 32 | uint32_t(cz); }
     bool inWindow(int32_t cx, int32_t cz, int margin = 0) const;
     void moveWindow(int32_t ccx, int32_t ccz);
     void reprioritize(glm::vec3 eye, const Frustum& fr);
-    void release(std::vector<ChunkMesh>& c);
+    void release(Column& c);
     void finishMask();
 
     render::Backend& gpu_;
     Builder& builder_;
     const int radius_, side_;
     int32_t ccx_ = INT32_MIN, ccz_ = INT32_MIN;              // столбец камеры
-    std::unordered_map<uint64_t, std::vector<ChunkMesh>> ready_;   // готовые столбцы (и в запасе за окном)
+    std::unordered_map<uint64_t, Column> ready_;   // готовые столбцы (и в запасе за окном)
+    int32_t depthMin_ = Builder::NO_DEPTH;        // Р26: до какого куска строить вниз рядом с камерой
+    int32_t wantMin(int32_t cx, int32_t cz) const;
 
     // маска готовых столбцов окна (1 байт на столбец, строка - по z) и таблица сумм по ней
     std::vector<uint8_t> mask_;

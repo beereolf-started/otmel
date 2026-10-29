@@ -20,14 +20,18 @@
 class Builder {
 public:
     struct ChunkData { glm::ivec3 origin; std::vector<uint32_t> verts; int quads; };
-    struct ColumnResult { int32_t cx, cz; std::vector<ChunkData> chunks; double ms; };
+    // Задание столбца: cyMin - до какого куска строить вниз (подземные куски - только с пещерами, Р26);
+    // NO_DEPTH - только куски, через которые проходит поверхность
+    static constexpr int32_t NO_DEPTH = INT32_MAX;
+    struct ColumnJob { int32_t cx, cz, cyMin; };
+    struct ColumnResult { int32_t cx, cz, cyMin; std::vector<ChunkData> chunks; double ms; };
     struct TileResult { world::TileKey key; world::TileMesh mesh; double ms; };
 
     explicit Builder(const world::TerrainParams& tp);
     ~Builder();
 
     // очередь столбцов целиком заменяется (ближние - в конце); те, что уже строятся, повторно не встают
-    void setColumnJobs(std::vector<std::pair<int32_t, int32_t>> jobs);
+    void setColumnJobs(std::vector<ColumnJob> jobs);
     // заказать плитки; уже заказанные и строящиеся не дублируются
     void requestTiles(const std::vector<world::TileKey>& keys);
     bool popColumn(ColumnResult& out);
@@ -41,7 +45,7 @@ private:
     const world::TerrainParams& tp_;
     std::mutex mu_;
     std::condition_variable cv_;
-    std::vector<std::pair<int32_t, int32_t>> columns_;     // ближние - в конце
+    std::vector<ColumnJob> columns_;                        // ближние - в конце
     std::unordered_set<uint64_t> buildingColumns_;
     std::vector<world::TileKey> tiles_;
     std::unordered_set<uint64_t> wantedTiles_;           // заказаны, строятся или готовы, но не забраны

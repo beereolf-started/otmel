@@ -35,10 +35,17 @@ struct MatRows { Material mat; uint32_t rows[CHUNK]; };
 namespace {
 
 // vox - воксели правленого куска; nullptr - нетронутый: маски и материалы формулой от высот и покрова
-void meshImpl(ChunkPos pos, const Chunk* vox, const ColumnHeights& hm, std::vector<uint32_t>& out, MeshStats& stats) {
+void meshImpl(ChunkPos pos, const Chunk* vox, const ColumnHeights& hm, const uint64_t (*air)[CHUNK + 2],
+              std::vector<uint32_t>& out, MeshStats& stats) {
     out.clear();
     stats = {};
     const int32_t y0 = pos.y * CHUNK;
+    // Твёрдость столбцов с каймой по x и z (34×34), 34 бита по y: по высоте - формулой, минус воздух пещер
+    // (Р26). Из них - и внутренние столбцы, и кайма горизонтальных масок.
+    static thread_local uint64_t solid[CHUNK + 2][CHUNK + 2];
+    for (int z = 0; z < CHUNK + 2; ++z)
+        for (int x = 0; x < CHUNK + 2; ++x)
+            solid[z][x] = columnFromHeight(hm.h[z][x], y0) & ~(air ? air[z][x] : 0);
 
     // ─── 1. Маски столбцов вдоль трёх осей: 34 бита (кайма + 32 + кайма) ─────────
     // col[axis][u][v] - столбец вдоль оси d в точке (u, v) её плоскости
@@ -53,7 +60,7 @@ void meshImpl(ChunkPos pos, const Chunk* vox, const ColumnHeights& hm, std::vect
             const int32_t top = hm.h[z + 1][x + 1];
             uint64_t b;
             if (!vox) {
-                b = columnFromHeight(top, y0);
+                b = solid[z + 1][x + 1];
             } else {
                 b = 0;
                 for (int y = 0; y < CHUNK; ++y) if (vox->at(x, y, z) != AIR) b |= uint64_t(1) << (y + 1);
@@ -70,8 +77,8 @@ void meshImpl(ChunkPos pos, const Chunk* vox, const ColumnHeights& hm, std::vect
         transpose32(t);
         for (int y = 0; y < CHUNK; ++y) {
             uint64_t b = uint64_t(t[y]) << 1;
-            if (y0 + y <= hm.h[z + 1][0]) b |= 1;                         // x = -1
-            if (y0 + y <= hm.h[z + 1][CHUNK + 1]) b |= uint64_t(1) << 33; // x = 32
+            b |= solid[z + 1][0] >> (y + 1) & 1;                               // x = -1
+            b |= (solid[z + 1][CHUNK + 1] >> (y + 1) & 1) << 33;              // x = 32
             colX[y][z] = b;
         }
     }
@@ -80,8 +87,8 @@ void meshImpl(ChunkPos pos, const Chunk* vox, const ColumnHeights& hm, std::vect
         transpose32(t);
         for (int y = 0; y < CHUNK; ++y) {
             uint64_t b = uint64_t(t[y]) << 1;
-            if (y0 + y <= hm.h[0][x + 1]) b |= 1;                         // z = -1
-            if (y0 + y <= hm.h[CHUNK + 1][x + 1]) b |= uint64_t(1) << 33; // z = 32
+            b |= solid[0][x + 1] >> (y + 1) & 1;                               // z = -1
+            b |= (solid[CHUNK + 1][x + 1] >> (y + 1) & 1) << 33;              // z = 32
             colZ[x][y] = b;
         }
     }
@@ -170,11 +177,12 @@ void meshImpl(ChunkPos pos, const Chunk* vox, const ColumnHeights& hm, std::vect
 }  // namespace
 
 void buildMesh(const Chunk& c, const ColumnHeights& hm, std::vector<uint32_t>& out, MeshStats& stats) {
-    meshImpl(c.pos, c.edited ? &c : nullptr, hm, out, stats);
+    meshImpl(c.pos, c.edited ? &c : nullptr, hm, nullptr, out, stats);
 }
 
-void buildMesh(ChunkPos pos, const ColumnHeights& hm, std::vector<uint32_t>& out, MeshStats& stats) {
-    meshImpl(pos, nullptr, hm, out, stats);
+void buildMesh(ChunkPos pos, const ColumnHeights& hm, std::vector<uint32_t>& out, MeshStats& stats,
+               const uint64_t (*air)[CHUNK + 2]) {
+    meshImpl(pos, nullptr, hm, air, out, stats);
 }
 
 }  // namespace world

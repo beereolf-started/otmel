@@ -10,6 +10,9 @@ double msSince(clk::time_point t) { return std::chrono::duration<double, std::mi
 constexpr int BLOCKS_PER_COLUMN = world::CHUNK / world::VOXELS_PER_BLOCK;   // столбец куска - 2×2 блока
 constexpr int UNLOAD_MARGIN = 4;    // готовые столбцы за окном выгружаются только дальше: качание у края не строит заново
 constexpr int RESORT_FRAMES = 15;   // камера повернулась - очередь пересортировать (видимое - раньше)
+// Р26: подземные куски (только с пещерами) - в столбцах ±UNDER_R вокруг камеры и на UNDER_DEPTH кусков вниз от неё;
+// глубина округляется до UNDER_STEP кусков - столбцы перестраиваются раз в 16 блоков спуска, а не на каждом шаге
+constexpr int UNDER_R = 12, UNDER_DEPTH = 16, UNDER_STEP = 8;
 }  // namespace
 
 VoxelZone::VoxelZone(render::Backend& gpu, Builder& builder, int radiusColumns)
@@ -28,13 +31,18 @@ bool VoxelZone::inWindow(int32_t cx, int32_t cz, int margin) const {
            cz < ccz_ + radius_ + margin;
 }
 
-void VoxelZone::release(std::vector<ChunkMesh>& c) {
-    for (const ChunkMesh& m : c) {
+void VoxelZone::release(Column& c) {
+    for (const ChunkMesh& m : c.chunks) {
         gpu_.destroyMesh(m.mesh);
         --stats_.chunks;
         stats_.quads -= m.quads;
     }
-    c.clear();
+    c.chunks.clear();
+}
+
+int32_t VoxelZone::wantMin(int32_t cx, int32_t cz) const {
+    const bool near = cx >= ccx_ - UNDER_R && cx < ccx_ + UNDER_R && cz >= ccz_ - UNDER_R && cz < ccz_ + UNDER_R;
+    return near ? depthMin_ : Builder::NO_DEPTH;
 }
 
 void VoxelZone::moveWindow(int32_t ccx, int32_t ccz) {
@@ -63,23 +71,28 @@ void VoxelZone::moveWindow(int32_t ccx, int32_t ccz) {
 }
 
 void VoxelZone::reprioritize(glm::vec3 eye, const Frustum& fr) {
-    // ждущие столбцы окна - по весу: квадрат расстояния, вне взгляда - вчетверо дальше; ближние - в конец
-    struct Job { int64_t w; int32_t cx, cz; };
+    // ждущие столбцы окна - по весу: квадрат расстояния, вне взгляда - вчетверо дальше; ближние - в конец.
+    // Готовые столбцы рядом с камерой, построенные мельче нужного (Р26: подземный ярус), - тоже в очередь.
+    struct Job { int64_t w; int32_t cx, cz, cyMin; };
     std::vector<Job> jobs;
     for (int z = 0; z < side_; ++z)
         for (int x = 0; x < side_; ++x) {
-            if (mask_[size_t(z) * side_ + x]) continue;
             const int32_t cx = ccx_ - radius_ + x, cz = ccz_ - radius_ + z;
+            const int32_t want = wantMin(cx, cz);
+            if (mask_[size_t(z) * side_ + x]) {
+                auto it = ready_.find(key(cx, cz));
+                if (it == ready_.end() || it->second.builtMin <= want) continue;
+            }
             const int64_t dx = cx - ccx_, dz = cz - ccz_;
             const float bx = float(cx * BLOCKS_PER_COLUMN), bz = float(cz * BLOCKS_PER_COLUMN);
             // высота столбца до постройки неизвестна - коробка по правдоподобным высотам рельефа
             const bool seen = fr.visible({bx, eye.y - 300.0f, bz}, {bx + BLOCKS_PER_COLUMN, eye.y + 300.0f, bz + BLOCKS_PER_COLUMN});
-            jobs.push_back({(dx * dx + dz * dz) * (seen ? 1 : 4), cx, cz});
+            jobs.push_back({(dx * dx + dz * dz) * (seen ? 1 : 4), cx, cz, want});
         }
     std::sort(jobs.begin(), jobs.end(), [](const Job& a, const Job& b) { return a.w > b.w; });
-    std::vector<std::pair<int32_t, int32_t>> order;
+    std::vector<Builder::ColumnJob> order;
     order.reserve(jobs.size());
-    for (const Job& j : jobs) order.push_back({j.cx, j.cz});
+    for (const Job& j : jobs) order.push_back({j.cx, j.cz, j.cyMin});
     builder_.setColumnJobs(std::move(order));
     sinceSort_ = 0;
 }
@@ -87,7 +100,12 @@ void VoxelZone::reprioritize(glm::vec3 eye, const Frustum& fr) {
 void VoxelZone::update(glm::vec3 eye, const Frustum& fr, double uploadBudgetMs) {
     const int32_t ccx = int32_t(std::floor(eye.x / BLOCKS_PER_COLUMN)), ccz = int32_t(std::floor(eye.z / BLOCKS_PER_COLUMN));
     const auto worst = [&](int i, clk::time_point t) { stats_.worstMs[i] = std::max(stats_.worstMs[i], msSince(t)); };
-    if (ccx != ccx_ || ccz != ccz_) {
+    // Р26: глубина подземного яруса - от куска камеры вниз, округлённо
+    const int32_t ccy = int32_t(std::floor(eye.y / BLOCKS_PER_COLUMN));
+    const int32_t depthMin = int32_t(std::floor(float(ccy - UNDER_DEPTH) / UNDER_STEP)) * UNDER_STEP;
+    const bool deeper = depthMin != depthMin_;
+    depthMin_ = depthMin;
+    if (ccx != ccx_ || ccz != ccz_ || deeper) {
         auto t = clk::now();
         moveWindow(ccx, ccz);
         worst(0, t);
@@ -106,11 +124,17 @@ void VoxelZone::update(glm::vec3 eye, const Frustum& fr, double uploadBudgetMs) 
     while (msSince(t0) < uploadBudgetMs && builder_.popColumn(r)) {
         stats_.workMs += r.ms;
         ++stats_.built;
-        // уже есть (вернулся в окно и построен дважды) или успел уйти за запас - не нужен
-        if (ready_.count(key(r.cx, r.cz)) || !inWindow(r.cx, r.cz, UNLOAD_MARGIN)) continue;
-        std::vector<ChunkMesh>& c = ready_[key(r.cx, r.cz)];
+        // успел уйти за запас - не нужен; уже есть и построен не мельче - тоже; построен глубже - заменяет прежний
+        if (!inWindow(r.cx, r.cz, UNLOAD_MARGIN)) continue;
+        auto old = ready_.find(key(r.cx, r.cz));
+        if (old != ready_.end()) {
+            if (old->second.builtMin <= r.cyMin) continue;
+            release(old->second);
+        }
+        Column& c = ready_[key(r.cx, r.cz)];
+        c.builtMin = r.cyMin;
         for (const Builder::ChunkData& d : r.chunks) {
-            c.push_back({d.origin, gpu_.uploadChunkMesh(d.verts), d.quads});
+            c.chunks.push_back({d.origin, gpu_.uploadChunkMesh(d.verts), d.quads});
             ++stats_.chunks;
             stats_.quads += d.quads;
         }
@@ -165,7 +189,7 @@ int VoxelZone::draw(const Frustum& fr, render::CommandList& out) const {
     int n = 0;
     for (const auto& [k, c] : ready_) {
         if (!inWindow(int32_t(k >> 32), int32_t(uint32_t(k)))) continue;   // за окном - там гладкий рельеф
-        for (const ChunkMesh& m : c) {
+        for (const ChunkMesh& m : c.chunks) {
             const glm::vec3 lo = glm::vec3(m.origin) / float(world::VOXELS_PER_BLOCK);
             if (!fr.visible(lo, lo + glm::vec3(float(BLOCKS_PER_COLUMN)))) continue;
             out.drawChunk(m.mesh, m.origin);

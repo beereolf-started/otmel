@@ -13,6 +13,21 @@ namespace world {
 
 constexpr fx::q16 DEG = fx::ONE;   // градус Цельсия и миллиметр осадков - в Q16
 
+// Пещеры (Р26), см. world/caves.h. Глубины и высоты - в вокселях.
+struct CaveParams {
+    int tunnelCellLog2 = 10;                          // тоннели: шум с ячейкой 64 блока - ходы радиусом ~2 блока
+    fx::q16 tunnelWidth = fx::ONE * 9 / 100;          // толщина: |a|, |b| < 0.09
+    int32_t tunnelCover = 4 * VOXELS_PER_BLOCK;       // ближе к поверхности - только у входов
+    int entranceCellLog2 = 12;                        // входы: 2D-шум с ячейкой 256 блоков
+    fx::q16 entranceFrom = fx::ONE * 55 / 100;      // входы открыты на ~7% площади
+    int hallCellLog2 = 11;                            // залы: ячейка 128 блоков
+    fx::q16 hallFrom = fx::ONE * 42 / 100;
+    int32_t hallDepth = 24 * VOXELS_PER_BLOCK;        // залы - не ближе 24 блоков к поверхности
+    int giantCellLog2 = 13;                           // ярус гигантских полостей: ячейка 512 блоков
+    fx::q16 giantFrom = fx::ONE * 30 / 100;
+    int32_t giantTop = -150 * VOXELS_PER_BLOCK, giantFull = -200 * VOXELS_PER_BLOCK;
+};
+
 struct TerrainParams {
     uint32_t seed = 1337;
     // равнины (Р15, Р17) - прежняя формула без изменений
@@ -71,6 +86,7 @@ struct TerrainParams {
     fx::q16 lapsePerVoxel = 184;                       // 0.045 °C на блок: снег в умеренном поясе - с ~220 блоков
     fx::q16 snowBelow = -2 * DEG;                      // снег - где средняя температура ниже
     fx::q16 desertRain = 100 * DEG, desertTemp = 15 * DEG;   // пустыня: сухо и тепло
+    CaveParams caves;
 };
 
 // Медленные поля (Р22): рельефность и шумы климата меняются на сотнях блоков - их считаем в узлах глобальной

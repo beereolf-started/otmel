@@ -126,6 +126,58 @@ fx::q16 simplex2(int32_t x, int32_t z, int cellLog2, uint32_t seed) {
     return clampOne((sum * SIMPLEX_SCALE) >> 32);
 }
 
+namespace {
+// 3D: перекос 1/3, обратный 1/6; направления - 12 рёбер куба (длина √2). Вклад вершины (0.5 - d²)^4: с 0.5
+// (а не 0.6, как у классики) вклад гаснет до соседних тетраэдров - без разрывов на гранях.
+constexpr int64_t SKEW3 = 21845, UNSKEW3 = 10923;
+// наибольшая сумма вкладов при направлениях вдоль смещения - 0.01314 (численный перебор, Р26): ×76.1
+constexpr int64_t SIMPLEX3_SCALE = 4989093;
+constexpr int8_t GRAD3[12][3] = {{1, 1, 0}, {-1, 1, 0}, {1, -1, 0}, {-1, -1, 0}, {1, 0, 1}, {-1, 0, 1},
+                                 {1, 0, -1}, {-1, 0, -1}, {0, 1, 1}, {0, -1, 1}, {0, 1, -1}, {0, -1, -1}};
+
+inline int64_t simplex3Corner(int64_t i, int64_t j, int64_t k, uint32_t seed, int64_t dx, int64_t dy, int64_t dz) {
+    const int64_t t = (fx::ONE >> 1) - ((dx * dx + dy * dy + dz * dz) >> 16);
+    if (t <= 0) return 0;
+    const int64_t t2 = t * t;
+    const int64_t t4 = (t2 * t2) >> 32;   // Q32
+    const uint32_t h = hash3(static_cast<int32_t>(i), static_cast<int32_t>(j), static_cast<int32_t>(k), seed);
+    const int8_t* g = GRAD3[(uint64_t(h) * 12) >> 32];
+    const int64_t dot = g[0] * dx + g[1] * dy + g[2] * dz;   // Q16
+    return (t4 * dot) >> 16;               // Q32
+}
+}  // namespace
+
+fx::q16 simplex3(int32_t x, int32_t y, int32_t z, int cellLog2, uint32_t seed) {
+    const auto cell = [&](int32_t v) {
+        return cellLog2 <= 16 ? static_cast<int64_t>(v) << (16 - cellLog2) : static_cast<int64_t>(v) >> (cellLog2 - 16);
+    };
+    const int64_t X = cell(x), Y = cell(y), Z = cell(z);
+    const int64_t s = ((X + Y + Z) * SKEW3) >> 16;
+    const int64_t i = (X + s) >> 16, j = (Y + s) >> 16, k = (Z + s) >> 16;
+    const int64_t t = (i + j + k) * UNSKEW3;
+    const int64_t x0 = X - ((i << 16) - t), y0 = Y - ((j << 16) - t), z0 = Z - ((k << 16) - t);
+    // какой из шести тетраэдров куба: по порядку смещений
+    int i1, j1, k1, i2, j2, k2;
+    if (x0 >= y0) {
+        if (y0 >= z0)      { i1 = 1; j1 = 0; k1 = 0; i2 = 1; j2 = 1; k2 = 0; }
+        else if (x0 >= z0) { i1 = 1; j1 = 0; k1 = 0; i2 = 1; j2 = 0; k2 = 1; }
+        else               { i1 = 0; j1 = 0; k1 = 1; i2 = 1; j2 = 0; k2 = 1; }
+    } else {
+        if (y0 < z0)       { i1 = 0; j1 = 0; k1 = 1; i2 = 0; j2 = 1; k2 = 1; }
+        else if (x0 < z0)  { i1 = 0; j1 = 1; k1 = 0; i2 = 0; j2 = 1; k2 = 1; }
+        else               { i1 = 0; j1 = 1; k1 = 0; i2 = 1; j2 = 1; k2 = 0; }
+    }
+    const int64_t sum =
+        simplex3Corner(i, j, k, seed, x0, y0, z0) +
+        simplex3Corner(i + i1, j + j1, k + k1, seed, x0 - (int64_t(i1) << 16) + UNSKEW3, y0 - (int64_t(j1) << 16) + UNSKEW3,
+                       z0 - (int64_t(k1) << 16) + UNSKEW3) +
+        simplex3Corner(i + i2, j + j2, k + k2, seed, x0 - (int64_t(i2) << 16) + 2 * UNSKEW3,
+                       y0 - (int64_t(j2) << 16) + 2 * UNSKEW3, z0 - (int64_t(k2) << 16) + 2 * UNSKEW3) +
+        simplex3Corner(i + 1, j + 1, k + 1, seed, x0 - fx::ONE + 3 * UNSKEW3, y0 - fx::ONE + 3 * UNSKEW3,
+                       z0 - fx::ONE + 3 * UNSKEW3);
+    return clampOne((sum * SIMPLEX3_SCALE) >> 32);
+}
+
 fx::q16 value2(int32_t x, int32_t z, int cellLog2, uint32_t seed) {
     const int32_t cx = x >> cellLog2, cz = z >> cellLog2;
     const fx::q16 u = fx::fade(cellFrac(x, cellLog2)), w = fx::fade(cellFrac(z, cellLog2));

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <chrono>
 
+#include "world/caves.h"
 #include "world/mesher.h"
 
 #ifdef _WIN32
@@ -30,11 +31,11 @@ Builder::~Builder() {
     for (auto& t : threads_) t.join();
 }
 
-void Builder::setColumnJobs(std::vector<std::pair<int32_t, int32_t>> jobs) {
+void Builder::setColumnJobs(std::vector<ColumnJob> jobs) {
     {
         std::lock_guard lk(mu_);
         jobs.erase(std::remove_if(jobs.begin(), jobs.end(),
-                                  [&](const auto& j) { return buildingColumns_.count(colKey(j.first, j.second)) > 0; }),
+                                  [&](const ColumnJob& j) { return buildingColumns_.count(colKey(j.cx, j.cz)) > 0; }),
                    jobs.end());
         columns_ = std::move(jobs);
     }
@@ -76,10 +77,11 @@ void Builder::worker() {
 #endif
     world::ColumnHeights hm;
     std::vector<uint32_t> verts;
+    static thread_local uint64_t air[world::CHUNK + 2][world::CHUNK + 2];
     for (;;) {
         bool isTile = false;
         world::TileKey tile{};
-        std::pair<int32_t, int32_t> col{};
+        ColumnJob col{};
         {
             std::unique_lock lk(mu_);
             cv_.wait(lk, [&] { return stop_ || !tiles_.empty() || !columns_.empty(); });
@@ -95,7 +97,7 @@ void Builder::worker() {
             } else {
                 col = columns_.back();
                 columns_.pop_back();
-                buildingColumns_.insert(colKey(col.first, col.second));
+                buildingColumns_.insert(colKey(col.cx, col.cz));
             }
         }
         const auto t0 = clk::now();
@@ -107,20 +109,26 @@ void Builder::worker() {
             doneTiles_.push_back(std::move(r));
             continue;
         }
-        ColumnResult r{col.first, col.second, {}, 0};
-        world::columnHeights(tp_, col.first, col.second, hm);
-        // по высоте - только куски, через которые проходит поверхность (с каймой), Р2
+        ColumnResult r{col.cx, col.cz, col.cyMin, {}, 0};
+        world::columnHeights(tp_, col.cx, col.cz, hm);
+        // по высоте - куски, через которые проходит поверхность (с каймой), Р2; рядом с камерой - и ниже, до cyMin:
+        // там строятся только куски с пещерами (сплошной камень граней не даёт), Р26
         const int cyLo = (hm.minH - 1) >> world::CHUNK_LOG2, cyHi = hm.maxH >> world::CHUNK_LOG2;
-        for (int cy = cyLo; cy <= cyHi; ++cy) {
-            // нетронутый кусок: сетка прямо от высот, без заполнения вокселей (Р22)
+        constexpr int32_t WORLD_BOTTOM = -500 * world::VOXELS_PER_BLOCK / world::CHUNK;   // Р10
+        const int cyFrom = col.cyMin == NO_DEPTH ? cyLo : std::max(std::min(cyLo, col.cyMin), WORLD_BOTTOM);
+        for (int cy = cyFrom; cy <= cyHi; ++cy) {
+            const world::ChunkPos pos{col.cx, cy, col.cz};
+            const bool caves = world::caveAir(tp_, pos, hm, air);
+            if (!caves && cy < cyLo) continue;   // подземный и без пещер - сплошной камень
+            // нетронутый кусок: сетка прямо от высот (и пещер), без заполнения вокселей (Р22)
             world::MeshStats ms;
-            world::buildMesh(world::ChunkPos{col.first, cy, col.second}, hm, verts, ms);
+            world::buildMesh(pos, hm, verts, ms, caves ? air : nullptr);
             if (verts.empty()) continue;
-            r.chunks.push_back({{col.first * world::CHUNK, cy * world::CHUNK, col.second * world::CHUNK}, verts, ms.quads});
+            r.chunks.push_back({{col.cx * world::CHUNK, cy * world::CHUNK, col.cz * world::CHUNK}, verts, ms.quads});
         }
         r.ms = msSince(t0);
         std::lock_guard lk(mu_);
-        buildingColumns_.erase(colKey(col.first, col.second));
+        buildingColumns_.erase(colKey(col.cx, col.cz));
         doneColumns_.push_back(std::move(r));
     }
 }

@@ -17,6 +17,18 @@ constexpr uint32_t hash2(int32_t x, int32_t z, uint32_t seed) {
     return h;
 }
 
+// То же в 3D (Р26: пещеры)
+constexpr uint32_t hash3(int32_t x, int32_t y, int32_t z, uint32_t seed) {
+    uint32_t h = seed;
+    h ^= static_cast<uint32_t>(x) * 0x27D4EB2Du;
+    h ^= static_cast<uint32_t>(y) * 0x9E3779B1u;
+    h ^= static_cast<uint32_t>(z) * 0x165667B1u;
+    h ^= h >> 15; h *= 0x2C1B3C6Du;
+    h ^= h >> 12; h *= 0x297A2D39u;
+    h ^= h >> 15;
+    return h;
+}
+
 // Зерно октавы: у каждой октавы своё, иначе узоры октав совпадают по узлам
 constexpr uint32_t octaveSeed(uint32_t seed, int octave) { return seed + static_cast<uint32_t>(octave) * 0x9E3779B9u; }
 
