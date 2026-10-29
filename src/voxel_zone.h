@@ -39,9 +39,10 @@ public:
     const Stats& stats() const { return stats_; }
 
 private:
-    struct ChunkMesh { glm::ivec3 origin; render::MeshId mesh; int quads; };
-    // готовый столбец: его куски и до какой глубины он построен (Builder::NO_DEPTH - только поверхность)
-    struct Column { std::vector<ChunkMesh> chunks; int32_t builtMin = Builder::NO_DEPTH; };
+    struct ChunkMesh { glm::ivec3 origin; render::MeshId mesh; int quads; bool underground; };
+    // готовый столбец: его куски, до какой глубины он построен (Builder::NO_DEPTH - только поверхность)
+    // и с каких сторон его подземные куски закрыты заглушками (Р27)
+    struct Column { std::vector<ChunkMesh> chunks; int32_t builtMin = Builder::NO_DEPTH; uint8_t caps = 0; };
 
     static uint64_t key(int32_t cx, int32_t cz) { return uint64_t(uint32_t(cx)) << 32 | uint32_t(cz); }
     bool inWindow(int32_t cx, int32_t cz, int margin = 0) const;
@@ -56,7 +57,10 @@ private:
     int32_t ccx_ = INT32_MIN, ccz_ = INT32_MIN;              // столбец камеры
     std::unordered_map<uint64_t, Column> ready_;   // готовые столбцы (и в запасе за окном)
     int32_t depthMin_ = Builder::NO_DEPTH;        // Р26: до какого куска строить вниз рядом с камерой
+    int32_t qx_ = INT32_MIN, qz_ = INT32_MIN;     // Р27: центр подземного яруса - камера, округлённо
+    bool inUnder(int32_t cx, int32_t cz) const;   // столбец в подземном ярусе
     int32_t wantMin(int32_t cx, int32_t cz) const;
+    uint8_t wantCaps(int32_t cx, int32_t cz) const;
 
     // маска готовых столбцов окна (1 байт на столбец, строка - по z) и таблица сумм по ней
     std::vector<uint8_t> mask_;

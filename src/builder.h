@@ -19,12 +19,15 @@
 
 class Builder {
 public:
-    struct ChunkData { glm::ivec3 origin; std::vector<uint32_t> verts; int quads; };
+    struct ChunkData { glm::ivec3 origin; std::vector<uint32_t> verts; int quads; bool underground; };
+    // Заглушки пещер (Р27): с каких сторон подземные куски столбца закрыты каменной стенкой - край подземного
+    // яруса, за которым ничего не построено (иначе сквозь тоннель видно небо)
+    enum CapSide : uint8_t { CAP_NX = 1, CAP_PX = 2, CAP_NZ = 4, CAP_PZ = 8 };
     // Задание столбца: cyMin - до какого куска строить вниз (подземные куски - только с пещерами, Р26);
     // NO_DEPTH - только куски, через которые проходит поверхность
     static constexpr int32_t NO_DEPTH = INT32_MAX;
-    struct ColumnJob { int32_t cx, cz, cyMin; };
-    struct ColumnResult { int32_t cx, cz, cyMin; std::vector<ChunkData> chunks; double ms; };
+    struct ColumnJob { int32_t cx, cz, cyMin; uint8_t caps; };
+    struct ColumnResult { int32_t cx, cz, cyMin; uint8_t caps; std::vector<ChunkData> chunks; double ms; };
     struct TileResult { world::TileKey key; world::TileMesh mesh; double ms; };
 
     explicit Builder(const world::TerrainParams& tp);

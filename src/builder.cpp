@@ -109,7 +109,7 @@ void Builder::worker() {
             doneTiles_.push_back(std::move(r));
             continue;
         }
-        ColumnResult r{col.cx, col.cz, col.cyMin, {}, 0};
+        ColumnResult r{col.cx, col.cz, col.cyMin, col.caps, {}, 0};
         world::columnHeights(tp_, col.cx, col.cz, hm);
         // по высоте - куски, через которые проходит поверхность (с каймой), Р2; рядом с камерой - и ниже, до cyMin:
         // там строятся только куски с пещерами (сплошной камень граней не даёт), Р26
@@ -118,13 +118,30 @@ void Builder::worker() {
         const int cyFrom = col.cyMin == NO_DEPTH ? cyLo : std::max(std::min(cyLo, col.cyMin), WORLD_BOTTOM);
         for (int cy = cyFrom; cy <= cyHi; ++cy) {
             const world::ChunkPos pos{col.cx, cy, col.cz};
-            const bool caves = world::caveAir(tp_, pos, hm, air);
-            if (!caves && cy < cyLo) continue;   // подземный и без пещер - сплошной камень
+            bool caves = world::caveAir(tp_, pos, hm, air);
+            const bool underground = cy < cyLo;
+            if (caves) {
+                // Р27, заглушки: ниже самого нижнего построенного куска ничего нет - его нижний слой и кайма под
+                // ним - камень; у подземных кусков на краю подземного яруса - так же крайний слой и кайма сбоку
+                constexpr int E = world::CHUNK + 1;   // индекс каймы за дальним краем
+                bool left = false;
+                for (int z = 0; z <= E; ++z)
+                    for (int x = 0; x <= E; ++x) {
+                        uint64_t& a = air[z][x];
+                        if (cy == cyFrom) a &= ~uint64_t(3);
+                        if (underground && (((col.caps & CAP_NX) && x <= 1) || ((col.caps & CAP_PX) && x >= E - 1) ||
+                                            ((col.caps & CAP_NZ) && z <= 1) || ((col.caps & CAP_PZ) && z >= E - 1)))
+                            a = 0;
+                        left |= a != 0;
+                    }
+                caves = left;
+            }
+            if (!caves && underground) continue;   // подземный и без пещер - сплошной камень
             // нетронутый кусок: сетка прямо от высот (и пещер), без заполнения вокселей (Р22)
             world::MeshStats ms;
             world::buildMesh(pos, hm, verts, ms, caves ? air : nullptr);
             if (verts.empty()) continue;
-            r.chunks.push_back({{col.cx * world::CHUNK, cy * world::CHUNK, col.cz * world::CHUNK}, verts, ms.quads});
+            r.chunks.push_back({{col.cx * world::CHUNK, cy * world::CHUNK, col.cz * world::CHUNK}, verts, ms.quads, underground});
         }
         r.ms = msSince(t0);
         std::lock_guard lk(mu_);
