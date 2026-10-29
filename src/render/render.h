@@ -29,6 +29,8 @@ struct CmdCamera {
     glm::vec3 eye;            // положение камеры, блоки
     glm::vec4 voxelZone;      // окно маски вокселей: minX, minZ (блоки), столбцов по стороне, блоков в столбце (Р21)
     float fadeStart, fadeEnd; // дальний край видимости: рельеф растворяется в небе
+    float hazeDistance;       // воздушная дымка: на этом расстоянии - 63% от hazeMax (1 - e^-1)
+    float hazeMax;            // сколько неба примешивается вдали при полной дымке
     Color sky;
 };
 struct CmdDrawChunk { MeshId mesh; glm::ivec3 originVoxels; };

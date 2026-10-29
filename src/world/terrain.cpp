@@ -10,7 +10,7 @@ namespace {
 
 // Зерно слоя: у каждого шума своё, перемешанное хешем - слои не повторяют друг друга.
 // Равнины берут само зерно мира - их вид остался прежним.
-enum Layer : int32_t { HILLS = 1, MOUNT, RELIEF, TEMP, RAIN };
+enum Layer : int32_t { HILLS = 1, MOUNT, RELIEF, TEMP, RAIN, BELT, UPLIFT };
 inline uint32_t layerSeed(uint32_t seed, Layer l) { return gen::hash2(l, 0x51ED, seed); }
 
 // Треугольная волна периода 2·band: 0 в нуле, +1 на band/2, -1 на -band/2. Пояса климата - линейные,
@@ -30,9 +30,15 @@ inline int32_t scaled(int32_t base, fx::q16 n, int32_t amp) {
 // медленные поля в узле сетки
 SlowFields slowNode(const TerrainParams& p, int32_t nx, int32_t nz, int minCellLog2) {
     const int32_t x = nx << SLOW_STEP_LOG2, z = nz << SLOW_STEP_LOG2;
+    // пояс цепи: 1 - |s| со сглаженным модулем у нуля (|s| < e -> (s² + e²) / 2e): без излома по оси цепи
+    const fx::q16 s = gen::fbmSimplex2(x, z, p.beltCellLog2, p.beltOctaves, layerSeed(p.seed, BELT));
+    constexpr fx::q16 e = fx::ONE / 20;
+    const fx::q16 a = s < 0 ? -s : s;
+    const fx::q16 soft = a < e ? fx::q16((int64_t(s) * s + int64_t(e) * e) / (2 * int64_t(e))) : a;
     return {gen::fbmValue2(x, z, p.reliefCellLog2, p.reliefOctaves, layerSeed(p.seed, RELIEF), minCellLog2),
             gen::fbmValue2(x, z, p.climateCellLog2, p.climateOctaves, layerSeed(p.seed, TEMP)),
-            gen::fbmValue2(x, z, p.climateCellLog2, p.climateOctaves, layerSeed(p.seed, RAIN))};
+            gen::fbmValue2(x, z, p.climateCellLog2, p.climateOctaves, layerSeed(p.seed, RAIN)), fx::ONE - soft,
+            gen::fbmSimplex2(x, z, p.upliftCellLog2, p.upliftOctaves, layerSeed(p.seed, UPLIFT))};
 }
 
 // Линейное смешивание четырёх узлов. Узел с нулевым весом не нужен (точка на линии сетки) - его и не
@@ -43,7 +49,8 @@ SlowFields bilerp(int32_t x, int32_t z, Node node) {
     const int32_t nx = x >> SLOW_STEP_LOG2, nz = z >> SLOW_STEP_LOG2;
     const fx::q16 fx_ = (x & mask) << (fx::SHIFT - SLOW_STEP_LOG2), fz = (z & mask) << (fx::SHIFT - SLOW_STEP_LOG2);
     const auto mix = [](const SlowFields& a, const SlowFields& b, fx::q16 t) {
-        return SlowFields{fx::lerp(a.relief, b.relief, t), fx::lerp(a.temp, b.temp, t), fx::lerp(a.rain, b.rain, t)};
+        return SlowFields{fx::lerp(a.relief, b.relief, t), fx::lerp(a.temp, b.temp, t), fx::lerp(a.rain, b.rain, t),
+                          fx::lerp(a.belt, b.belt, t), fx::lerp(a.uplift, b.uplift, t)};
     };
     SlowFields top = node(nx, nz);
     if (fx_) top = mix(top, node(nx + 1, nz), fx_);
@@ -82,8 +89,22 @@ Relief reliefAt(const TerrainParams& p, int32_t x, int32_t z, const SlowFields& 
     // веса: плавные ступени по рельефности; горы забирают свою долю первыми, холмы - из остатка,
     // равнины - всё оставшееся. Сумма = 1 точно, по построению.
     const fx::q16 m = slow.relief;
-    r.wMount = fx::smoothstep(p.mountFrom, p.mountTo, m);
-    r.wHills = fx::mul(fx::smoothstep(p.hillsFrom, p.hillsTo, m), fx::ONE - r.wMount);
+    fx::q16 core = 0;   // 0 у края цепи, 1 на её оси (вид 2: профиль массива)
+    fx::q16 up = 0;     // высокогорье: 0..1
+    if (p.mountainStyle == 0) {
+        r.wMount = fx::smoothstep(p.mountFrom, p.mountTo, m);
+        r.wHills = fx::mul(fx::smoothstep(p.hillsFrom, p.hillsTo, m), fx::ONE - r.wMount);
+    } else {
+        // Р23: горы - вдоль пояса цепи; цепь прерывается, где рельефность низка; по бокам - предгорья-холмы
+        // высокогорье: порог пояса ниже (цепь шире), рост - вдвое (ниже)
+        up = fx::smoothstep(p.upliftFrom, p.upliftTo, slow.uplift);
+        const fx::q16 from = p.chainFrom - fx::mul(up, p.upliftWiden), to = p.chainTo - fx::mul(up, p.upliftWiden);
+        const fx::q16 gate = std::max(fx::smoothstep(p.gateFrom, p.gateTo, m), up);   // в высокогорье цепь не рвётся
+        r.wMount = fx::mul(fx::smoothstep(from, to, slow.belt), gate);
+        const fx::q16 foot = fx::mul(fx::smoothstep(from - p.footWidth, from, slow.belt), gate);
+        r.wHills = fx::mul(std::max(fx::smoothstep(p.hillsFrom, p.hillsTo, m), foot), fx::ONE - r.wMount);
+        core = fx::smoothstep(from, fx::ONE, slow.belt);
+    }
     r.wPlains = fx::ONE - r.wMount - r.wHills;
     // высота - сумма видов с весами; вид с нулевым весом не считаем вовсе (в чистой зоне - одна формула)
     int64_t h = 0;
@@ -92,9 +113,25 @@ Relief reliefAt(const TerrainParams& p, int32_t x, int32_t z, const SlowFields& 
     if (r.wHills > 0)
         h += int64_t(r.wHills) *
              scaled(p.hillsBase, gen::fbmSimplex2(x, z, p.hillsCellLog2, p.hillsOctaves, layerSeed(p.seed, HILLS), minCellLog2), p.hillsAmp);
-    if (r.wMount > 0)
-        h += int64_t(r.wMount) *
-             scaled(p.mountBase, gen::ridged2(x, z, p.mountCellLog2, p.mountOctaves, layerSeed(p.seed, MOUNT), minCellLog2), p.mountAmp);
+    if (r.wMount > 0) {
+        int32_t hm;
+        if (p.mountainStyle < 2) {
+            hm = scaled(p.mountBase, gen::ridged2(x, z, p.mountCellLog2, p.mountOctaves, layerSeed(p.seed, MOUNT), minCellLog2), p.mountAmp);
+        } else {
+            // массив: гладкий подъём к оси цепи; гребни без квадрата, сильнее у оси (25% у края, 100% на оси);
+            // «колено»: выше peakKnee каждый воксель даёт половину - иглы оседают в плечи и купола
+            const fx::q16 ridge = gen::ridged2(x, z, p.mountCellLog2, p.mountOctaves, layerSeed(p.seed, MOUNT), minCellLog2, false);
+            const fx::q16 ridgeShare = fx::ONE / 4 + fx::mul(core, fx::ONE * 3 / 4);
+            // высокогорье - вдвое: и массив, и гребни, и колено
+            const int64_t scale = fx::ONE + up;
+            const int32_t rise = int32_t((int64_t(core) * p.massifAmp) >> fx::SHIFT) +
+                                 int32_t((int64_t(fx::mul(ridge, ridgeShare)) * p.ridgeAmp) >> fx::SHIFT);
+            hm = p.mountBase + int32_t((rise * scale) >> fx::SHIFT);
+            const int32_t knee = int32_t((int64_t(p.peakKnee) * scale) >> fx::SHIFT);
+            if (hm > knee) hm = knee + (hm - knee) / 2;
+        }
+        h += int64_t(r.wMount) * hm;
+    }
     r.height = static_cast<int32_t>(h >> fx::SHIFT);
     return r;
 }

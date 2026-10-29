@@ -29,7 +29,23 @@ struct TerrainParams {
     // рельефность - маска на шуме значений: ячейка 1024 блока, 3 октавы; пороги - по долям площади (Р19)
     int reliefCellLog2 = 14, reliefOctaves = 3;
     fx::q16 hillsFrom = -fx::ONE / 10, hillsTo = fx::ONE / 10;          // равнины -> холмы
-    fx::q16 mountFrom = fx::ONE * 2 / 10, mountTo = fx::ONE * 4 / 10;   // холмы -> горы
+    fx::q16 mountFrom = fx::ONE * 2 / 10, mountTo = fx::ONE * 4 / 10;   // холмы -> горы (вид 0)
+    // Вид гор (Р23): 0 - пятна по рельефности, острые хребты; 1 - цепи вдоль поясов, хребты прежние;
+    // 2 - цепи + гладкий массив поперёк цепи + пологие гребни + «колено» по высоте
+    int mountainStyle = 2;
+    // пояс цепи: b = 1 - |шум| (ячейка 4096 блоков, 2 октавы), 1 - ось цепи; горы - где b выше chainFrom
+    int beltCellLog2 = 17, beltOctaves = 2;
+    fx::q16 chainFrom = fx::ONE * 62 / 100, chainTo = fx::ONE * 80 / 100;
+    fx::q16 footWidth = fx::ONE * 15 / 100;                             // предгорья-холмы по обе стороны цепи
+    fx::q16 gateFrom = -fx::ONE * 10 / 100, gateTo = fx::ONE * 15 / 100; // цепь прерывается, где рельефность низка
+    // масштаб - монументальный (решение пользователя: горы в 500 блоков, высокогорье - до километра);
+    // нёрфится острота, а не рост: гребни без квадрата и «колено» над peakKnee
+    int32_t massifAmp = 220 * VOXELS_PER_BLOCK, ridgeAmp = 260 * VOXELS_PER_BLOCK;
+    int32_t peakKnee = 420 * VOXELS_PER_BLOCK;                          // выше - каждый блок даёт половину
+    // высокогорье: редкие области (~10 км), где цепи шире и вдвое выше - до ~950 блоков (предел мира Р10 - 1000)
+    int upliftCellLog2 = 18, upliftOctaves = 2;
+    fx::q16 upliftFrom = fx::ONE * 30 / 100, upliftTo = fx::ONE * 55 / 100;
+    fx::q16 upliftWiden = fx::ONE * 17 / 100;                           // на столько ниже порог пояса - цепь шире
     // климат
     int32_t climateBand = 20000 * VOXELS_PER_BLOCK;   // от самого холодного пояса до самого жаркого (как в TFC)
     fx::q16 tempMid = 8 * DEG, tempSwing = 22 * DEG;  // на уровне моря: от -14 до +30 °C по поясам
@@ -37,7 +53,7 @@ struct TerrainParams {
     fx::q16 rainMid = 250 * DEG, rainSwing = 250 * DEG, rainNoise = 75 * DEG;   // осадки 0..500 мм в год
     int climateCellLog2 = 15, climateOctaves = 2;      // шум климата: ячейка 2048 блоков
     int32_t seaLevel = 32 * VOXELS_PER_BLOCK;          // от него отсчёт падения температуры с высотой
-    fx::q16 lapsePerVoxel = 655;                       // 0.16 °C на блок = 0.01 °C на воксель
+    fx::q16 lapsePerVoxel = 184;                       // 0.045 °C на блок: снег в умеренном поясе - с ~220 блоков
     fx::q16 snowBelow = -2 * DEG;                      // снег - где средняя температура ниже
     fx::q16 desertRain = 100 * DEG, desertTemp = 15 * DEG;   // пустыня: сухо и тепло
 };
@@ -48,6 +64,8 @@ struct TerrainParams {
 constexpr int SLOW_STEP_LOG2 = 6;
 struct SlowFields {
     fx::q16 relief, temp, rain;   // рельефность; шумы температуры и осадков (без поясов - те точные)
+    fx::q16 belt;                 // пояс горной цепи (Р23): 1 на оси цепи, к краям падает
+    fx::q16 uplift;               // поднятие (Р23): шум высокогорья
 };
 SlowFields slowAt(const TerrainParams& p, int32_t x, int32_t z, int minCellLog2 = 0);
 // Для плотной выборки: узлы прямоугольника [x0..x1]×[z0..z1] (воксели, включительно) - по одному разу

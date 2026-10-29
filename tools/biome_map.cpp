@@ -39,15 +39,17 @@ void saveBmp(const std::string& path, int w, int h, const std::vector<uint8_t>& 
 
 int main(int argc, char** argv) {
     std::string out = "map";
-    int cx = 0, cz = 0, bpp = 4, size = 1024;
+    int cx = 0, cz = 0, bpp = 4, size = 1024, style = 2;
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         if (a == "--out" && i + 1 < argc) out = argv[++i];
         else if (a == "--center" && i + 2 < argc) { cx = std::stoi(argv[++i]); cz = std::stoi(argv[++i]); }
         else if (a == "--bpp" && i + 1 < argc) bpp = std::stoi(argv[++i]);
         else if (a == "--size" && i + 1 < argc) size = std::stoi(argv[++i]);
+        else if (a == "--style" && i + 1 < argc) style = std::stoi(argv[++i]);
     }
-    const world::TerrainParams p;
+    world::TerrainParams p;
+    p.mountainStyle = style;
     const int n = size;
     std::vector<world::Relief> rel(size_t(n) * n);
     std::vector<world::Cover> cov(size_t(n) * n);

@@ -107,8 +107,9 @@ fx::q16 perlin2(int32_t x, int32_t z, int cellLog2, uint32_t seed) {
 
 fx::q16 simplex2(int32_t x, int32_t z, int cellLog2, uint32_t seed) {
     // Координата в ячейках, Q16 в 64 битах: x · 2^(16 - k) - сдвиг, без деления
-    const int64_t X = static_cast<int64_t>(x) << (16 - cellLog2);
-    const int64_t Z = static_cast<int64_t>(z) << (16 - cellLog2);
+    // (ячейка крупнее 2^16 вокселей - сдвигом вправо: доля ячейки грубее вокселя, для медленных полей не важно)
+    const int64_t X = cellLog2 <= 16 ? static_cast<int64_t>(x) << (16 - cellLog2) : static_cast<int64_t>(x) >> (cellLog2 - 16);
+    const int64_t Z = cellLog2 <= 16 ? static_cast<int64_t>(z) << (16 - cellLog2) : static_cast<int64_t>(z) >> (cellLog2 - 16);
     // перекос: в каком ромбе квадратной сетки точка; сдвиг вправо - округление вниз и для отрицательных
     const int64_t s = ((X + Z) * SKEW) >> 16;
     const int64_t i = (X + s) >> 16, j = (Z + s) >> 16;
@@ -143,7 +144,7 @@ fx::q16 fbmValue2(int32_t x, int32_t z, int firstCellLog2, int octaves, uint32_t
     return fbm<value2>(x, z, firstCellLog2, octaves, seed, minCellLog2);
 }
 
-fx::q16 ridged2(int32_t x, int32_t z, int firstCellLog2, int octaves, uint32_t seed, int minCellLog2) {
+fx::q16 ridged2(int32_t x, int32_t z, int firstCellLog2, int octaves, uint32_t seed, int minCellLog2, bool squared) {
     // Гребень там, где шум проходит через ноль: 1 - |n| даёт острый излом, квадрат - сужает гребень.
     // Вес следующей октавы = 2 · (вклад предыдущей), не больше 1: на склонах и гребнях - мелкие гребешки,
     // в долинах (вклад мал) мелочь гаснет - дно ровное, как у настоящих гор.
@@ -154,7 +155,7 @@ fx::q16 ridged2(int32_t x, int32_t z, int firstCellLog2, int octaves, uint32_t s
         if (firstCellLog2 - o < minCellLog2) break;   // дальше только мельче
         const fx::q16 n = simplex2(x, z, firstCellLog2 - o, octaveSeed(seed, o));
         int64_t r = fx::ONE - (n < 0 ? -n : n);   // [0, 1]
-        r = (r * r) >> 16;
+        if (squared) r = (r * r) >> 16;
         r = (r * weight) >> 16;
         weight = r * 2 > fx::ONE ? fx::ONE : r * 2;
         sum += r >> o;

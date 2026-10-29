@@ -27,6 +27,8 @@ fx::q16 fbmValue2(int32_t x, int32_t z, int firstCellLog2, int octaves, uint32_t
 
 // Хребты: октавы (1 - |симплекс|)², каждая следующая - с весом по предыдущей (мелкие гребни - на крупных,
 // а в долинах гладко). Ответ - Q16 в [0, 1]: 1 - гребень, 0 - дно долины.
-fx::q16 ridged2(int32_t x, int32_t z, int firstCellLog2, int octaves, uint32_t seed, int minCellLog2 = 0);
+// squared = false - без квадрата: гребни шире, вершины тупее (Р23).
+fx::q16 ridged2(int32_t x, int32_t z, int firstCellLog2, int octaves, uint32_t seed, int minCellLog2 = 0,
+                bool squared = true);
 
 }  // namespace gen

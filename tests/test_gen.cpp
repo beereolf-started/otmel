@@ -170,23 +170,31 @@ int main() {
 
     // воспроизводимость: один и тот же кусок - одна и та же сумма, в том числе на отрицательных координатах
     world::TerrainParams p;
-    const uint64_t a = chunkSum(p, 3, 16, -5), b = chunkSum(p, 3, 16, -5);
+    // кусок, через который проходит поверхность (а не сплошной воздух или камень - те у любых зёрен одинаковы)
+    int cy0;
+    {
+        world::ColumnHeights hm;
+        world::columnHeights(p, 3, -5, hm);
+        cy0 = hm.maxH >> world::CHUNK_LOG2;
+    }
+    const uint64_t a = chunkSum(p, 3, cy0, -5), b = chunkSum(p, 3, cy0, -5);
     CHECK(a == b, "кусок из одного зерна дважды - одинаков");
     world::TerrainParams q = p;
     q.seed = p.seed + 1;
-    CHECK(chunkSum(q, 3, 16, -5) != a, "другое зерно - другой кусок");
+    CHECK(chunkSum(q, 3, cy0, -5) != a, "другое зерно - другой кусок");
     // Эта сумма должна совпадать в отладочной и быстрой сборке и на любой машине (Р2, Р16)
-    std::printf("сумма куска (3,16,-5) при зерне 1337: %016llx\n", static_cast<unsigned long long>(a));
+    std::printf("сумма куска (3,%d,-5) при зерне 1337: %016llx\n", cy0, static_cast<unsigned long long>(a));
     {
-        // горный кусок у вершины (блок -837, 1723): хребты, симплекс, смешение весов, климат и снег - тоже до бита
+        // горный кусок у вершины цепи (блок 3896, 828; Р23): хребты, симплекс, пояс цепи, смешение весов,
+        // климат и снег - тоже до бита
         world::ColumnHeights hm;
-        world::columnHeights(p, -419, 861, hm);
+        world::columnHeights(p, 1948, 414, hm);
         const int cy = (hm.maxH >> world::CHUNK_LOG2) - 1;
         bool snow = false;
         for (auto& row : hm.cover) for (auto& cv : row) if (cv.top == world::SNOW) snow = true;
-        CHECK(snow && hm.maxH > 200 * world::VOXELS_PER_BLOCK, "у вершины - горы выше 200 блоков и снег");
-        std::printf("сумма горного куска (-419,%d,861) при зерне 1337: %016llx\n", cy,
-                    static_cast<unsigned long long>(chunkSum(p, -419, cy, 861)));
+        CHECK(snow && hm.maxH > 150 * world::VOXELS_PER_BLOCK, "у вершины цепи - горы выше 150 блоков и снег");
+        std::printf("сумма горного куска (1948,%d,414) при зерне 1337: %016llx\n", cy,
+                    static_cast<unsigned long long>(chunkSum(p, 1948, cy, 414)));
     }
 
     // поворот битовой таблицы 32×32 - против побитового эталона на случайных таблицах
@@ -250,7 +258,7 @@ int main() {
         world::TerrainParams tp;
         world::ColumnHeights hm;
         using clk = std::chrono::steady_clock;
-        for (const auto& [name, bx, bz] : {std::tuple{"равнины", 0, 0}, std::tuple{"горы", -419, 861}}) {
+        for (const auto& [name, bx, bz] : {std::tuple{"равнины", 0, 0}, std::tuple{"горы", 1948, 414}}) {
             // по частям: высоты, заполнение кусков, сетки - на 256 столбцах
             double tH = 0, tF = 0, tM = 0;
             int n = 0, chunks = 0;

@@ -149,7 +149,7 @@ void saveShot(render::Backend& gpu, int w, int h, const char* path) {
 int main(int argc, char** argv) {
     // Ключи (пока вместо меню настроек):
     //   --voxels B   зона вокселей: квадрат ±B блоков вокруг точки старта (по умолчанию 128) - дальше гладко (Р20)
-    //   --draw B     дальность видимости, блоков (8192)
+    //   --draw B     дальность видимости, блоков (24576)
     //   --detail K   детальность дальних уровней: дальность уровня 0, блоков (128; не меньше 65 - иначе щели)
     //   --at X Z     точка старта, блоки;  --eye x y z yaw pitch - камера;  --shot - снимок и выход
     //   --fly V      (со --shot) облёт: камера летит вперёд со скоростью V блоков/с 10 секунд, замер отставания
@@ -185,6 +185,8 @@ int main(int argc, char** argv) {
     // Зона вокселей едет за камерой (Р21): ±R столбцов кусков (столбец - 2×2 блока); строят фоновые потоки
     const int blocksPerColumn = world::CHUNK / world::VOXELS_PER_BLOCK;
     world::TerrainParams tp;
+    for (int i = 1; i + 1 < argc; ++i)
+        if (std::string(argv[i]) == "--style") tp.mountainStyle = std::stoi(argv[i + 1]);   // вид гор (Р23)
     Builder builder(tp);
     VoxelZone voxels(*gpu, builder, std::max(1, voxelBlocks / blocksPerColumn));
     FarTerrain farTerrain(*gpu, builder);
@@ -265,7 +267,7 @@ int main(int argc, char** argv) {
         frame.reset();
         frame.clear(sky);
         frame.camera({viewProj, glm::vec3(0.4f, 1.0f, 0.25f), eye, voxels.window(),
-                      float(lod.drawDistance) * 0.75f, float(lod.drawDistance), sky});
+                      float(lod.drawDistance) * 0.85f, float(lod.drawDistance), 9000.0f, 0.6f, sky});
         chunksDrawn = voxels.draw(fr, frame);
         const auto tFar = clock_t_::now();
         farTerrain.frame(lod, eye, fr, voxels, frame, farStats);

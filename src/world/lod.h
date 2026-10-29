@@ -41,7 +41,7 @@ void buildTile(const TerrainParams& p, TileKey k, TileMesh& out);
 
 struct LodSettings {
     int detail = 128;          // K: дальность уровня 0 в блоках; условие без щелей - K >= 65 (Р20)
-    int drawDistance = 8192;   // блоков
+    int drawDistance = 24576;  // блоков: гора в 15 км видна с равнины (решение пользователя)
     // зона вокселей (блоки): четверти плиток целиком внутри неё не рисуются, частично - дорезает шейдер
     int64_t holeMinX = 0, holeMinZ = 0, holeMaxX = 0, holeMaxZ = 0;
 };

@@ -21,7 +21,9 @@ void main() {
     ivec2 c = ivec2(floor((vWorld.xz - voxelZone.xy) / voxelZone.w));
     int side = int(voxelZone.z);
     if (all(greaterThanEqual(c, ivec2(0))) && all(lessThan(c, ivec2(side))) && texelFetch(uVoxelMask, c, 0).r != 0u) discard;
-    // у края видимости рельеф растворяется в небе - конец мира не обрывается стеной
-    float d = distance(eye.xz, vWorld.xz);
-    outColor = vec4(mix(vColor, sky.rgb, smoothstep(fade.x, fade.y, d)), 1.0);
+    // воздушная дымка: даль голубеет (1 - e^(-d/L)), но видна - она и даёт ощущение расстояния;
+    // у края видимости рельеф растворяется в небе целиком - конец мира не обрывается стеной
+    float d = distance(eye.xyz, vWorld);
+    float haze = fade.w * (1.0 - exp(-d / fade.z));
+    outColor = vec4(mix(vColor, sky.rgb, max(haze, smoothstep(fade.x, fade.y, d))), 1.0);
 }

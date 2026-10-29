@@ -69,7 +69,7 @@ struct FrameUbo {
     float sunDir[4];
     float eye[4];
     float voxelZone[4];
-    float fade[4];   // начало, конец растворения вдали
+    float fade[4];   // начало, конец растворения вдали; дымка: расстояние, доля неба
     float sky[4];
 };
 
@@ -196,6 +196,7 @@ public:
                 u.eye[0] = cam->eye.x; u.eye[1] = cam->eye.y; u.eye[2] = cam->eye.z;
                 for (int i = 0; i < 4; ++i) u.voxelZone[i] = cam->voxelZone[i];
                 u.fade[0] = cam->fadeStart; u.fade[1] = cam->fadeEnd;
+                u.fade[2] = cam->hazeDistance; u.fade[3] = cam->hazeMax;
                 u.sky[0] = cam->sky.r; u.sky[1] = cam->sky.g; u.sky[2] = cam->sky.b; u.sky[3] = cam->sky.a;
                 glNamedBufferSubData(ubo_, 0, sizeof(u), &u);
                 glBindBufferBase(GL_UNIFORM_BUFFER, 0, ubo_);
