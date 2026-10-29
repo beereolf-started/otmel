@@ -22,11 +22,44 @@ if(MSVC)
     add_compile_options(/utf-8 /W4 /permissive-)
 endif()
 
+# Генерация и мир - отдельной библиотекой: её же проверяют тесты, без окна и видеокарты
+add_library(otmel_world STATIC
+    src/gen/noise.cpp
+    src/world/terrain.cpp
+    src/world/mesher.cpp
+)
+target_include_directories(otmel_world PUBLIC src)
+
 add_executable(otmel
     src/main.cpp
     src/journal.cpp
     src/render/gl/gl_backend.cpp
 )
 target_include_directories(otmel PRIVATE src)
-# OpenGL - только у пути отрисовки (Р8): glad подключается лишь там, но линкуется к исполняемому файлу
-target_link_libraries(otmel PRIVATE SDL3::SDL3-static glm::glm glad)
+target_link_libraries(otmel PRIVATE otmel_world SDL3::SDL3-static glm::glm glad)
+
+# Шейдеры: GLSL -> SPIR-V при сборке (Р8), рядом с программой в папке shaders
+file(GLOB GLSLC_CANDIDATES "C:/VulkanSDK/*/Bin/glslc.exe")
+find_program(GLSLC glslc HINTS $ENV{VULKAN_SDK}/Bin ${GLSLC_CANDIDATES})
+if(NOT GLSLC)
+    list(GET GLSLC_CANDIDATES 0 GLSLC)
+endif()
+set(SHADERS terrain.vert terrain.frag)
+set(SPV_FILES)
+foreach(S ${SHADERS})
+    set(OUT ${CMAKE_CURRENT_BINARY_DIR}/shaders/${S}.spv)
+    add_custom_command(OUTPUT ${OUT}
+        COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_CURRENT_BINARY_DIR}/shaders
+        COMMAND ${GLSLC} --target-env=opengl -O -o ${OUT} ${CMAKE_CURRENT_SOURCE_DIR}/shaders/${S}
+        DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/shaders/${S}
+        COMMENT "SPIR-V: ${S}")
+    list(APPEND SPV_FILES ${OUT})
+endforeach()
+add_custom_target(otmel_shaders ALL DEPENDS ${SPV_FILES})
+add_dependencies(otmel otmel_shaders)
+
+# Тесты: то, что проверяется машиной (Р6)
+enable_testing()
+add_executable(otmel_tests tests/test_gen.cpp)
+target_link_libraries(otmel_tests PRIVATE otmel_world)
+add_test(NAME generation COMMAND otmel_tests)
