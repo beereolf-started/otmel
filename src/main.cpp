@@ -308,41 +308,11 @@ int main(int argc, char** argv) {
                     }
                 sim.init(SIM, SIM, g, s);
                 simOn = true;
-                simArea = glm::vec4(float(flowAt.x + SIM_OFF), float(flowAt.y + SIM_OFF), float(SIM), 1.0f);
             }
             if (simOn) {
                 const float h = std::min(dt, 1.0f / 30.0f) * 0.5f;
                 sim.step(h);
                 sim.step(h);
-                // Р45: сетка воды автомата - раз в 2 кадра: гладь на уровне воды столбца, между столбцами с разным
-                // уровнем - стенки (на уступе - падающая вода); края зоны держат сгенерированный уровень - шва нет
-                if (simFrame % 2 == 0) {
-                    simVerts.clear();
-                    const float ox = simArea.x, oz = simArea.y;
-                    const auto quad = [&](glm::vec3 a, glm::vec3 b, glm::vec3 c, glm::vec3 d, float n) {
-                        for (const glm::vec3& q : {a, b, c, a, c, d}) simVerts.insert(simVerts.end(), {q.x, q.y, q.z, n});
-                    };
-                    constexpr int NX[4] = {1, -1, 0, 0}, NZ[4] = {0, 0, 1, -1};
-                    constexpr float NORMAL[4] = {0, 1, 4, 5};
-                    for (int z = 0; z < SIM; ++z)
-                        for (int x = 0; x < SIM; ++x) {
-                            if (sim.depth(x, z) < 0.02f) continue;
-                            const float s = sim.surface(x, z), x0 = ox + x, z0 = oz + z;
-                            quad({x0, s, z0}, {x0 + 1, s, z0}, {x0 + 1, s, z0 + 1}, {x0, s, z0 + 1}, 2);
-                            const float own = s - sim.depth(x, z);
-                            for (int d = 0; d < 4; ++d) {
-                                const int nx = x + NX[d], nz = z + NZ[d];
-                                if (nx < 0 || nz < 0 || nx >= SIM || nz >= SIM) continue;
-                                const float low = std::max(sim.surface(nx, nz), own);
-                                if (s - low < 0.05f) continue;
-                                // стенка на общей грани столбцов - от верха соседа до своей глади
-                                const float ex = d == 0 ? x0 + 1 : x0, ez = d == 2 ? z0 + 1 : z0;
-                                if (d < 2) quad({ex, low, z0}, {ex, low, z0 + 1}, {ex, s, z0 + 1}, {ex, s, z0}, NORMAL[d]);
-                                else quad({x0, low, ez}, {x0 + 1, low, ez}, {x0 + 1, s, ez}, {x0, s, ez}, NORMAL[d]);
-                            }
-                        }
-                    gpu->setSimWater(simVerts);
-                }
                 if (++simFrame % 4 == 0) {
                     shownVel = fieldVel;
                     for (int z = 0; z < SIM; ++z)

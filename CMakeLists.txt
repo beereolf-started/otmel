@@ -32,6 +32,7 @@ add_library(otmel_world STATIC
     src/world/rivers.cpp
     src/world/flow.cpp
     src/world/water_sim.cpp
+    src/world/spread.cpp
 )
 target_include_directories(otmel_world PUBLIC src)
 

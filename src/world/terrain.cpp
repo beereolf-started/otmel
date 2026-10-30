@@ -5,6 +5,7 @@
 #include "gen/hash.h"
 #include "gen/noise.h"
 #include "world/rivers.h"
+#include "world/spread.h"
 
 namespace world {
 namespace {
@@ -227,6 +228,38 @@ void columnHeights(const TerrainParams& p, int32_t chunkX, int32_t chunkZ, Colum
             out.maxH = std::max(out.maxH, surface);
             out.nearWater[z][x] = r.shore || r.water > r.height;
         }
+    }
+    // Р47: растекание как в Minecraft - по сетке блоков с запасом 10 блоков вокруг куска: источники -
+    // сгенерированная вода, результат - сразу в уровень воды столбцов (вшит в генерацию)
+    {
+        constexpr int M = 10;
+        const auto fdiv = [](int32_t v) { return v >= 0 ? v / VOXELS_PER_BLOCK : -((-v + VOXELS_PER_BLOCK - 1) / VOXELS_PER_BLOCK); };
+        const int32_t bx0 = fdiv(x0) - M, bz0 = fdiv(z0) - M;
+        const int n = std::max(fdiv(x0 + CHUNK + 1) - bx0, fdiv(z0 + CHUNK + 1) - bz0) + M + 1;
+        static thread_local std::vector<int32_t> gb, sb, tb;
+        static thread_local SlowGrid slowB;
+        static thread_local RiverSet riversB;
+        const int32_t rx0 = bx0 * VOXELS_PER_BLOCK, rz0 = bz0 * VOXELS_PER_BLOCK, rx1 = (bx0 + n) * VOXELS_PER_BLOCK, rz1 = (bz0 + n) * VOXELS_PER_BLOCK;
+        slowB.build(p, rx0, rz0, rx1, rz1);
+        riversB.build(p, rx0, rz0, rx1, rz1);
+        gb.assign(size_t(n) * n, 0);
+        sb.assign(size_t(n) * n, NO_WATER);
+        for (int j = 0; j < n; ++j)
+            for (int i = 0; i < n; ++i) {
+                const int32_t x = (bx0 + i) * VOXELS_PER_BLOCK + VOXELS_PER_BLOCK / 2, z = (bz0 + j) * VOXELS_PER_BLOCK + VOXELS_PER_BLOCK / 2;
+                const Relief r = reliefAt(p, x, z, slowB.at(x, z), 0, &riversB);
+                gb[size_t(j) * n + i] = r.height;
+                if (r.water > r.height) sb[size_t(j) * n + i] = r.water;
+            }
+        spreadWater(n, gb, sb, tb);
+        for (int z = 0; z < CHUNK + 2; ++z)
+            for (int x = 0; x < CHUNK + 2; ++x) {
+                const int32_t t = tb[size_t(fdiv(z0 + z) - bz0) * n + size_t(fdiv(x0 + x) - bx0)];
+                if (t == NO_WATER || t <= out.h[z][x] || t <= out.water[z][x]) continue;
+                out.water[z][x] = t;
+                out.maxH = std::max(out.maxH, t);
+                out.nearWater[z][x] = true;
+            }
     }
     // климат и покров - только своим столбцам, не кайме; у воды рек и озёр - песок (Р29)
     for (int z = 0; z < CHUNK; ++z)
