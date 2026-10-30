@@ -166,17 +166,21 @@ struct Grower {
 
 }  // namespace
 
-void growOak(uint32_t seed, OakVoxels& out) {
+void growOak(uint32_t seed, OakVoxels& out, int scale) {
     Grower g(seed);
     g.grow();
     g.radii();
+    // Р63: всё дальше - в вокселях размера scale (мелких): точки и радиусы делятся на scale
+    const float S = float(scale), iS = 1.0f / S;
+    out.scale = scale;
+    for (Node& nd : g.nodes) { nd.p = nd.p * iS; nd.r *= iS; }
     const uint32_t ns = seed * 0x27D4EB2Du + 0x165667B1u;
     // листва: комки у кончиков веточек (порядок 2-3, не пеньки, не корни)
     struct Blob { V3 c; float r; };
     std::vector<Blob> blobs;
     for (const Node& nd : g.nodes)
         if (!nd.root && !nd.stub && nd.order >= 2 && (nd.children == 0 || g.rng.f() < 0.5f))
-            blobs.push_back({nd.p + UP * g.rng.r(1, 3) + g.rng.unit() * 1.5f, nd.children == 0 ? g.rng.r(11, 16) : g.rng.r(9, 13)});
+            blobs.push_back({nd.p + (UP * g.rng.r(1, 3) + g.rng.unit() * 1.5f) * iS, (nd.children == 0 ? g.rng.r(11, 16) : g.rng.r(9, 13)) * iS});
     // рамка
     float lo[3] = {1e9f, 1e9f, 1e9f}, hi[3] = {-1e9f, -1e9f, -1e9f};
     const auto grow = [&](V3 p, float r) {
@@ -184,7 +188,7 @@ void growOak(uint32_t seed, OakVoxels& out) {
         hi[0] = std::max(hi[0], p.x + r); hi[1] = std::max(hi[1], p.y + r); hi[2] = std::max(hi[2], p.z + r);
     };
     for (const Node& nd : g.nodes) grow(nd.p, nd.r * 1.3f + 2);
-    for (const Blob& b : blobs) grow(b.c, b.r * 1.2f + 1);
+    for (const Blob& b : blobs) grow(b.c, b.r * 1.3f + 1);
     out.x0 = int(std::floor(lo[0])); out.y0 = int(std::floor(lo[1])); out.z0 = int(std::floor(lo[2]));
     out.sx = int(std::ceil(hi[0])) - out.x0 + 1; out.sy = int(std::ceil(hi[1])) - out.y0 + 1; out.sz = int(std::ceil(hi[2])) - out.z0 + 1;
     out.v.assign(size_t(out.sx) * out.sy * out.sz, AIR);
@@ -195,6 +199,7 @@ void growOak(uint32_t seed, OakVoxels& out) {
     for (const Node& nd : g.nodes) {
         if (nd.parent < 0) continue;
         const Node& pa = g.nodes[size_t(nd.parent)];
+        if (nd.order > 0 && std::max(pa.r, nd.r) < 0.3f) continue;   // Р63: тоньше трети вокселя - не видно
         const V3 a = pa.p, b = nd.p, ab = b - a;
         const float l2 = std::max(1e-6f, dot(ab, ab));
         const float rmax = std::max(pa.r, nd.r) * 1.25f + 1;
@@ -208,7 +213,7 @@ void growOak(uint32_t seed, OakVoxels& out) {
                     const float t = std::clamp(dot(q - a, ab) / l2, 0.0f, 1.0f);
                     const V3 f = a + ab * t;
                     float rr = pa.r + (nd.r - pa.r) * t;
-                    if (rr > 2.0f) rr *= 1.0f + 0.22f * noise3(q * (1.0f / 7.0f), ns);
+                    if (rr > 2.0f) rr *= 1.0f + 0.22f * noise3(q * (S / 7.0f), ns);
                     const float dd = len(q - f);
                     if (dd >= std::max(rr, 0.75f)) continue;   // тоньше вокселя - линия без разрывов
                     const size_t k = idx(x, y, z);
@@ -226,15 +231,15 @@ void growOak(uint32_t seed, OakVoxels& out) {
                 for (int x = int(std::floor(bl.c.x - rm)); x <= int(std::ceil(bl.c.x + rm)); ++x) {
                     const V3 q{x + 0.5f, y + 0.5f, z + 0.5f};
                     const float d = len(q - bl.c);
-                    if (d > bl.r * (0.8f + 0.35f * noise3(q * 0.25f, ns ^ 0xA5A5u))) continue;
-                    if (noise3(q * 0.6f, ns ^ 0x5A5Au) > 0.38f) continue;   // просветы (реже - крона плотная)
+                    if (d > bl.r * (0.8f + 0.35f * noise3(q * (0.25f * S), ns ^ 0xA5A5u))) continue;
+                    if (scale <= 2 && noise3(q * (0.6f * S), ns ^ 0x5A5Au) > 0.38f) continue;   // просветы (вдали - сплошь)
                     const size_t k = idx(x, y, z);
                     // два оттенка листвы пятнами
-                    if (out.v[k] == AIR) out.v[k] = noise3(q * 0.15f, ns ^ 0x3C3Cu) > 0.1f ? LEAVES2 : LEAVES;
+                    if (out.v[k] == AIR) out.v[k] = noise3(q * (0.15f * S), ns ^ 0x3C3Cu) > 0.1f ? LEAVES2 : LEAVES;
                 }
     }
     for (size_t k = 0; k < out.v.size(); ++k) {
-        if (out.v[k] != AIR) out.top = std::max(out.top, out.y0 + int(k / (size_t(out.sx) * out.sz)) + 1);
+        if (out.v[k] != AIR) out.top = std::max(out.top, (out.y0 + int(k / (size_t(out.sx) * out.sz)) + 1) * scale);
         if (out.v[k] == LEAVES || out.v[k] == LEAVES2) ++out.leaves;
         else if (out.v[k] != AIR) { ++out.wood; if (out.root[k]) ++out.roots; }
     }

@@ -18,15 +18,18 @@
 namespace world {
 
 struct OakVoxels {
-    int32_t x0 = 0, y0 = 0, z0 = 0;   // угол рамки от основания ствола, воксели
+    int scale = 1;                    // Р63: размер вокселя в мелких вокселях (1, 2, 4, 8, 16 = блок)
+    int32_t x0 = 0, y0 = 0, z0 = 0;   // угол рамки от основания ствола, в вокселях своего размера
     int sx = 0, sy = 0, sz = 0;       // размер рамки
     std::vector<Material> v;          // [(y·sz + z)·sx + x]; AIR - пусто
     std::vector<uint8_t> root;        // 1 - воксель корня
     int nodes = 0, wood = 0, leaves = 0, roots = 0;
-    int top = 0;                      // верхний непустой воксель от основания (высота дерева)
+    int top = 0;                      // верх дерева от основания, мелкие воксели
     Material at(int x, int y, int z) const { return v[(size_t(y) * sz + z) * sx + x]; }
 };
 
-void growOak(uint32_t seed, OakVoxels& out);
+// Р63: scale - уровень детализации: один и тот же скелет, воксели крупнее в scale раз (цена - в scale³ меньше);
+// ветки тоньше трети вокселя не рисуются, листва крупнее 2 мелких вокселей - сплошными комками
+void growOak(uint32_t seed, OakVoxels& out, int scale = 1);
 
 }  // namespace world

@@ -41,8 +41,10 @@ using clock_t_ = std::chrono::steady_clock;
 // Р62: дуб в сетки мелких кусков (32³ мелких вокселей = 2×2×2 блока) от блока-основы; корни, чей мелкий воксель
 // внутри блока земли (ground - верх земли блока-столбца), не рисуются. Только процессор - можно в фоне.
 struct OakChunk { std::vector<uint32_t> verts; glm::ivec3 fineOff; };
+// Р63: scale - уровень детализации (размер вокселя в мелких вокселях: 1, 2, 4, 8, 16); fineShift - сдвиг ствола
+// в мелких вокселях внутри блока-основы (не центр блока); куски - 32³ вокселей своего размера
 template <class Ground>
-int buildOakChunks(uint32_t seed, glm::ivec3 base, glm::ivec3 fineShift, Ground ground, std::vector<OakChunk>& out) {
+int buildOakChunks(uint32_t seed, glm::ivec3 base, glm::ivec3 fineShift, Ground ground, std::vector<OakChunk>& out, int scale = 1) {
     static thread_local world::ColumnHeights air;
     static thread_local bool airReady = false;
     if (!airReady) {
@@ -51,29 +53,29 @@ int buildOakChunks(uint32_t seed, glm::ivec3 base, glm::ivec3 fineShift, Ground 
         airReady = true;
     }
     const auto fdiv = [](int32_t v, int32_t d) { return v >= 0 ? v / d : -((-v + d - 1) / d); };
-    constexpr int SINK = 3;
+    constexpr int SINK = 3;   // комель утоплен на 3 мелких вокселя
     world::OakVoxels ov;
-    world::growOak(seed, ov);
+    world::growOak(seed, ov, scale);
     int quads = 0;
     auto c = std::make_unique<world::Chunk>();
-    const int fx0 = ov.x0 + fineShift.x, fy0 = ov.y0 - SINK, fz0 = ov.z0 + fineShift.z;
-    for (int cz = fdiv(fz0, 32); cz <= fdiv(fz0 + ov.sz - 1, 32); ++cz)
-        for (int cx = fdiv(fx0, 32); cx <= fdiv(fx0 + ov.sx - 1, 32); ++cx)
-            for (int cy = fdiv(fy0, 32); cy <= fdiv(fy0 + ov.sy - 1, 32); ++cy) {
+    for (int cz = 0; cz * 32 < ov.sz; ++cz)
+        for (int cx = 0; cx * 32 < ov.sx; ++cx)
+            for (int cy = 0; cy * 32 < ov.sy; ++cy) {
                 c->pos = {cx, cy, cz};
                 c->edited = true;
                 c->voxels.fill(world::AIR);
+                const glm::ivec3 off((ov.x0 + cx * 32) * scale + fineShift.x, (ov.y0 + cy * 32) * scale - SINK, (ov.z0 + cz * 32) * scale + fineShift.z);
                 bool any = false;
-                for (int y = 0; y < 32; ++y)
-                    for (int z = 0; z < 32; ++z)
-                        for (int x = 0; x < 32; ++x) {
-                            const int fx = cx * 32 + x, fy = cy * 32 + y, fz = cz * 32 + z;
-                            const int lx = fx - fx0, ly = fy - fy0, lz = fz - fz0;
-                            if (lx < 0 || ly < 0 || lz < 0 || lx >= ov.sx || ly >= ov.sy || lz >= ov.sz) continue;
-                            const size_t k = (size_t(ly) * ov.sz + lz) * ov.sx + lx;
+                for (int y = 0; y < 32 && cy * 32 + y < ov.sy; ++y)
+                    for (int z = 0; z < 32 && cz * 32 + z < ov.sz; ++z)
+                        for (int x = 0; x < 32 && cx * 32 + x < ov.sx; ++x) {
+                            const size_t k = (size_t(cy * 32 + y) * ov.sz + cz * 32 + z) * ov.sx + cx * 32 + x;
                             const world::Material m = ov.v[k];
                             if (m == world::AIR) continue;
-                            if (ov.root[k] && base.y + fdiv(fy, 16) <= ground(base.x + fdiv(fx, 16), base.z + fdiv(fz, 16))) continue;
+                            if (ov.root[k]) {   // корень в толще земли - не рисуем (середина вокселя)
+                                const int fx = off.x + x * scale + scale / 2, fy = off.y + y * scale + scale / 2, fz = off.z + z * scale + scale / 2;
+                                if (base.y + fdiv(fy, 16) <= ground(base.x + fdiv(fx, 16), base.z + fdiv(fz, 16))) continue;
+                            }
                             c->at(x, y, z) = m;
                             any = true;
                         }
@@ -83,7 +85,7 @@ int buildOakChunks(uint32_t seed, glm::ivec3 base, glm::ivec3 fineShift, Ground 
                 world::buildMesh(*c, air, oc.verts, ms);
                 if (oc.verts.empty()) continue;
                 quads += ms.quads;
-                oc.fineOff = glm::ivec3(cx, cy, cz) * 32;
+                oc.fineOff = off;
                 out.push_back(std::move(oc));
             }
     return quads;
@@ -265,7 +267,7 @@ int main(int argc, char** argv) {
     // Р53: дубы-коряги для просмотра: левая кнопка - новый дуб в 32 блоках перед камерой, правая - убрать все,
     // R - корни под землёй прятать / показывать. Сетка - кусками 32³ поверх мира (в мир пока не вписаны).
     struct OakSpot { int32_t x, y, z; uint32_t seed; };
-    struct OakMesh { render::MeshId mesh; glm::ivec3 base, fineOff; };
+    struct OakMesh { render::MeshId mesh; glm::ivec3 base, fineOff; int scale = 1; };
     std::vector<OakSpot> oaks;
     std::vector<OakMesh> oakMeshes;
     std::vector<std::pair<render::MeshId, glm::ivec3>> rulerMeshes;
@@ -457,16 +459,16 @@ int main(int argc, char** argv) {
     // Р62: лес в генерации - зона 7×7 кусков (224 блока) вокруг куска камеры; места - в фоне, деревья - в фоне по 6
     struct ForestSpot { uint64_t key; glm::ivec3 base; glm::ivec3 shift; uint32_t seed; };
     struct ForestZone { glm::ivec2 origin; int side; std::shared_ptr<std::vector<int32_t>> ground; std::vector<ForestSpot> spots; int nWet = 0, nSteep = 0, nSnow = 0, nSparse = 0; float rainSum = 0, groveSum = 0; int nC = 0; };
-    struct ForestBuilt { uint64_t key; glm::ivec3 base; std::vector<OakChunk> chunks; };
+    struct ForestBuilt { uint64_t key; int level; glm::ivec3 base; std::vector<OakChunk> chunks; };
+    // Р63: дерево леса - текущий уровень детализации (-1 - нет), какой строится, его сетки
+    struct ForestTree { ForestSpot spot; int level = -1, building = -1; std::vector<OakMesh> meshes; };
     std::future<std::unique_ptr<ForestZone>> forestJob;
     glm::ivec2 forestAt(INT32_MIN / 2);
     std::shared_ptr<std::vector<int32_t>> forestGround;
     glm::ivec2 forestGroundOrigin(0);
     int forestGroundSide = 0;
-    std::unordered_map<uint64_t, std::vector<OakMesh>> forest;
-    std::vector<ForestSpot> forestQueue;
+    std::unordered_map<uint64_t, ForestTree> forest;
     std::vector<std::future<ForestBuilt>> forestRunning;
-    std::unordered_map<uint64_t, bool> forestWanted;
     uint32_t dropRng = 0x9E3779B9u;
     const auto rnd = [&dropRng] { dropRng ^= dropRng << 13; dropRng ^= dropRng >> 17; dropRng ^= dropRng << 5; return float(dropRng >> 8) / 16777216.0f; };
     int simFrame = 0;
@@ -814,19 +816,19 @@ int main(int argc, char** argv) {
         {
             const glm::ivec2 eb(int(std::floor(eye.x * 16.0f)), int(std::floor(eye.z * 16.0f)));
             const auto fd = [](int v) { return v >= 0 ? v / 32 : -((-v + 31) / 32); };
-            const glm::ivec2 want((fd(eb.x) - 3) * 32, (fd(eb.y) - 3) * 32);
+            const glm::ivec2 want((fd(eb.x) - 7) * 32, (fd(eb.y) - 7) * 32);
             if (!forestJob.valid() && want != forestAt) {
                 forestAt = want;
                 forestJob = std::async(std::launch::async, [&tp, want] {
                     auto z = std::make_unique<ForestZone>();
                     z->origin = want - glm::ivec2(32);   // кайма в кусок - для корней и проверок у края
-                    z->side = 9 * 32;
+                    z->side = 17 * 32;
                     const int S = z->side;
                     auto g = std::make_shared<std::vector<int32_t>>(size_t(S) * S);
                     std::vector<int32_t> w(size_t(S) * S);
                     world::ColumnHeights hm;
-                    for (int cz = 0; cz < 9; ++cz)
-                        for (int cx = 0; cx < 9; ++cx) {
+                    for (int cz = 0; cz < 17; ++cz)
+                        for (int cx = 0; cx < 17; ++cx) {
                             world::columnHeights(tp, z->origin.x / 32 + cx, z->origin.y / 32 + cz, hm);
                             for (int j = 0; j < 32; ++j)
                                 for (int i = 0; i < 32; ++i) {
@@ -839,12 +841,12 @@ int main(int argc, char** argv) {
                     const auto wet = [&](int x, int y) { const size_t k = size_t(y - z->origin.y) * S + (x - z->origin.x); return w[k] > (*g)[k]; };
                     constexpr int CELL = 10;
                     const auto fdc = [](int v) { return v >= 0 ? v / CELL : -((-v + CELL - 1) / CELL); };
-                    for (int cj = fdc(want.y); cj <= fdc(want.y + 7 * 32 - 1); ++cj)
-                        for (int ci = fdc(want.x); ci <= fdc(want.x + 7 * 32 - 1); ++ci) {
+                    for (int cj = fdc(want.y); cj <= fdc(want.y + 15 * 32 - 1); ++cj)
+                        for (int ci = fdc(want.x); ci <= fdc(want.x + 15 * 32 - 1); ++ci) {
                             uint32_t h = uint32_t(ci) * 0x8DA6B343u ^ uint32_t(cj) * 0xD8163841u ^ tp.seed * 0x9E3779B1u ^ 0x7F4A7C15u;
                             const auto nx = [&h] { h ^= h >> 13; h *= 0x5BD1E995u; h ^= h >> 15; return h; };
                             const int x = ci * CELL + int(nx() % CELL), y = cj * CELL + int(nx() % CELL);
-                            if (x < want.x || y < want.y || x >= want.x + 7 * 32 || y >= want.y + 7 * 32) continue;
+                            if (x < want.x || y < want.y || x >= want.x + 15 * 32 || y >= want.y + 15 * 32) continue;
                             const float roll = float(nx() & 0xFFFF) / 65535.0f;
                             const int fx = int(nx() % 16), fz = int(nx() % 16);
                             const uint32_t seed = nx();
@@ -881,47 +883,78 @@ int main(int argc, char** argv) {
                 forestGround = z->ground;
                 forestGroundOrigin = z->origin;
                 forestGroundSide = z->side;
-                forestWanted.clear();
-                for (const ForestSpot& sp : z->spots) forestWanted[sp.key] = true;
+                std::unordered_map<uint64_t, bool> wanted;
+                for (const ForestSpot& sp : z->spots) wanted[sp.key] = true;
                 for (auto it = forest.begin(); it != forest.end();) {   // ушедшие из зоны - выгрузить
-                    if (forestWanted.count(it->first)) { ++it; continue; }
-                    for (const OakMesh& m : it->second) gpu->destroyMesh(m.mesh);
+                    if (wanted.count(it->first)) { ++it; continue; }
+                    for (const OakMesh& m : it->second.meshes) gpu->destroyMesh(m.mesh);
                     it = forest.erase(it);
                 }
-                forestQueue.clear();
                 for (const ForestSpot& sp : z->spots)
-                    if (!forest.count(sp.key)) forestQueue.push_back(sp);
-                // ближние - первыми
-                std::sort(forestQueue.begin(), forestQueue.end(), [&](const ForestSpot& a, const ForestSpot& b) {
-                    const auto d = [&](const ForestSpot& q) { const int dx = q.base.x - eb.x, dz = q.base.z - eb.y; return dx * dx + dz * dz; };
-                    return d(a) > d(b);   // с конца берём
-                });
-                journal::info("лес", "зона ({}, {}): мест {}, строить {}; отказ: вода {}, круто {}, снег {}, редко {} (дожди {:.2f}, рощи {:.2f})",
-                              want.x, want.y, z->spots.size(), forestQueue.size(), z->nWet, z->nSteep, z->nSnow, z->nSparse,
+                    if (!forest.count(sp.key)) forest[sp.key].spot = sp;
+                journal::info("лес", "зона ({}, {}): мест {}; отказ: вода {}, круто {}, снег {}, редко {} (дожди {:.2f}, рощи {:.2f})",
+                              want.x, want.y, z->spots.size(), z->nWet, z->nSteep, z->nSnow, z->nSparse,
                               z->nC ? z->rainSum / z->nC : 0.0f, z->nC ? z->groveSum / z->nC : 0.0f);
             }
-            while (forestRunning.size() < 6 && !forestQueue.empty() && forestGround) {
-                const ForestSpot sp = forestQueue.back();
-                forestQueue.pop_back();
+            // Р63: уровень дерева - по расстоянию: до 12 блоков - 0 (мелкий воксель), 32 - 1, 64 - 2, 128 - 3, дальше - 4
+            // (воксель - блок). Сначала - деревья без сетки (грубым уровнем, сразу видно весь лес), затем ближние.
+            if (forestGround) {
+                const auto levelFor = [](int d2) { return d2 < 12 * 12 ? 0 : d2 < 32 * 32 ? 1 : d2 < 64 * 64 ? 2 : d2 < 128 * 128 ? 3 : 4; };
+                std::vector<std::pair<int, ForestTree*>> need;   // (приоритет, дерево)
+                for (auto& [key, t] : forest) {
+                    if (t.building >= 0) continue;
+                    const int dx = t.spot.base.x - eb.x, dz = t.spot.base.z - eb.y, d2 = dx * dx + dz * dz;
+                    const int want = levelFor(d2);
+                    if (t.level == want) continue;
+                    need.push_back({(t.level < 0 ? 0 : 1 << 30) + d2, &t});   // без сетки - первыми
+                }
+                std::sort(need.begin(), need.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
                 const auto gr = forestGround;
                 const glm::ivec2 go = forestGroundOrigin;
                 const int gs = forestGroundSide;
-                forestRunning.push_back(std::async(std::launch::async, [sp, gr, go, gs] {
-                    ForestBuilt fb{sp.key, sp.base, {}};
-                    buildOakChunks(sp.seed, sp.base, sp.shift, [&](int32_t bx, int32_t bz) {
-                        const int i = bx - go.x, j = bz - go.y;
-                        return i < 0 || j < 0 || i >= gs || j >= gs ? INT32_MIN : (*gr)[size_t(j) * gs + i];
-                    }, fb.chunks);
-                    return fb;
-                }));
+                for (const auto& [pri, tp2] : need) {
+                    if (forestRunning.size() >= 8) break;
+                    ForestTree& t = *tp2;
+                    const int dx = t.spot.base.x - eb.x, dz = t.spot.base.z - eb.y;
+                    // дерево без сетки - сначала грубым уровнем (миллисекунды), уточнится следующим заходом
+                    const int lvl = t.level < 0 ? 4 : levelFor(dx * dx + dz * dz);
+                    t.building = lvl;
+                    const ForestSpot sp = t.spot;
+                    forestRunning.push_back(std::async(std::launch::async, [sp, lvl, gr, go, gs] {
+                        ForestBuilt fb{sp.key, lvl, sp.base, {}};
+                        buildOakChunks(sp.seed, sp.base, sp.shift, [&](int32_t bx, int32_t bz) {
+                            const int i = bx - go.x, j = bz - go.y;
+                            return i < 0 || j < 0 || i >= gs || j >= gs ? INT32_MIN : (*gr)[size_t(j) * gs + i];
+                        }, fb.chunks, 1 << lvl);
+                        return fb;
+                    }));
+                }
             }
             for (auto it = forestRunning.begin(); it != forestRunning.end();) {
                 if (it->wait_for(std::chrono::seconds(0)) != std::future_status::ready) { ++it; continue; }
                 ForestBuilt fb = it->get();
                 it = forestRunning.erase(it);
-                if (!forestWanted.count(fb.key)) continue;
-                std::vector<OakMesh>& ms = forest[fb.key];
-                for (const OakChunk& oc : fb.chunks) ms.push_back({gpu->uploadChunkMesh(oc.verts, 0), fb.base, oc.fineOff});
+                auto ft = forest.find(fb.key);
+                if (ft == forest.end()) continue;
+                ForestTree& t = ft->second;
+                for (const OakMesh& m : t.meshes) gpu->destroyMesh(m.mesh);   // старая сетка - только теперь
+                t.meshes.clear();
+                for (const OakChunk& oc : fb.chunks) t.meshes.push_back({gpu->uploadChunkMesh(oc.verts, 0), fb.base, oc.fineOff, 1 << fb.level});
+                t.level = fb.level;
+                t.building = -1;
+            }
+            // замер: когда все деревья зоны получили сетку - один раз в журнал (за сколько и по уровням)
+            {
+                static bool told = false;
+                static auto since = clock_t_::now();
+                if (forest.empty()) { told = false; since = clock_t_::now(); }
+                int ready = 0, byLevel[5] = {};
+                for (const auto& [key, t] : forest) if (t.level >= 0) { ++ready; ++byLevel[t.level]; }
+                if (!told && !forest.empty() && ready == int(forest.size())) {
+                    told = true;
+                    journal::info("лес", "весь лес зоны с сеткой: {} дубов за {:.0f} мс; по уровням 0-4: {} {} {} {} {}", ready, msSince(since),
+                                  byLevel[0], byLevel[1], byLevel[2], byLevel[3], byLevel[4]);
+                }
             }
         }
         frame.reset();
@@ -931,8 +964,8 @@ int main(int argc, char** argv) {
                       std::chrono::duration<float>(now - startAt).count(), flowArea, simArea});
         chunksDrawn = voxels.draw(fr, frame);
         for (const OakMesh& m : oakMeshes) frame.drawFineChunk(m.mesh, m.base, m.fineOff);
-        for (const auto& [key, ms] : forest)
-            for (const OakMesh& m : ms) frame.drawFineChunk(m.mesh, m.base, m.fineOff);
+        for (const auto& [key, t] : forest)
+            for (const OakMesh& m : t.meshes) frame.drawFineChunk(m.mesh, m.base, m.fineOff, m.scale);
         for (const auto& [mesh, origin] : rulerMeshes) frame.drawChunk(mesh, origin);
         const auto tFar = clock_t_::now();
         farTerrain.frame(lod, eye, fr, voxels, frame, farStats);

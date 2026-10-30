@@ -16,6 +16,7 @@ layout(std140, binding = 0) uniform Frame {
 layout(location = 0) uniform ivec3 uChunk;   // начало куска в вокселях; у мелкого куска - блок-основа
 layout(location = 1) uniform ivec3 uFineOff; // Р56: мелкий кусок - сдвиг от основы в мелких вокселях (1/16 блока)
 layout(location = 2) uniform int uFine;      // Р56: 1 - мелкий кусок (дерево и прочее мельче блока)
+layout(location = 3) uniform int uFineScale; // Р63: размер вокселя мелкого куска в мелких вокселях
 
 layout(location = 0) out vec4 vColor;
 layout(location = 1) out vec3 vWorld;          // Р43: точка в мире, блоки
@@ -37,7 +38,7 @@ void main() {
     uint normal = (p >> 18) & 7u;
     uint material = p >> 21;
     // мир - в прежних мерах (16 блоков мира, Р54); мелкий кусок - ещё в 16 раз мельче (воксель = тексель)
-    vec3 world = uFine == 1 ? (vec3(uChunk) + (local + vec3(uFineOff)) / 16.0) / 16.0 : (local + vec3(uChunk)) / 16.0;
+    vec3 world = uFine == 1 ? (vec3(uChunk) + (local * float(uFineScale) + vec3(uFineOff)) / 16.0) / 16.0 : (local + vec3(uChunk)) / 16.0;
     gl_Position = viewProj * vec4(world, 1.0);
     // свет: рассеянный по нормали плюс постоянная подсветка неба
     float light = 0.35 + 0.65 * max(dot(NORMALS[normal], normalize(sunDir.xyz)), 0.0);

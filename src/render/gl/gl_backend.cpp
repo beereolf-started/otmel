@@ -296,6 +296,7 @@ public:
                 glProgramUniform3i(program_, 0, d->originVoxels.x, d->originVoxels.y, d->originVoxels.z);
                 glProgramUniform3i(program_, 1, d->fineOff.x, d->fineOff.y, d->fineOff.z);
                 glProgramUniform1i(program_, 2, d->fine ? 1 : 0);
+                glProgramUniform1i(program_, 3, d->fineScale);
                 glVertexArrayVertexBuffer(vao_, 0, m.vbo, 0, 4);
                 glDrawElements(GL_TRIANGLES, (m.quads - m.water) * 6, GL_UNSIGNED_INT, nullptr);
                 ++stats.drawCalls;
@@ -384,6 +385,7 @@ private:
                 glProgramUniform3i(program_, 0, d->originVoxels.x, d->originVoxels.y, d->originVoxels.z);
                 glProgramUniform3i(program_, 1, d->fineOff.x, d->fineOff.y, d->fineOff.z);
                 glProgramUniform1i(program_, 2, d->fine ? 1 : 0);
+                glProgramUniform1i(program_, 3, d->fineScale);
                 glVertexArrayVertexBuffer(vao_, 0, m.vbo, 0, 4);
                 glDrawElements(GL_TRIANGLES, m.water * 6, GL_UNSIGNED_INT,
                                reinterpret_cast<const void*>(static_cast<uintptr_t>((m.quads - m.water) * 6 * 4)));

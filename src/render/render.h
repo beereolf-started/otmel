@@ -38,7 +38,7 @@ struct CmdCamera {
 };
 // Р56: fine - мелкий кусок (воксель = 1/16 блока, тексель): originVoxels - блок-основа, fineOff - сдвиг куска от
 // неё в мелких вокселях (так нет больших дробных чисел - мелкий воксель не дрожит)
-struct CmdDrawChunk { MeshId mesh; glm::ivec3 originVoxels; glm::ivec3 fineOff{0}; bool fine = false; };
+struct CmdDrawChunk { MeshId mesh; glm::ivec3 originVoxels; glm::ivec3 fineOff{0}; bool fine = false; int fineScale = 1; };
 // Плитка дальнего уровня (Р20): начало в блоках, шаг узлов в блоках, где идёт морфинг, какие четверти
 struct CmdDrawTile {
     MeshId mesh;
@@ -54,7 +54,8 @@ struct CommandList {
     void clear(Color c) { commands.push_back(CmdClear{c}); }
     void camera(const CmdCamera& c) { commands.push_back(c); }
     void drawChunk(MeshId m, glm::ivec3 origin) { commands.push_back(CmdDrawChunk{m, origin}); }
-    void drawFineChunk(MeshId m, glm::ivec3 baseBlock, glm::ivec3 fineOff) { commands.push_back(CmdDrawChunk{m, baseBlock, fineOff, true}); }
+    // Р63: scale - размер вокселя куска в мелких вокселях (уровень детализации)
+    void drawFineChunk(MeshId m, glm::ivec3 baseBlock, glm::ivec3 fineOff, int scale = 1) { commands.push_back(CmdDrawChunk{m, baseBlock, fineOff, true, scale}); }
     void drawTile(const CmdDrawTile& t) { commands.push_back(t); }
     void reset() { commands.clear(); }
 };
