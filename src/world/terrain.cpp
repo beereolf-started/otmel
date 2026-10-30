@@ -168,7 +168,15 @@ Relief baseReliefAt(const TerrainParams& p, int32_t x, int32_t z, const SlowFiel
     // прежней базы 32 блока - сдвигаем весь рельеф суши разом (и равнины, и холмы, и подножия гор)
     const int32_t ground = p.seaLevel + p.landRise - 32 * VOXELS_PER_BLOCK +
                            int32_t((int64_t(fx::smoothstep(p.plateauFrom, p.plateauTo, slow.plateau)) * p.plateauRise) >> fx::SHIFT);
-    const int32_t landH = static_cast<int32_t>(h >> fx::SHIFT) + ground;
+    int32_t landH = static_cast<int32_t>(h >> fx::SHIFT) + ground;
+    // Р49: суша не ниже моря + блок (мягкий максимум, переход 4 блока): у моря нет низины ниже его глади -
+    // море не стоит стеной над сушей, уровень любой реки к устью (земля минус блок) не ниже моря
+    {
+        constexpr int32_t K = 4 * VOXELS_PER_BLOCK;
+        const int32_t F = p.seaLevel + VOXELS_PER_BLOCK;
+        const int32_t d = std::abs(landH - F), t = std::max(0, K - d);
+        landH = std::max(landH, F) + int32_t(int64_t(t) * t / (4 * K));
+    }
     // берег: суша плавно уходит на дно - то же смешивание весом, без ступеньки
     int32_t hh = floorH + int32_t((int64_t(r.land) * (landH - floorH)) >> fx::SHIFT);
     // мягкий потолок мира (Р10: до 1000 блоков): выше 960 каждый блок даёт четверть

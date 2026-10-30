@@ -202,7 +202,10 @@ int32_t area(const TerrainParams& p, int32_t i, int32_t j) {
 // земля на линии реки минус блок (исходный рельеф без ряби мельче 32 блоков)
 int32_t groundLine(const TerrainParams& p, int64_t x, int64_t z) {
     const SlowFields slow = slowAt(p, int32_t(x), int32_t(z), GROUND_CUT);
-    return baseReliefAt(p, int32_t(x), int32_t(z), slow, GROUND_CUT).height - VOXELS_PER_BLOCK;
+    const Relief r = baseReliefAt(p, int32_t(x), int32_t(z), slow, GROUND_CUT);
+    // Р49: где стоит море, река кончается - уровень не ниже глади моря (русло по дну моря не уводит его вниз)
+    if (r.land < fx::ONE) return std::max(r.height - VOXELS_PER_BLOCK, p.seaLevel - 1);
+    return r.height - VOXELS_PER_BLOCK;
 }
 
 // Целый корень, точный: приближение аппаратным корнем (по IEEE 754 он округлён правильно на любой машине) и
@@ -451,7 +454,9 @@ const RiverPath& outPath(const TerrainParams& p, int32_t i, int32_t j) {
             const int64_t u = path->cum[k];
             const int64_t us = path->len > 0 ? u * straight / path->len : 0;
             const int64_t byMouth = mdist > 0 ? int64_t(std::max(0, start - mlevel)) * us / mdist : 0;
-            cur = std::min(cur, start - int32_t(std::max(byMouth, u / gradeDiv)));
+            // Р49: обязательный уклон - не ниже уровня устья (копился по цепочке звеньев: река уходила ниже моря
+            // в каньон, у берега море стояло над ней стеной); ниже - только по самой земле
+            cur = std::min(cur, std::max(mlevel, start - int32_t(std::max(byMouth, u / gradeDiv))));
             path->run.push_back(cur);
         }
         // Р35: исток (водосбор - один свой узел) - ручеёк: ширина от четверти нарастает до полной за 96 блоков
