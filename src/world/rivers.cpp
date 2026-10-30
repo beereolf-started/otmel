@@ -258,7 +258,7 @@ int32_t level(const TerrainParams& p, int32_t i, int32_t j) {
                 lv = std::min(lv, outPath(p, ci, cj).run.back());
         }
     Info& m = info(p, i, j);
-    m.level = std::max(lv, p.seaLevel - 1);
+    m.level = lv;   // Р46: без зажима уровнем моря - в сухой низине ниже моря река идёт по земле
     m.leveled = true;
     return m.level;
 }
@@ -272,7 +272,7 @@ void mouth(const TerrainParams& p, int32_t i, int32_t j, int64_t& dist, int32_t&
     int32_t ml;
     if (d < 0) {
         const Info& n = info(p, i, j);
-        ml = n.sea ? p.seaLevel - 1 : std::max(groundLine(p, n.px, n.pz), p.seaLevel - 1);
+        ml = n.sea ? p.seaLevel - 1 : groundLine(p, n.px, n.pz);
     } else {
         int64_t dd;
         const int32_t ti = info(p, i, j).ti, tj = info(p, i, j).tj;
@@ -452,13 +452,19 @@ const RiverPath& outPath(const TerrainParams& p, int32_t i, int32_t j) {
             const int64_t us = path->len > 0 ? u * straight / path->len : 0;
             const int64_t byMouth = mdist > 0 ? int64_t(std::max(0, start - mlevel)) * us / mdist : 0;
             cur = std::min(cur, start - int32_t(std::max(byMouth, u / gradeDiv)));
-            path->run.push_back(std::max(cur, p.seaLevel - 1));
+            path->run.push_back(cur);
         }
         // Р35: исток (водосбор - один свой узел) - ручеёк: ширина от четверти нарастает до полной за 96 блоков
         if (area(p, i, j) == 1) {
             path->wq.resize(path->x.size());
             for (size_t k = 0; k < path->x.size(); ++k)
-                path->wq[k] = fx::q16(std::min<int64_t>(fx::ONE, fx::ONE / 4 + int64_t(fx::ONE) * 3 / 4 * path->cum[k] / (96 * VOXELS_PER_BLOCK)));
+            {
+                // Р46: родник - в истоке чаша (ширина 1.2), за 8 блоков сужается в ручеёк (четверть) и дальше за
+                // 88 блоков нарастает до полной
+                const int64_t u = path->cum[k], B = VOXELS_PER_BLOCK;
+                path->wq[k] = u < 8 * B ? fx::q16(fx::ONE * 6 / 5 - int64_t(fx::ONE) * 95 / 100 * u / (8 * B))
+                                        : fx::q16(std::min<int64_t>(fx::ONE, fx::ONE / 4 + int64_t(fx::ONE) * 3 / 4 * (u - 8 * B) / (88 * B)));
+            }
         }
     }
     finishPath(*path);
@@ -702,7 +708,7 @@ std::shared_ptr<const RiverPath> drawPath(const TerrainParams& p, int32_t i, int
                     if (k == n) lv = std::min(lv, joinLevel);
                     t->x.push_back(px);
                     t->z.push_back(pz);
-                    t->run.push_back(std::max(lv, p.seaLevel - 1));
+                    t->run.push_back(lv);
                     t->wq.push_back(w0 - fx::q16(int64_t(w0 - fx::ONE / 3) * k / n));
                 }
             }
@@ -795,7 +801,7 @@ void RiverSet::build(const TerrainParams& p, int32_t x0, int32_t z0, int32_t x1,
                 for (int k = 0; k < 8; ++k)
                     rim = std::min(rim, groundLine(p, cx + RX[k] * g.half / 2, cz + RZ[k] * g.half / 2));
                 auto lake = std::make_shared<RiverPath>(*g.path);
-                lake->run = {std::max(std::min(lake->run[0], rim), p.seaLevel - 1)};
+                lake->run = {std::min(lake->run[0], rim)};
                 g.path = std::move(lake);
             }
             const RiverPath::Box& b = g.path->bounds;
@@ -979,8 +985,12 @@ void RiverSet::apply(const TerrainParams& p, int32_t x, int32_t z, int32_t& h, i
                 const int32_t up = runAt(path, std::max<int64_t>(0, u - 32 * VOXELS_PER_BLOCK));
                 plunge = std::min(6 * VOXELS_PER_BLOCK, std::max(0, up - raw - VOXELS_PER_BLOCK) * 8 / 10);
             }
-            const int64_t f = carve(d, lw, raw, hE, dE, mount, plunge);
-            if (f < best || (f == best && d < bestD)) { best = f; bestD = d; bestLw = lw; bestHalf = hE; }
+            // Р46: разлив вшит в генерацию. На крутом (mount -> 1) вода - не ступени со стенками, а сплошной слой
+            // по рельефу русла: уровень без ступеней (вода стекает по дну вниз, на обрыве - завеса до ямы); на
+            // равнине - плёсы ступенями, между ними - плавно по крутизне. Так же и дно (чаша под слоем)
+            const int32_t lwFlow = lw + int32_t((int64_t(raw - lw) * mount) >> fx::SHIFT);
+            const int64_t f = carve(d, lwFlow, raw, hE, dE, mount, plunge);
+            if (f < best || (f == best && d < bestD)) { best = f; bestD = d; bestLw = lwFlow; bestHalf = hE; }
         };
         forEdges(path, g.gFirst, g.gLast, x, z, [&](int32_t low) { return reachOf(g, low); }, visit);
         if (best == INT64_MAX || (best >= h0 && !nearShore && braid == 0)) continue;
