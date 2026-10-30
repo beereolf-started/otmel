@@ -82,7 +82,7 @@ struct Grower {
         static constexpr float KAPPA[5] = {0.12f, 0.32f, 0.42f, 0.55f, 0.55f};
         static constexpr float PHI[5] = {0.45f, 0.3f, 0.24f, 0.2f, 0.2f};
         static constexpr float SAG[5] = {0, 0.06f, 0.05f, 0.03f, 0.03f};
-        static constexpr float FORK[5] = {0, 0.5f, 0.6f, 0, 0};       // отвод на шаг
+        static constexpr float FORK[5] = {0, 0.65f, 0.7f, 0, 0};       // отвод на шаг (Р61: чаще - крона пышнее)
         const float step = STEP[std::min(order, 4)];
         const int n = std::max(1, int(length / step + 0.5f));
         V3 w = norm(cross(dir, rng.unit()));
@@ -110,7 +110,7 @@ struct Grower {
                     branch(at, cd, length * (1 - t) * rng.r(0.4f, 0.7f), order + 1, true);
                 else
                     branch(at, norm(cd + UP * (order == 1 ? 0.3f : 0.15f)),
-                           order == 1 ? rng.r(16, 28) : rng.r(6, 12), order + 1, false);
+                           order == 1 ? rng.r(22, 38) : rng.r(8, 14), order + 1, false);
             }
         }
     }
@@ -137,7 +137,7 @@ struct Grower {
         for (int k = 0; k < limbs; ++k) {
             const float az = az0 + 6.283f * k / limbs + rng.r(-0.4f, 0.4f), a = rng.r(0.35f, 0.7f);
             const V3 ld = norm(UP * std::cos(a) + V3{std::cos(az), 0, std::sin(az)} * std::sin(a));
-            branch(at, ld, rng.r(66, 84), 1, false);
+            branch(at, ld, rng.r(84, 112), 1, false);
         }
         // корни: от комля наружу и вниз
         const int roots = 4 + int(rng.f() * 3);
@@ -175,8 +175,8 @@ void growOak(uint32_t seed, OakVoxels& out) {
     struct Blob { V3 c; float r; };
     std::vector<Blob> blobs;
     for (const Node& nd : g.nodes)
-        if (!nd.root && !nd.stub && nd.order >= 2 && (nd.children == 0 || g.rng.f() < 0.35f))
-            blobs.push_back({nd.p + UP * g.rng.r(1, 3) + g.rng.unit() * 1.5f, nd.children == 0 ? g.rng.r(8, 12) : g.rng.r(6, 9)});
+        if (!nd.root && !nd.stub && nd.order >= 2 && (nd.children == 0 || g.rng.f() < 0.5f))
+            blobs.push_back({nd.p + UP * g.rng.r(1, 3) + g.rng.unit() * 1.5f, nd.children == 0 ? g.rng.r(11, 16) : g.rng.r(9, 13)});
     // рамка
     float lo[3] = {1e9f, 1e9f, 1e9f}, hi[3] = {-1e9f, -1e9f, -1e9f};
     const auto grow = [&](V3 p, float r) {
