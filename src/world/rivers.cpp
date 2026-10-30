@@ -591,6 +591,24 @@ int32_t runAt(const RiverPath& r, int64_t u) {
 // висящей. Не обрезают: звенья с общим узлом (притоки, соседи по устью), своя цепочка вниз (петля самой реки -
 // там минимум по рёбрам), реки не ниже ручья хотя бы на блок. Уровни и полноводность - прежние (без обрезки):
 // сравнение - по необрезанным руслам, круга в расчёте нет.
+// Р44: нижняя граница высоты, которую долина звена (уровень oRaw, полуширина, глубина, радиус долины) даёт в точке
+// на расстоянии dd от его русла - теми же границами, что и сама прорезь (apply): в русле - дно на две глубины и
+// яму под перепадом (6 блоков) ниже уровня; дальше - пойма до 8 полуширин, стенка не положе 1:8, неровность
+// -2 блока; маска края долины - по наибольшему радиусу. Земля - сглаженная, с запасом 2 блока. Прежняя оценка
+// (стенка 1:5, без маски) была выше настоящей долины - берега ручья на склоне чужой долины срезались ниже его
+// воды, вода выходила из берегов.
+int64_t valleyFloor(const TerrainParams& p, int64_t x, int64_t z, int64_t dd, int32_t oRaw, int64_t oHalf, int64_t oDepth,
+                    int64_t oValley) {
+    const int64_t h0 = int64_t(groundLine(p, x, z)) + VOXELS_PER_BLOCK - 2 * VOXELS_PER_BLOCK;
+    const int64_t prof = dd < 2 * oHalf ? int64_t(oRaw) - 2 * oDepth - 6 * VOXELS_PER_BLOCK
+                                        : int64_t(oRaw) + 1 - 2 * VOXELS_PER_BLOCK + std::max<int64_t>(0, dd - 8 * oHalf) / 8;
+    if (prof >= h0) return h0;
+    const int64_t rmax = std::clamp<int64_t>(8 * oHalf + 8 * std::max<int64_t>(0, h0 - oRaw), oValley, oValley + VALLEY_CAP);
+    if (dd >= rmax) return h0;
+    const fx::q16 w = fx::ONE - fx::smoothstep(int32_t(rmax * 6 / 10), int32_t(rmax), int32_t(dd));
+    return h0 + ((int64_t(w) * (prof - h0)) >> fx::SHIFT);
+}
+
 std::shared_ptr<const RiverPath> drawPath(const TerrainParams& p, int32_t i, int32_t j) {
     if (const Info& n = info(p, i, j); n.trimmed) return n.drawPath;
     const RiverPath& base = outPath(p, i, j);
@@ -599,7 +617,7 @@ std::shared_ptr<const RiverPath> drawPath(const TerrainParams& p, int32_t i, int
     if (d >= 0 && base.x.size() >= 2) {
         size_t cut = base.x.size();   // первая вершина, где ручей впадает (size - нет)
         std::shared_ptr<const RiverPath> into;   // Р35: в какую реку
-        int64_t intoHalf = 0, intoDepth = 0;
+        int64_t intoHalf = 0, intoDepth = 0, intoValley = 0;
         for (int32_t l = j - 3; l <= j + 3; ++l)
             for (int32_t k = i - 3; k <= i + 3; ++k) {
                 if (k == i && l == j) continue;
@@ -623,24 +641,22 @@ std::shared_ptr<const RiverPath> drawPath(const TerrainParams& p, int32_t i, int
                     const int32_t lw = base.run[v];
                     if (oLow > lw - VOXELS_PER_BLOCK) continue;
                     // дальше этого долина другой реки ниже воды ручья больше чем на SPILL не опускается
-                    const int64_t lim = std::min<int64_t>(reachMax, 8 * oHalf + 8 * (int64_t(lw) - SPILL - oLow + 32));
+                    const int64_t lim = std::min<int64_t>(reachMax, 8 * oHalf + 8 * (int64_t(lw) - SPILL - oLow + 4 * VOXELS_PER_BLOCK));
                     if (lim <= 0) continue;
                     const Hit h = nearestOnPath(o, base.x[v], base.z[v], lim * lim);
                     if (h.e < 0) continue;
                     const int32_t oRaw = o.run.size() == 1 ? o.run[0]
                                                            : o.run[size_t(h.e)] + int32_t((int64_t(o.run[size_t(h.e) + 1] - o.run[size_t(h.e)]) * h.f) >> 16);
                     if (oRaw > lw - VOXELS_PER_BLOCK) continue;   // не ниже ручья хотя бы на блок - слияние, не впадение
-                    // дно чужой долины здесь: в русле (до двух полуширин) - на две глубины ниже уровня; в пойме (до
-                    // 4 полуширин) - на блок выше; дальше - стенка 1:5 с неровностью до -2 блоков
+                    // дно чужой долины здесь (Р44: нижняя граница настоящей прорези)
                     const int64_t dd = int64_t(isqrt(uint64_t(h.d2)));
-                    const int64_t bottom = dd < 2 * oHalf ? oRaw - 2 * oDepth
-                                         : dd < 4 * oHalf ? oRaw + 1
-                                                          : oRaw + 1 + (dd - 4 * oHalf) / 5 - 2 * VOXELS_PER_BLOCK;
+                    const int64_t bottom = valleyFloor(p, base.x[v], base.z[v], dd, oRaw, oHalf, oDepth, oValley);
                     if (bottom < lw - SPILL) {
                         cut = v;
                         into = info(p, k, l).path;
                         intoHalf = oHalf;
                         intoDepth = oDepth;
+                        intoValley = oValley;
                         break;
                     }
                 }
@@ -681,9 +697,7 @@ std::shared_ptr<const RiverPath> drawPath(const TerrainParams& p, int32_t i, int
                     const Hit h = nearestOnPath(o, px, pz, INT64_MAX);
                     const int64_t dd = int64_t(isqrt(uint64_t(h.d2)));
                     const int32_t oRaw = oRawAt(h);
-                    const int64_t bottom = dd < 2 * intoHalf ? oRaw - 2 * intoDepth
-                                         : dd < 4 * intoHalf ? oRaw + 1
-                                                             : oRaw + 1 + (dd - 4 * intoHalf) / 5 - 2 * VOXELS_PER_BLOCK;
+                    const int64_t bottom = valleyFloor(p, px, pz, dd, oRaw, intoHalf, intoDepth, intoValley);
                     lv = std::max(joinLevel, std::min<int32_t>(lv, int32_t(bottom - VOXELS_PER_BLOCK)));
                     if (k == n) lv = std::min(lv, joinLevel);
                     t->x.push_back(px);
