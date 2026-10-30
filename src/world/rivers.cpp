@@ -45,6 +45,8 @@ struct Info {
     bool leveled = false;
     int32_t level = 0;              // Р30: уровень воды в узле
     std::shared_ptr<const RiverPath> path;   // Р32: вытекающее звено (пусто - ещё не считали)
+    bool trimmed = false;                   // Р33: русло для рельефа - обрезано при впадении в реку ниже
+    std::shared_ptr<const RiverPath> drawPath;
     int64_t mouthDist = -1;         // Р31: расстояние до устья (моря или озера), воксели; -1 - не считали
     int32_t mouthLevel = 0;         // Р31: уровень устья
 };
@@ -495,6 +497,77 @@ int32_t runAt(const RiverPath& r, int64_t u) {
     return r.run[k - 1] + int32_t(int64_t(r.run[k] - r.run[k - 1]) * (u - a) / span);
 }
 
+// Р33: впадение при встрече. Русла соседних звеньев могут сойтись (диагональные связи узлов перекрещиваются,
+// русло отходит от прямой на ±400 блоков): ручей доходит до долины реки ниже себя - не через узел. Раньше
+// долина реки прорезала землю под руслом ручья ниже его воды - вода ручья висела плитами и столбами. Теперь ручей
+// там кончается - впадает: русло обрезается в первой своей вершине, где долина другой реки может опуститься
+// ниже его воды больше чем на SPILL. Оценка долины - нижняя граница (пойма до 8 полуширин, стенки не положе
+// 1:8, неровность -2 блока, дно на две глубины ниже уровня): обрезаем с запасом, вода до чужой долины не доходит
+// висящей. Не обрезают: звенья с общим узлом (притоки, соседи по устью), своя цепочка вниз (петля самой реки -
+// там минимум по рёбрам), реки не ниже ручья хотя бы на блок. Уровни и полноводность - прежние (без обрезки):
+// сравнение - по необрезанным руслам, круга в расчёте нет.
+std::shared_ptr<const RiverPath> drawPath(const TerrainParams& p, int32_t i, int32_t j) {
+    if (const Info& n = info(p, i, j); n.trimmed) return n.drawPath;
+    const RiverPath& base = outPath(p, i, j);
+    std::shared_ptr<const RiverPath> result = info(p, i, j).path;
+    const int d = down(p, i, j);
+    if (d >= 0 && base.x.size() >= 2) {
+        size_t cut = base.x.size();   // первая вершина, где ручей впадает (size - нет)
+        for (int32_t l = j - 3; l <= j + 3; ++l)
+            for (int32_t k = i - 3; k <= i + 3; ++k) {
+                if (k == i && l == j) continue;
+                if (info(p, k, l).sea) continue;
+                const int32_t a = area(p, k, l);
+                const int od = down(p, k, l);
+                if (a < (od >= 0 ? AREA_MIN : LAKE_AREA_MIN)) continue;
+                if (od >= 0 && k + DX[od] == i && l + DZ[od] == j) continue;   // свой приток - выше, не обрезает
+                const RiverPath& o = outPath(p, k, l);
+                const int64_t s = int64_t(isqrt(uint64_t(a) << 16));
+                const int64_t oHalf = od >= 0 ? 24 + s * 14 / 256 : 256 + s * 64 / 256;
+                const int64_t oDepth = od >= 0 ? 16 + s * 6 / 256 : 32 + s * 5 / 256;
+                const int64_t oValley = oHalf + (od >= 0 ? 384 + s * 80 / 256 : 640);
+                const int64_t reachMax = oValley + VALLEY_CAP;
+                const RiverPath::Box& ob = o.bounds;
+                const RiverPath::Box& bb = base.bounds;
+                if (bb.x1 + reachMax < ob.x0 || bb.x0 - reachMax > ob.x1 || bb.z1 + reachMax < ob.z0 || bb.z0 - reachMax > ob.z1)
+                    continue;
+                const int32_t oLow = *std::min_element(o.run.begin(), o.run.end());
+                for (size_t v = 0; v < cut; ++v) {
+                    const int32_t lw = base.run[v];
+                    if (oLow > lw - VOXELS_PER_BLOCK) continue;
+                    // дальше этого долина другой реки ниже воды ручья больше чем на SPILL не опускается
+                    const int64_t lim = std::min<int64_t>(reachMax, 8 * oHalf + 8 * (int64_t(lw) - SPILL - oLow + 32));
+                    if (lim <= 0) continue;
+                    const Hit h = nearestOnPath(o, base.x[v], base.z[v], lim * lim);
+                    if (h.e < 0) continue;
+                    const int32_t oRaw = o.run.size() == 1 ? o.run[0]
+                                                           : o.run[size_t(h.e)] + int32_t((int64_t(o.run[size_t(h.e) + 1] - o.run[size_t(h.e)]) * h.f) >> 16);
+                    if (oRaw > lw - VOXELS_PER_BLOCK) continue;   // не ниже ручья хотя бы на блок - слияние, не впадение
+                    // дно чужой долины здесь: в русле (до двух полуширин) - на две глубины ниже уровня; в пойме (до
+                    // 4 полуширин) - на блок выше; дальше - стенка 1:5 с неровностью до -2 блоков
+                    const int64_t dd = int64_t(isqrt(uint64_t(h.d2)));
+                    const int64_t bottom = dd < 2 * oHalf ? oRaw - 2 * oDepth
+                                         : dd < 4 * oHalf ? oRaw + 1
+                                                          : oRaw + 1 + (dd - 4 * oHalf) / 5 - 2 * VOXELS_PER_BLOCK;
+                    if (bottom < lw - SPILL) { cut = v; break; }
+                }
+            }
+        if (cut < base.x.size()) {
+            auto t = std::make_shared<RiverPath>();
+            const size_t keep = std::max<size_t>(cut + 1, 2);   // вершина встречи - последняя (не меньше одного ребра)
+            t->x.assign(base.x.begin(), base.x.begin() + keep);
+            t->z.assign(base.z.begin(), base.z.begin() + keep);
+            t->run.assign(base.run.begin(), base.run.begin() + keep);
+            finishPath(*t);
+            result = std::move(t);
+        }
+    }
+    Info& m = info(p, i, j);
+    m.drawPath = result;
+    m.trimmed = true;
+    return result;
+}
+
 }  // namespace
 
 void riverNeighbor(int32_t i, int32_t j, int dir, int32_t& ni, int32_t& nj) {
@@ -554,8 +627,7 @@ void RiverSet::build(const TerrainParams& p, int32_t x0, int32_t z0, int32_t x1,
                     std::max(na.pz, nb.pz) + rr < z0 || std::min(na.pz, nb.pz) - rr > z1)
                     continue;
             }
-            if (!info(p, i, j).path) outPath(p, i, j);
-            g.path = info(p, i, j).path;
+            g.path = d >= 0 ? drawPath(p, i, j) : (outPath(p, i, j), info(p, i, j).path);
             if (d < 0) {
                 // озеро: уровень не выше самой низкой точки кольца берега - вода не переливается стеной
                 int32_t rim = INT32_MAX;
