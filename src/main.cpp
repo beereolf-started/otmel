@@ -232,14 +232,13 @@ int main(int argc, char** argv) {
         return g + 1;
     };
     for (OakSpot& o : oaks) o.y = oakBase(o.x, o.z);
-    // эталон размеров (--ruler X Z): куб ровно в блок (16³ вокселей древесины), на нём ступенька в 1 воксель
-    // и столбик из 16 чередующихся вокселей (кора / листва) - высота блока по вокселям
+    // эталон размеров (--ruler X Z): столб из 10 блоков мира (Р54: воксель = блок), чередуются по цвету
     glm::ivec3 ruler(INT32_MIN);
     for (int i = 1; i + 2 < argc; ++i)
         if (std::string(argv[i]) == "--ruler") {
-            ruler.x = int32_t(std::floor(std::stof(argv[i + 1]))) * 16;
-            ruler.z = int32_t(std::floor(std::stof(argv[i + 2]))) * 16;
-            ruler.y = world::reliefAt(tp, ruler.x + 8, ruler.z + 8).height + 1;
+            ruler.x = int32_t(std::floor(std::stof(argv[i + 1]) * 16));
+            ruler.z = int32_t(std::floor(std::stof(argv[i + 2]) * 16));
+            ruler.y = world::reliefAt(tp, ruler.x, ruler.z).height + 1;
         }
     // Р56: дуб - из мелких вокселей (1/16 блока): основа - блок над землёй под комлем, куски 32³ мелких вокселей
     // (2×2×2 блока) - от основы; корни прячутся, где мелкий воксель внутри блока земли
@@ -304,8 +303,8 @@ int main(int argc, char** argv) {
                         quads += ms.quads;
                         oakMeshes.push_back({gpu->uploadChunkMesh(verts, 0), base, glm::ivec3(cx, cy, cz) * 32});
                     }
-            journal::info("дуб", "семя {}: узлов {}, мелких вокселей древесины {} (корней {}, спрятано под землёй {}), листвы {}; высота {:.1f} блока; прямоугольников {}; {:.0f} мс",
-                          o.seed, ov.nodes, ov.wood, ov.roots, hidden, ov.leaves, (ov.y0 + ov.sy) / 16.0, quads, msSince(t0));
+            journal::info("дуб", "семя {}: узлов {}, мелких вокселей древесины {} (корней {}, спрятано под землёй {}), листвы {}; высота над землёй {:.1f} блока; прямоугольников {}; {:.0f} мс",
+                          o.seed, ov.nodes, ov.wood, ov.roots, hidden, ov.leaves, (ov.top - SINK) / 16.0, quads, msSince(t0));
         }
     };
     if (!oaks.empty()) buildOaks();
@@ -316,9 +315,7 @@ int main(int argc, char** argv) {
         const auto fdiv = [](int32_t v) { return v >= 0 ? v / world::CHUNK : -((-v + world::CHUNK - 1) / world::CHUNK); };
         const auto solid = [&](int32_t x, int32_t y, int32_t z) -> world::Material {
             const int32_t lx = x - ruler.x, ly = y - ruler.y, lz = z - ruler.z;
-            if (lx >= 0 && lx < 16 && lz >= 0 && lz < 16 && ly >= 0 && ly < 16) return world::WOOD;          // блок
-            if (lx == 7 && lz == 7 && ly == 16) return world::LEAVES;                                          // 1 воксель
-            if (lx == 20 && lz == 7 && ly >= 0 && ly < 16) return (ly & 1) ? world::LEAVES : world::BARK;      // 16 вокселей
+            if (lx == 0 && lz == 0 && ly >= 0 && ly < 10) return (ly & 1) ? world::SNOW : world::BARK;   // 10 блоков
             return world::AIR;
         };
         auto c = std::make_unique<world::Chunk>();

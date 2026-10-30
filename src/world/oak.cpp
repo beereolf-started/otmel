@@ -118,7 +118,7 @@ struct Grower {
     void grow() {
         // ствол: низкий, с лёгким наклоном; комель - узел 0
         const int base = add({0, 0, 0}, -1, 0, false, false);
-        const float bole = rng.r(46, 58);   // 2.9-3.6 блока до развилки
+        const float bole = rng.r(104, 124);   // 6.5-7.8 блока до развилки (Р57: ствол выше на 3-4 блока)
         V3 d = norm(UP + V3{rng.r(-0.15f, 0.15f), 0, rng.r(-0.15f, 0.15f)});
         const int n = int(bole / 6);
         int at = base;
@@ -137,7 +137,7 @@ struct Grower {
         for (int k = 0; k < limbs; ++k) {
             const float az = az0 + 6.283f * k / limbs + rng.r(-0.4f, 0.4f), a = rng.r(0.35f, 0.7f);
             const V3 ld = norm(UP * std::cos(a) + V3{std::cos(az), 0, std::sin(az)} * std::sin(a));
-            branch(at, ld, rng.r(58, 76), 1, false);
+            branch(at, ld, rng.r(66, 84), 1, false);
         }
         // корни: от комля наружу и вниз
         const int roots = 4 + int(rng.f() * 3);
@@ -234,6 +234,7 @@ void growOak(uint32_t seed, OakVoxels& out) {
                 }
     }
     for (size_t k = 0; k < out.v.size(); ++k) {
+        if (out.v[k] != AIR) out.top = std::max(out.top, out.y0 + int(k / (size_t(out.sx) * out.sz)) + 1);
         if (out.v[k] == LEAVES || out.v[k] == LEAVES2) ++out.leaves;
         else if (out.v[k] != AIR) { ++out.wood; if (out.root[k]) ++out.roots; }
     }

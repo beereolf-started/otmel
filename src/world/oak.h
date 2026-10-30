@@ -23,6 +23,7 @@ struct OakVoxels {
     std::vector<Material> v;          // [(y·sz + z)·sx + x]; AIR - пусто
     std::vector<uint8_t> root;        // 1 - воксель корня
     int nodes = 0, wood = 0, leaves = 0, roots = 0;
+    int top = 0;                      // верхний непустой воксель от основания (высота дерева)
     Material at(int x, int y, int z) const { return v[(size_t(y) * sz + z) * sx + x]; }
 };
 
