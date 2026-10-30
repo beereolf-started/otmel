@@ -593,6 +593,38 @@ int32_t runAt(const RiverPath& r, int64_t u) {
     return r.run[k - 1] + int32_t(int64_t(r.run[k] - r.run[k - 1]) * (u - a) / span);
 }
 
+// Р50: ближайшая ступень ниже по течению от точки u с уровнем lw - где уровень без ступеней уходит ниже lw
+// (не дальше ahead); gap - длина плёса перед ней (от прошлой ступени выше по течению, не дальше back).
+struct StepAhead { int64_t uk, gap; fx::q16 slope; };   // slope - уклон ребра со ступенью (Q16)
+bool stepAhead(const RiverPath& r, int64_t u, int32_t lw, int64_t ahead, int64_t back, StepAhead& out) {
+    if (r.run.size() < 2 || r.len <= 0) return false;
+    const int64_t uc = std::clamp<int64_t>(u, 0, r.len);
+    const size_t k0 = std::min<size_t>(size_t(std::upper_bound(r.cum.begin(), r.cum.end(), uc) - r.cum.begin()), r.cum.size() - 1);
+    int64_t uk = -1;
+    for (size_t k = k0; k < r.cum.size() && r.cum[k - 1] - uc <= ahead; ++k) {
+        if (r.run[k] >= lw) continue;
+        const int32_t a = r.run[k - 1], b = r.run[k];
+        const int64_t span = r.cum[k] - r.cum[k - 1];
+        const int64_t t = a > lw - 1 ? int64_t(a - (lw - 1)) * span / std::max(1, a - b) : 0;
+        uk = std::max(uc, r.cum[k - 1] + t);
+        out.slope = fx::q16(std::min<int64_t>(fx::ONE, (int64_t(std::max(0, a - b)) << fx::SHIFT) / std::max<int64_t>(1, span)));
+        break;
+    }
+    if (uk < 0 || uk - u > ahead) return false;
+    out.uk = uk;
+    out.gap = INT64_MAX / 4;
+    const int32_t up = lw + VOXELS_PER_BLOCK;   // уровень плёса выше (прошлая ступень - где raw поднимается до него)
+    for (size_t k = k0; k >= 1 && uc - r.cum[k] <= back; --k) {
+        if (r.run[k - 1] < up) continue;
+        const int32_t a = r.run[k - 1], b = r.run[k];
+        const int64_t span = r.cum[k] - r.cum[k - 1];
+        const int64_t t = b < up ? int64_t(a - up) * span / std::max(1, a - b) : span;
+        out.gap = uk - std::min(uc, r.cum[k - 1] + t);
+        break;
+    }
+    return true;
+}
+
 // Р33: впадение при встрече. Русла соседних звеньев могут сойтись (диагональные связи узлов перекрещиваются,
 // русло отходит от прямой на ±400 блоков): ручей доходит до долины реки ниже себя - не через узел. Раньше
 // долина реки прорезала землю под руслом ручья ниже его воды - вода ручья висела плитами и столбами. Теперь ручей
@@ -914,7 +946,7 @@ void RiverSet::apply(const TerrainParams& p, int32_t x, int32_t z, int32_t& h, i
     // Р32: прорезь звена - минимум по всем его рёбрам высоты, которую дало бы каждое ребро (профиль долины с
     // маской к краю). Минимум непрерывных функций непрерывен: у петли, у крутого ручья, на стыке рёбер нет
     // перескоков (сменилось ближайшее ребро - высота нет).
-    struct Cut { int32_t h, lw; bool wet; };
+    struct Cut { int32_t h, lw; bool wet; int32_t levee; };
     Cut cuts[64];
     int nCuts = 0;
     for (const Seg& g : segs) {
@@ -990,10 +1022,32 @@ void RiverSet::apply(const TerrainParams& p, int32_t x, int32_t z, int32_t& h, i
                 const int32_t up = runAt(path, std::max<int64_t>(0, u - 32 * VOXELS_PER_BLOCK));
                 plunge = std::min(6 * VOXELS_PER_BLOCK, std::max(0, up - raw - VOXELS_PER_BLOCK) * 8 / 10);
             }
-            // Р46: разлив вшит в генерацию. На крутом (mount -> 1) вода - не ступени со стенками, а сплошной слой
-            // по рельефу русла: уровень без ступеней (вода стекает по дну вниз, на обрыве - завеса до ямы); на
-            // равнине - плёсы ступенями, между ними - плавно по крутизне. Так же и дно (чаша под слоем)
-            const int32_t lwFlow = lw + int32_t((int64_t(raw - lw) * mount) >> fx::SHIFT);
+            // Р50: гладь у ступени - кривой по руслу, а не стенкой. Перед ступенью (выше по течению, вода только
+            // опускается - выше берега не встанет) гладь сходит на блок за длину L = c·блок, не длиннее плёса:
+            // равнина c = 16 (1 воксель на блок - почти незаметно); порог - по скорости поперёк русла: середина
+            // c = 1.5 (в среднем 45°), у берега c = 0.3 (почти прямой угол, скруглён; отвес - не больше трети блока). Выпуклость кривой гуляет
+            // шумом - своим у каждой ступени и места: то выпукла вверх, то вниз. Дно повторяет гладь.
+            int32_t lwFlow = lw;
+            StepAhead st;
+            if (stepAhead(path, u, lw, 16 * VOXELS_PER_BLOCK, 16 * VOXELS_PER_BLOCK, st)) {
+                const fx::q16 sN = fx::q16(std::min<int64_t>(fx::ONE, (d << fx::SHIFT) / std::max(1, hE)));
+                const fx::q16 fast = fx::ONE - fx::mul(sN, sN);   // доля скорости середины: 1 в середине, 0 у берега
+                const fx::q16 cRapid = fx::ONE * 3 / 10 + fx::mul(fx::ONE * 12 / 10, fast);
+                // крутизна - у самой ступени (а не у ребра точки): у всех точек перед ступенью одна длина, гладь
+                // на стыке пологого и крутого рёбер не прыгает
+                const fx::q16 mountS = fx::smoothstep(fx::ONE / 60, fx::ONE / 15, st.slope);
+                const fx::q16 c = 16 * fx::ONE + fx::mul(cRapid - 16 * fx::ONE, mountS);
+                const int64_t L = std::max<int64_t>(1, std::min<int64_t>((int64_t(c) * VOXELS_PER_BLOCK) >> fx::SHIFT, st.gap));
+                const int64_t t = st.uk - u;
+                if (t < L) {
+                    const fx::q16 tau = fx::ONE - fx::q16((std::max<int64_t>(0, t) << fx::SHIFT) / L);
+                    const fx::q16 t2 = fx::mul(tau, tau), t3 = fx::mul(t2, tau);
+                    const fx::q16 smooth = 3 * t2 - 2 * t3, easeIn = t2, easeOut = 2 * tau - t2;
+                    const fx::q16 wShape = (gen::value2(x, z, 5, p.seed ^ (uint32_t(lw) * 0x9E3779B1u)) + fx::ONE) / 2;
+                    const fx::q16 shape = (smooth + easeIn + fx::mul(easeOut - easeIn, wShape)) / 2;
+                    lwFlow = lw - int32_t((int64_t(shape) * VOXELS_PER_BLOCK) >> fx::SHIFT);
+                }
+            }
             const int64_t f = carve(d, lwFlow, raw, hE, dE, mount, plunge);
             if (f < best || (f == best && d < bestD)) { best = f; bestD = d; bestLw = lwFlow; bestHalf = hE; }
         };
@@ -1022,8 +1076,22 @@ void RiverSet::apply(const TerrainParams& p, int32_t x, int32_t z, int32_t& h, i
         }
         const int32_t hc = int32_t(std::min<int64_t>(h0, best));
         h = std::min(h, hc);
-        cuts[nCuts++] = {hc, bestLw, wet};
+        // Р50: вал у берега - в полосе 2 блока от кромки русла земля не ниже воды + воксель (первый блок -
+        // гребень, за второй спадает 1:2): мелкая рябь земли ниже уровня (уровень считается без неё) не
+        // выпускает воду из русла стенкой над сухим дном
+        int32_t levee = INT32_MIN;
+        if (!wet && bestD < int64_t(bestHalf) + 2 * VOXELS_PER_BLOCK)
+            levee = bestLw + 1 - int32_t(std::max<int64_t>(0, bestD - bestHalf - VOXELS_PER_BLOCK) / 2);
+        cuts[nCuts++] = {hc, bestLw, wet, levee};
         if (nearShore) shore = true;
+    }
+    // вал - только где это звено режет ниже всех (в чужой долине ниже - не поднимаем) и столбец сух
+    int32_t levee = INT32_MIN;
+    for (int k = 0; k < nCuts; ++k) {
+        if (cuts[k].levee == INT32_MIN) continue;
+        bool lowest = true;
+        for (int j = 0; j < nCuts; ++j) lowest &= j == k || cuts[j].h >= cuts[k].h;
+        if (lowest) levee = std::max(levee, cuts[k].levee);
     }
     // Р32: вода русла. Вала больше нет: уровень по построению не выше земли на русле (остаток - рябь до блока).
     // Но долина ДРУГОЙ реки может прорезать землю под этим руслом ниже его воды (ручей идёт по дну чужой долины,
@@ -1038,6 +1106,7 @@ void RiverSet::apply(const TerrainParams& p, int32_t x, int32_t z, int32_t& h, i
         if (other < cuts[k].lw - SPILL) continue;
         water = std::max(water, cuts[k].lw);
     }
+    if (levee > h && water <= h) h = levee;
 }
 
 RiverSet::Current RiverSet::current(const TerrainParams& p, int32_t x, int32_t z) const {

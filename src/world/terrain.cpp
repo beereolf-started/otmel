@@ -222,7 +222,7 @@ void columnHeights(const TerrainParams& p, int32_t chunkX, int32_t chunkZ, Colum
     // Р29: звенья рек и озёра, задевающие кусок, - один раз на кусок
     static thread_local RiverSet rivers;
     rivers.build(p, x0, z0, x0 + CHUNK + 1, z0 + CHUNK + 1);
-    static thread_local bool shore[CHUNK + 2][CHUNK + 2];
+    static thread_local bool shore[CHUNK + 2][CHUNK + 2], genWet[CHUNK + 2][CHUNK + 2];
     out.minH = INT32_MAX;
     out.maxH = INT32_MIN;
     for (int z = 0; z < CHUNK + 2; ++z) {
@@ -231,6 +231,7 @@ void columnHeights(const TerrainParams& p, int32_t chunkX, int32_t chunkZ, Colum
             out.h[z][x] = r.height;
             out.water[z][x] = r.water;
             shore[z][x] = r.shore;
+            genWet[z][x] = r.water > r.height;
             const int32_t surface = std::max(r.height, r.water);   // Р28: поверхность - дно или вода над ним
             // Р37: нижний кусок - по дну: вода прозрачна, дно под ней должно строиться (было по воде - дыры в дне)
             out.minH = std::min(out.minH, r.height);
@@ -264,7 +265,7 @@ void columnHeights(const TerrainParams& p, int32_t chunkX, int32_t chunkZ, Colum
         for (int z = 0; z < CHUNK + 2; ++z)
             for (int x = 0; x < CHUNK + 2; ++x) {
                 const int32_t t = tb[size_t(fdiv(z0 + z) - bz0) * n + size_t(fdiv(x0 + x) - bx0)];
-                if (t == NO_WATER || t <= out.h[z][x] || t <= out.water[z][x]) continue;
+                if (t == NO_WATER || t <= out.h[z][x] || t <= out.water[z][x] || genWet[z][x]) continue;   // источник не трогаем
                 out.water[z][x] = t;
                 out.maxH = std::max(out.maxH, t);
                 out.nearWater[z][x] = true;
@@ -311,7 +312,9 @@ void columnHeights(const TerrainParams& p, int32_t chunkX, int32_t chunkZ, Colum
                 if (lo == INT32_MAX || t[0] == NO_WATER || t[1] == NO_WATER || t[2] == NO_WATER || t[3] == NO_WATER) continue;
                 const int32_t s = int32_t(std::lround(st)), h = out.h[z][x];
                 sm[z][x] = s;
-                if (out.water[z][x] <= h) continue;
+                // Р50: сгенерированная вода (реки - гладь уже без стенок, озёра, море) - как есть; сглаживается
+                // только добавленная растеканием
+                if (out.water[z][x] <= h || genWet[z][x]) continue;
                 if (hi - lo < 2 && std::abs(out.water[z][x] - s) < 2) continue;   // ровная вода - как была
                 out.water[z][x] = s > h ? s : h;
             }
