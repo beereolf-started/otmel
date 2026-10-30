@@ -74,6 +74,7 @@ struct FrameUbo {
     float flow[4];   // Р43: поле течений - угол x, z, сторона (блоки)
     float time[4];   // Р43: секунды
     float simArea[4];   // Р45: зона автомата воды
+    float invViewProj[16];   // Р51: из экрана в мир - толщина воды по лучу (глубина сцены под водой)
 };
 
 class GLBackend final : public Backend {
@@ -237,6 +238,9 @@ public:
                 for (int i = 0; i < 4; ++i) u.flow[i] = cam->flowArea[i];
                 u.time[0] = cam->time;
                 for (int i = 0; i < 4; ++i) u.simArea[i] = cam->simArea[i];
+                const glm::mat4 inv = glm::inverse(cam->viewProj);
+                const float* mi = &inv[0][0];
+                for (int i = 0; i < 16; ++i) u.invViewProj[i] = mi[i];
                 simArea_ = cam->simArea;
                 glNamedBufferSubData(ubo_, 0, sizeof(u), &u);
                 glBindBufferBase(GL_UNIFORM_BUFFER, 0, ubo_);
@@ -318,6 +322,10 @@ private:
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
         glDepthMask(GL_FALSE);
         glProgramUniform1i(tileProgram_, 5, 1);
+        // Р51: глубина сцены без воды - в текстуру (из MSAA - ближайшим образцом): по ней шейдер воды знает
+        // толщину воды по лучу - мелко прозрачно, глубоко темно и мутно
+        glBlitNamedFramebuffer(fbo_, depthFbo_, 0, 0, width_, height_, 0, 0, width_, height_, GL_DEPTH_BUFFER_BIT, GL_NEAREST);
+        glBindTextureUnit(2, depthTex_);
         GLuint current = 0;
         for (const Command* cmd : water_) {
             if (auto* d = std::get_if<CmdDrawChunk>(cmd)) {
@@ -395,12 +403,25 @@ private:
         glNamedFramebufferRenderbuffer(fbo_, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, depthRb_);
         if (glCheckNamedFramebufferStatus(fbo_, GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
             journal::error("opengl", "буфер кадра {}×{} не собран", width_, height_);
+        // Р51: копия глубины для воды - текстура без MSAA
+        glCreateTextures(GL_TEXTURE_2D, 1, &depthTex_);
+        glTextureStorage2D(depthTex_, 1, GL_DEPTH_COMPONENT32F, width_, height_);
+        glTextureParameteri(depthTex_, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTextureParameteri(depthTex_, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glTextureParameteri(depthTex_, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTextureParameteri(depthTex_, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glCreateFramebuffers(1, &depthFbo_);
+        glNamedFramebufferTexture(depthFbo_, GL_DEPTH_ATTACHMENT, depthTex_, 0);
+        if (glCheckNamedFramebufferStatus(depthFbo_, GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
+            journal::error("opengl", "копия глубины {}×{} не собрана", width_, height_);
     }
     void destroyTargets() {
         if (fbo_) glDeleteFramebuffers(1, &fbo_);
         if (colorRb_) glDeleteRenderbuffers(1, &colorRb_);
         if (depthRb_) glDeleteRenderbuffers(1, &depthRb_);
-        fbo_ = colorRb_ = depthRb_ = 0;
+        if (depthFbo_) glDeleteFramebuffers(1, &depthFbo_);
+        if (depthTex_) glDeleteTextures(1, &depthTex_);
+        fbo_ = colorRb_ = depthRb_ = depthFbo_ = depthTex_ = 0;
     }
     void resolve() {
         glBlitNamedFramebuffer(fbo_, 0, 0, 0, width_, height_, 0, 0, width_, height_, GL_COLOR_BUFFER_BIT, GL_NEAREST);
@@ -411,6 +432,7 @@ private:
     SDL_GLContext context_;
     GLuint program_ = 0, tileProgram_ = 0, vao_ = 0, tileVao_ = 0, ibo_ = 0, tileIbo_ = 0, ubo_ = 0;
     GLuint fbo_ = 0, colorRb_ = 0, depthRb_ = 0, maskTex_ = 0, flowTex_ = 0;
+    GLuint depthFbo_ = 0, depthTex_ = 0;   // Р51: копия глубины сцены для воды
     GLuint dynProgram_ = 0, dynVao_ = 0, dynVbo_ = 0;   // Р45: вода автомата
     GLsizei dynCount_ = 0;
     glm::vec4 simArea_{0};

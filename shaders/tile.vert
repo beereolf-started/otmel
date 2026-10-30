@@ -21,6 +21,7 @@ layout(location = 5) uniform int uWater;      // Р34: 0 - рельеф (дно)
 
 layout(location = 0) out vec4 vColor;
 layout(location = 1) out vec3 vWorld;
+layout(location = 2) out float vAbove;   // Р51: вода над своей землёй, воксели (ниже - не рисуется)
 
 const vec3 COLORS[7] = vec3[](vec3(1, 0, 1), vec3(0.47, 0.47, 0.5), vec3(0.45, 0.32, 0.2), vec3(0.36, 0.58, 0.25), vec3(0.85, 0.8, 0.55), vec3(0.93, 0.95, 0.98), vec3(0.3, 0.62, 0.92));
 const float WATER_ALPHA = 0.55;   // как у вокселей воды (terrain.vert)
@@ -60,6 +61,8 @@ void main() {
     vec3 world = vec3(xz.x, (mix(float(h), float(hc), k) + 1.0) / 16.0, xz.y);   // верх верхнего вокселя
     vWorld = world;
     gl_Position = viewProj * vec4(world, 1.0);
+    int g0 = bitfieldExtract(int(aData.x), 0, 16), g1 = bitfieldExtract(int(aData.x), 16, 16);
+    vAbove = mix(float(h), float(hc), k) - mix(float(g0), float(g1), k);
     if (uWater == 1) {   // вода - ровная гладь: свет сверху, без ступеней
         vColor = vec4(COLORS[6] * lightOf(vec3(0, 1, 0)), WATER_ALPHA);
         return;
