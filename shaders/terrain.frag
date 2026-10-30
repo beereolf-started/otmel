@@ -3,6 +3,7 @@ layout(location = 0) in vec4 vColor;
 layout(location = 1) in vec3 vWorld;
 layout(location = 2) flat in uint vNormal;
 layout(location = 3) flat in uint vWater;
+layout(location = 4) in float vFoam;   // Р59: пена мелкой воды
 layout(location = 0) out vec4 outColor;
 
 layout(std140, binding = 0) uniform Frame {
@@ -92,6 +93,12 @@ void main() {
         c += vec3(0.16, 0.2, 0.22) * step(0.78, n) * detail;
         // пена - на быстрых местах (перекаты, пороги): скорость от 2 до 6 блоков/с
         float foam = smoothstep(2.0, 6.0, speed) * mix(0.3, step(0.62, n), detail);
+        // Р59: у водопадов (кромка, место падения) - бурлящая пена: крупные клочья поверх мелких, бегут и
+        // перемешиваются по кадрам
+        if (vWater == 4u && vFoam > 0.0) {
+            float churn = ripples(px.xz * 1.6 + vec2(t * 1.1, -t * 0.7)) * 0.6 + ripples(px.xz * 4.1 - vec2(t * 0.9, t * 1.3)) * 0.4;
+            foam = max(foam, step(1.0 - 0.85 * vFoam, churn) * mix(0.6, 1.0, detail));
+        }
         c = mix(c, vec3(0.9, 0.95, 1.0), foam);
         a = mix(a, 0.92, foam);
     } else if (vNormal != 3u) {

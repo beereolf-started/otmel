@@ -21,6 +21,7 @@ layout(location = 0) out vec4 vColor;
 layout(location = 1) out vec3 vWorld;          // Р43: точка в мире, блоки
 layout(location = 2) flat out uint vNormal;    // Р43: 0 +X, 1 -X, 2 +Y, 3 -Y, 4 +Z, 5 -Z
 layout(location = 3) flat out uint vWater;     // Р43: 1 - вода
+layout(location = 4) out float vFoam;          // Р59: пена (мелкая вода у водопадов)
 
 // цвета материалов, пока без текстур: 0 воздух, 1 камень, 2 земля, 3 трава, 4 песок, 5 снег, 6 вода (Р28)
 // Р53: 7 кора, 8 древесина, 9 листва, 10 листва светлее
@@ -43,5 +44,6 @@ void main() {
     vColor = vec4(COLORS[min(material, 10u)] * light, material == 6u ? WATER_ALPHA : 1.0);
     vWorld = world;
     vNormal = normal;
+    vFoam = 0.0;
     vWater = material == 6u ? 1u : 0u;
 }

@@ -582,7 +582,9 @@ void forEdges(const RiverPath& r, int g0, int g1, int64_t x, int64_t z, Reach re
 // Р32: уровень ступенями в блок: плёс - ровная вода, перекат - ступень вниз на блок; где земля под рекой падает
 // круто - ступени идут часто (пороги, каскад), где обрывается - падают разом (водопад). Ступени - по значению
 // уровня, а не по звену: на стыке звеньев и в слиянии разрыва нет. Уровни вида 16k-1 - уровень моря среди них.
-inline int32_t stepLevel(int32_t l) { return ((l + 1) & ~(VOXELS_PER_BLOCK - 1)) - 1; }
+// Р59 (Р54: воксель = блок): ступень уровня - 2 блока (было 16 - каждая ступень была 16-метровым водопадом)
+constexpr int32_t STEP_Q = 2;
+inline int32_t stepLevel(int32_t l) { return ((l + 1) & ~(STEP_Q - 1)) - 1; }
 
 // уровень (без ступеней) в точке u русла: между вершинами - линейно
 int32_t runAt(const RiverPath& r, int64_t u) {
@@ -613,7 +615,7 @@ bool stepAhead(const RiverPath& r, int64_t u, int32_t lw, int64_t ahead, int64_t
     if (uk < 0 || uk - u > ahead) return false;
     out.uk = uk;
     out.gap = INT64_MAX / 4;
-    const int32_t up = lw + VOXELS_PER_BLOCK;   // уровень плёса выше (прошлая ступень - где raw поднимается до него)
+    const int32_t up = lw + STEP_Q;   // уровень плёса выше (прошлая ступень - где raw поднимается до него)
     for (size_t k = k0; k >= 1 && uc - r.cum[k] <= back; --k) {
         if (r.run[k - 1] < up) continue;
         const int32_t a = r.run[k - 1], b = r.run[k];
@@ -968,7 +970,7 @@ void RiverSet::apply(const TerrainParams& p, int32_t x, int32_t z, int32_t& h, i
             const fx::q16 nearSea = fx::smoothstep(p.seaLevel, p.seaLevel + 8 * VOXELS_PER_BLOCK, lw);
             const int64_t plainFull = half + ((int64_t(half) * fx::mul(kPlain, nearSea)) >> fx::SHIFT);
             const int64_t plain = plainFull - (((plainFull - half) * mount) >> fx::SHIFT);
-            const int64_t incise = (int64_t(2 * VOXELS_PER_BLOCK) * mount) >> fx::SHIFT;
+            const int64_t incise = (int64_t(2) * mount) >> fx::SHIFT;   // Р59: горный врез - 2 блока
             depth = int32_t((int64_t(depth) * (fx::ONE - mount * 6 / 10)) >> fx::SHIFT) + plunge;
             const int64_t radius = std::clamp<int64_t>(plain + ((bankRun * std::max(0, h0 - raw)) >> fx::SHIFT),
                                                        g.valley, g.valley + VALLEY_CAP);
@@ -1019,8 +1021,9 @@ void RiverSet::apply(const TerrainParams& p, int32_t x, int32_t z, int32_t& h, i
                 const int64_t el = std::max<int64_t>(1, path.cum[e + 1] - path.cum[e]);
                 const int64_t slope = (int64_t(std::max(0, path.run[e] - path.run[e + 1])) << fx::SHIFT) / el;
                 mount = fx::smoothstep(fx::ONE / 60, fx::ONE / 15, fx::q16(std::min<int64_t>(slope, fx::ONE)));
-                const int32_t up = runAt(path, std::max<int64_t>(0, u - 32 * VOXELS_PER_BLOCK));
-                plunge = std::min(6 * VOXELS_PER_BLOCK, std::max(0, up - raw - VOXELS_PER_BLOCK) * 8 / 10);
+                // Р59: яма под падением - до 3 блоков, по падению за 24 блока выше по течению
+                const int32_t up = runAt(path, std::max<int64_t>(0, u - 24));
+                plunge = std::min(3, std::max(0, up - raw - 2) * 4 / 10);
             }
             // Р50: гладь у ступени - кривой по руслу, а не стенкой. Перед ступенью (выше по течению, вода только
             // опускается - выше берега не встанет) гладь сходит на блок за длину L = c·блок, не длиннее плёса:
@@ -1032,12 +1035,12 @@ void RiverSet::apply(const TerrainParams& p, int32_t x, int32_t z, int32_t& h, i
             if (stepAhead(path, u, lw, 16 * VOXELS_PER_BLOCK, 16 * VOXELS_PER_BLOCK, st)) {
                 const fx::q16 sN = fx::q16(std::min<int64_t>(fx::ONE, (d << fx::SHIFT) / std::max(1, hE)));
                 const fx::q16 fast = fx::ONE - fx::mul(sN, sN);   // доля скорости середины: 1 в середине, 0 у берега
-                const fx::q16 cRapid = fx::ONE * 3 / 10 + fx::mul(fx::ONE * 12 / 10, fast);
+                const fx::q16 cRapid = fx::ONE * 12 / 10 + fx::mul(fx::ONE * 28 / 10, fast);   // Р59: положе - середина 4, у берега 1.2
                 // крутизна - у самой ступени (а не у ребра точки): у всех точек перед ступенью одна длина, гладь
                 // на стыке пологого и крутого рёбер не прыгает
                 const fx::q16 mountS = fx::smoothstep(fx::ONE / 60, fx::ONE / 15, st.slope);
-                const fx::q16 c = 16 * fx::ONE + fx::mul(cRapid - 16 * fx::ONE, mountS);
-                const int64_t L = std::max<int64_t>(1, std::min<int64_t>((int64_t(c) * VOXELS_PER_BLOCK) >> fx::SHIFT, st.gap));
+                const fx::q16 c = 24 * fx::ONE + fx::mul(cRapid - 24 * fx::ONE, mountS);
+                const int64_t L = std::max<int64_t>(1, std::min<int64_t>((int64_t(c) * STEP_Q) >> fx::SHIFT, st.gap));
                 const int64_t t = st.uk - u;
                 if (t < L) {
                     const fx::q16 tau = fx::ONE - fx::q16((std::max<int64_t>(0, t) << fx::SHIFT) / L);
@@ -1045,7 +1048,7 @@ void RiverSet::apply(const TerrainParams& p, int32_t x, int32_t z, int32_t& h, i
                     const fx::q16 smooth = 3 * t2 - 2 * t3, easeIn = t2, easeOut = 2 * tau - t2;
                     const fx::q16 wShape = (gen::value2(x, z, 5, p.seed ^ (uint32_t(lw) * 0x9E3779B1u)) + fx::ONE) / 2;
                     const fx::q16 shape = (smooth + easeIn + fx::mul(easeOut - easeIn, wShape)) / 2;
-                    lwFlow = lw - int32_t((int64_t(shape) * VOXELS_PER_BLOCK) >> fx::SHIFT);
+                    lwFlow = lw - int32_t((int64_t(shape) * STEP_Q) >> fx::SHIFT);
                 }
             }
             const int64_t f = carve(d, lwFlow, raw, hE, dE, mount, plunge);

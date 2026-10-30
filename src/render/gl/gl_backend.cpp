@@ -99,7 +99,16 @@ public:
         tileProgram_ = loadProgram(shaderDir, "tile");
         dynProgram_ = loadProgram(shaderDir, "dynwater", "terrain");   // Р45: вода автомата
         fineProgram_ = loadProgram(shaderDir, "finewater", "terrain");   // Р58: мелкая вода у камеры
-        if (!program_ || !tileProgram_ || !dynProgram_ || !fineProgram_) return false;
+        sprayProgram_ = loadProgram(shaderDir, "spray", "terrain");      // Р59: брызги
+        if (!program_ || !tileProgram_ || !dynProgram_ || !fineProgram_ || !sprayProgram_) return false;
+        glCreateVertexArrays(1, &sprayVao_);
+        for (GLuint a = 0; a < 2; ++a) {
+            glEnableVertexArrayAttrib(sprayVao_, a);
+            glVertexArrayAttribFormat(sprayVao_, a, 4, GL_FLOAT, GL_FALSE, a * 16);
+            glVertexArrayAttribBinding(sprayVao_, a, 0);
+        }
+        glVertexArrayBindingDivisor(sprayVao_, 0, 1);
+        glCreateBuffers(1, &sprayVbo_);
         glCreateVertexArrays(1, &fineVao_);
         glCreateBuffers(1, &fineSsbo_);
         glCreateVertexArrays(1, &dynVao_);
@@ -235,6 +244,11 @@ public:
         fineOrigin_ = origin;
     }
 
+    void setSpray(std::span<const float> v) override {
+        sprayCount_ = static_cast<GLsizei>(v.size() / 8);
+        if (sprayCount_ > 0) glNamedBufferData(sprayVbo_, static_cast<GLsizeiptr>(v.size_bytes()), v.data(), GL_STREAM_DRAW);
+    }
+
     void setSimWater(std::span<const float> v) override {
         dynCount_ = static_cast<GLsizei>(v.size() / 4);
         if (v.empty()) return;
@@ -347,7 +361,7 @@ private:
     // но не пишет: вода не заслоняет воду за собой. Порядок между кусками воды не сортируется - слоёв воды
     // друг за другом почти не бывает (край водопада над гладью).
     void drawWater(FrameStats& stats) {
-        if (water_.empty() && dynCount_ == 0) return;
+        if (water_.empty() && dynCount_ == 0 && fineCount_ == 0 && sprayCount_ == 0) return;
         glEnable(GL_BLEND);
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
         glDepthMask(GL_FALSE);
@@ -394,6 +408,16 @@ private:
             glProgramUniform2i(fineProgram_, 0, fineOrigin_.x, fineOrigin_.y);
             glDisable(GL_CULL_FACE);
             glDrawArraysInstanced(GL_TRIANGLES, 0, 256 * 30, fineCount_);
+            glEnable(GL_CULL_FACE);
+            ++stats.drawCalls;
+        }
+        // Р59: брызги и пыль - экземпляры-кубики
+        if (sprayCount_ > 0) {
+            glUseProgram(sprayProgram_);
+            glBindVertexArray(sprayVao_);
+            glVertexArrayVertexBuffer(sprayVao_, 0, sprayVbo_, 0, 32);
+            glDisable(GL_CULL_FACE);
+            glDrawArraysInstanced(GL_TRIANGLES, 0, 18, sprayCount_);
             glEnable(GL_CULL_FACE);
             ++stats.drawCalls;
         }
@@ -475,6 +499,8 @@ private:
     GLuint dynProgram_ = 0, dynVao_ = 0, dynVbo_ = 0;   // Р45: вода автомата
     GLuint fineProgram_ = 0, fineVao_ = 0, fineSsbo_ = 0, fineTex_ = 0, fineMask_ = 0;   // Р58: мелкая вода
     GLsizei fineCount_ = 0;
+    GLuint sprayProgram_ = 0, sprayVao_ = 0, sprayVbo_ = 0;   // Р59: брызги
+    GLsizei sprayCount_ = 0;
     int fineSide_ = 0;
     glm::ivec2 fineOrigin_{0};
     GLsizei dynCount_ = 0;

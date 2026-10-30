@@ -25,6 +25,7 @@ layout(location = 0) out vec4 vColor;
 layout(location = 1) out vec3 vWorld;
 layout(location = 2) flat out uint vNormal;
 layout(location = 3) flat out uint vWater;
+layout(location = 4) out float vFoam;   // Р59: пена - на кромке и под падением
 
 const vec3 WATER = vec3(0.3, 0.62, 0.92);
 const vec3 NORMALS[6] = vec3[](vec3(1, 0, 0), vec3(-1, 0, 0), vec3(0, 1, 0), vec3(0, -1, 0), vec3(0, 0, 1), vec3(0, 0, -1));
@@ -82,6 +83,7 @@ void main() {
     float t8 = floor(timeV.x * 8.0) / 8.0;
     float top = columnTop(t, vel, t8);
     vWater = 4u;
+    vFoam = 0.0;
     vColor = vec4(0);
     vNormal = 2u;
     vWorld = vec3(0);
@@ -112,6 +114,19 @@ void main() {
         float u = (k == 1 || k == 2) ? S : 0;
         float y = k >= 2 ? top : low;
         p = alongZ ? vec3(x0, y, lo.z + u) : vec3(lo.x + u, y, z0);
+    }
+    // Р59: пена: у блока ниже соседа (под падением) - сильнее, у кромки (сосед ниже) - белая вода; на быстрой - тоже
+    {
+        ivec2 bb = ivec2(floor((vec2(t) + 0.5) / 16.0));
+        float v0 = fine(bb).r, up = 0.0, down = 0.0;
+        for (int d = 0; d < 4; ++d) {
+            ivec2 o = d == 0 ? ivec2(1, 0) : d == 1 ? ivec2(-1, 0) : d == 2 ? ivec2(0, 1) : ivec2(0, -1);
+            float vn = fine(bb + o).r;
+            if (vn <= NONE) continue;
+            up = max(up, vn - v0);
+            down = max(down, v0 - vn);
+        }
+        vFoam = clamp(up * 0.9 + down * 0.5 + max(0.0, length(vel) - 2.0) / 6.0, 0.0, 1.0);
     }
     vec3 world = p / 16.0;   // в прежних мерах
     gl_Position = viewProj * vec4(world, 1.0);
