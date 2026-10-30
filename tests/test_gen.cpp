@@ -137,7 +137,8 @@ int main() {
             for (fx::q16 w : {r.wPlains, r.wHills, r.wMount}) if (w < 0 || w > fx::ONE) rangeOk = false;
             maxW = std::max({maxW, std::abs(r.wPlains - prev.wPlains), std::abs(r.wHills - prev.wHills),
                              std::abs(r.wMount - prev.wMount)});
-            const int32_t step = std::abs(r.height - prev.height);
+            // Р32: на кромке реки берег до блока над водой - это берег, а не стык зон: пары вода/суша не считаем
+            const int32_t step = (r.water > r.height) == (prev.water > prev.height) ? std::abs(r.height - prev.height) : 0;
             maxStep = std::max(maxStep, step);
             if (r.wMount == fx::ONE && prev.wMount == fx::ONE) maxStepPure = std::max(maxStepPure, step);
             if (r.wPlains == fx::ONE) zonesSeen[0] = 1;
@@ -421,6 +422,45 @@ int main() {
             }
         std::printf("реки: точек выборки с водой выше моря %d\n", wetLand);
         CHECK(wetLand > 0, "вода рек и озёр выше уровня моря - есть");
+
+        // Р32: русло проложено низом, уровень - по нему же: вода рек не выше исходной земли (рябь - до 2 блоков),
+        // река не поднимает землю под себя; у воды нет сухого соседа ниже её больше чем на 2 блока (столб воды)
+        constexpr int N = 256, STEP = 4 * 16;   // квадрат 1024×1024 блока у точки старта, шаг 4 блока
+        const int32_t ox = -12450 * 16 - N / 2 * STEP, oz = 23560 * 16 - N / 2 * STEP;
+        std::vector<int32_t> H(N * N), W(N * N), H0(N * N);
+        int channel = 0, above = 0, raised = 0, columns = 0;
+        for (int tj = 0; tj < N; tj += 64)
+            for (int ti = 0; ti < N; ti += 64) {
+                world::RiverSet rs;
+                rs.build(tp, ox + ti * STEP, oz + tj * STEP, ox + (ti + 64) * STEP, oz + (tj + 64) * STEP);
+                for (int j = tj; j < tj + 64; ++j)
+                    for (int i = ti; i < ti + 64; ++i) {
+                        const int32_t x = ox + i * STEP, z = oz + j * STEP;
+                        const world::SlowFields s = world::slowAt(tp, x, z);
+                        const world::Relief b = world::baseReliefAt(tp, x, z, s), r = world::reliefAt(tp, x, z, s, 0, &rs);
+                        H[j * N + i] = r.height;
+                        W[j * N + i] = r.water;
+                        H0[j * N + i] = b.height;
+                        if (r.height > b.height) ++raised;
+                        if (r.water > r.height && b.height >= tp.seaLevel) {
+                            ++channel;
+                            if (r.water - b.height > 2 * 16) ++above;
+                        }
+                    }
+            }
+        for (int j = 1; j + 1 < N; ++j)
+            for (int i = 1; i + 1 < N; ++i) {
+                const int a = j * N + i;
+                if (W[a] <= H[a]) continue;
+                for (int nb : {a - 1, a + 1, a - N, a + N})
+                    if (W[nb] <= H[nb] && W[a] - std::max(H[a], H[nb]) > 2 * 16) ++columns;
+            }
+        std::printf("реки (Р32): точек русла %d, вода выше исходной земли > 2 бл: %d, земля поднята: %d, столбов воды: %d\n",
+                    channel, above, raised, columns);
+        CHECK(channel > 0, "в квадрате у старта есть реки");
+        CHECK(above == 0, "вода рек не выше исходной земли больше чем на 2 блока");
+        CHECK(raised == 0, "река не поднимает землю под себя");
+        CHECK(columns == 0, "у воды нет сухого соседа ниже её больше чем на 2 блока (столбов воды)");
     }
 
     // ─── Р20: дальние уровни ──────────────────────────────────────────────────────────────

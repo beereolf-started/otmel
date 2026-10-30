@@ -16,7 +16,6 @@ constexpr int WINDOW = 8;                                   // окно водо
 constexpr int CHAIN = 16;                                   // не дальше 16 звеньев
 constexpr int32_t AREA_MIN = 1;                             // Р31: ручей - с первого узла водосбора
 constexpr int32_t LAKE_AREA_MIN = 3;                        // озеро - с 3 узлов
-constexpr int32_t WARP = 250 * VOXELS_PER_BLOCK;            // извилистость: сдвиг точки запроса
 constexpr int32_t VALLEY_CAP = 400 * VOXELS_PER_BLOCK;      // долина по глубине прорези - не шире на столько
 constexpr int SMOOTH_CUT = 15;                              // сглаженная высота - без форм мельче 2048 блоков
 // уклон к морю: потенциал стока = сглаженная высота + материковость · TILT; материковость падает к океану на
@@ -24,6 +23,15 @@ constexpr int SMOOTH_CUT = 15;                              // сглаженн�
 constexpr int64_t TILT = 200 * VOXELS_PER_BLOCK;
 constexpr int GROUND_CUT = 9;                               // земля вдоль реки - без ряби мельче 32 блоков
 constexpr int DX[8] = {1, 1, 0, -1, -1, -1, 0, 1}, DZ[8] = {0, 1, 1, 1, 0, -1, -1, -1};
+// Р32: русло - поиск ложбины. Станции через 64 блока, на каждой 13 вариантов сдвига вбок в коридоре ±400 блоков;
+// путь с наименьшей суммой высот земли плюс штраф за каждый шаг вбок (не больше шага на станцию - не круче 46°)
+constexpr int64_t STATION = 64 * VOXELS_PER_BLOCK;
+constexpr int SIDE = 6;
+constexpr int64_t SPREAD = 400 * VOXELS_PER_BLOCK;
+constexpr int64_t BEND = 4 * VOXELS_PER_BLOCK;
+constexpr int64_t MEANDER = 100 * VOXELS_PER_BLOCK;         // меандры поверх найденного пути: до ±100 блоков ×0.3..1.5
+constexpr int64_t ANCHOR = 192 * VOXELS_PER_BLOCK;          // узел садится в самую низкую из 3×3 точек через 192 блока
+constexpr int32_t SPILL = 2 * VOXELS_PER_BLOCK;             // русло над чужой долиной выше этого - вода сливается
 
 struct Info {
     int64_t px, pz;
@@ -32,10 +40,12 @@ struct Info {
     bool sea;
     int down = -2;      // -2: ещё не считали
     int32_t area = -1;  // -1: ещё не считали
+    bool anchored = false;          // Р32: точка русла в узле (самая низкая около узла)
+    int64_t ax = 0, az = 0;
     bool leveled = false;
     int32_t level = 0;              // Р30: уровень воды в узле
-    std::vector<int32_t> run;       // Р30: уровень вдоль вытекающего звена (пусто - ещё не считали)
-    int64_t mouthDist = -1;         // Р31: расстояние по реке до устья (моря или озера), воксели; -1 - не считали
+    std::shared_ptr<const RiverPath> path;   // Р32: вытекающее звено (пусто - ещё не считали)
+    int64_t mouthDist = -1;         // Р31: расстояние до устья (моря или озера), воксели; -1 - не считали
     int32_t mouthLevel = 0;         // Р31: уровень устья
 };
 
@@ -48,7 +58,7 @@ struct Cache {
 };
 thread_local Cache g_cache;
 
-// Р31: готовые узлы (посчитано всё, включая уровень вдоль звена) - общие на все потоки: посчитанное одним
+// Р31: готовые узлы (посчитано всё, включая русло) - общие на все потоки: посчитанное одним
 // потоком остальные берут готовым, а не считают сотни выборок рельефа заново
 struct Shared {
     std::mutex mu;
@@ -134,27 +144,54 @@ int32_t groundLine(const TerrainParams& p, int64_t x, int64_t z) {
     return baseReliefAt(p, int32_t(x), int32_t(z), slow, GROUND_CUT).height - VOXELS_PER_BLOCK;
 }
 
-const std::vector<int32_t>& outRun(const TerrainParams& p, int32_t i, int32_t j);
+// Целый корень, точный: приближение аппаратным корнем (по IEEE 754 он округлён правильно на любой машине) и
+// целочисленная поправка - результат - точное floor(√v) до бита, а не плавающее число (Р16)
+uint64_t isqrt(uint64_t v) {
+    uint64_t r = uint64_t(std::sqrt(double(v)));
+    while (r > 0 && r * r > v) --r;
+    while ((r + 1) * (r + 1) <= v) ++r;
+    return r;
+}
+
+// Р32: точка русла в узле - самая низкая земля из 3×3 точек через ANCHOR: узел, сдвинутый хешем на холм, не
+// тянет на этот холм все свои реки
+void anchor(const TerrainParams& p, int32_t i, int32_t j, int64_t& ax, int64_t& az) {
+    if (Info& n = info(p, i, j); n.anchored) { ax = n.ax; az = n.az; return; }
+    const Info& n = info(p, i, j);
+    int64_t bx = n.px, bz = n.pz;
+    int32_t best = groundLine(p, bx, bz);
+    for (int dz = -1; dz <= 1; ++dz)
+        for (int dx = -1; dx <= 1; ++dx) {
+            if (dx == 0 && dz == 0) continue;
+            const int64_t x = n.px + dx * ANCHOR, z = n.pz + dz * ANCHOR;
+            const int32_t g = groundLine(p, x, z);
+            if (g < best) { best = g; bx = x; bz = z; }
+        }
+    Info& m = info(p, i, j);
+    m.ax = ax = bx;
+    m.az = az = bz;
+    m.anchored = true;
+}
+
+const RiverPath& outPath(const TerrainParams& p, int32_t i, int32_t j);
 
 // Р30: уровень воды в узле - минимум земли в нём и концов всех впадающих звеньев (притоков); по дереву стока
 // вверх до истоков (потенциал строго растёт вверх - рекурсия конечна)
 int32_t level(const TerrainParams& p, int32_t i, int32_t j) {
     if (Info& n = info(p, i, j); n.leveled) return n.level;
-    const Info& n = info(p, i, j);
-    int32_t lv = groundLine(p, n.px, n.pz);
+    int64_t ax, az;
+    anchor(p, i, j, ax, az);
+    int32_t lv = groundLine(p, ax, az);
     for (int d = 0; d < 8; ++d) {
         const int32_t ci = i + DX[d], cj = j + DZ[d];
         const int cd = down(p, ci, cj);
-        if (cd >= 0 && ci + DX[cd] == i && cj + DZ[cd] == j) lv = std::min(lv, outRun(p, ci, cj).back());
+        if (cd >= 0 && ci + DX[cd] == i && cj + DZ[cd] == j) lv = std::min(lv, outPath(p, ci, cj).run.back());
     }
     Info& m = info(p, i, j);
     m.level = std::max(lv, p.seaLevel - 1);
     m.leveled = true;
     return m.level;
 }
-
-uint64_t isqrt(uint64_t v);
-int32_t groundLine(const TerrainParams& p, int64_t x, int64_t z);
 
 // Р31: устье узла - вниз по цепочке до моря или котловины (потенциал вниз строго падает - конечно).
 // Уровень устья: море - уровень моря; котловина - земля в ней минус блок (без уровней рек - иначе круг).
@@ -181,52 +218,168 @@ void mouth(const TerrainParams& p, int32_t i, int32_t j, int64_t& dist, int32_t&
     lvl = ml;
 }
 
-// Р30: уровень вдоль вытекающего звена - бегущий минимум земли от уровня в узле; точки через ~RUN_STEP.
-// Р31: и обязательный уклон: вода падает хотя бы на 1/(64 + 24·√A) - ручьи круче, большая река положе
-const std::vector<int32_t>& outRun(const TerrainParams& p, int32_t i, int32_t j) {
-    if (!info(p, i, j).run.empty()) return info(p, i, j).run;
+// Р32: ломаная русла от a к b. 1) поиск ложбины - динамическое программирование по станциям; 2) меандры -
+// сдвиг станций вбок шумом (у концов - на нет, на крутом - меньше); 3) два раза срезание углов (Чайкин) -
+// вершины через ~16 блоков. Сдвиги - вдоль одной нормали к прямой a-b: ломаная - график над прямой, сама себя
+// не пересекает.
+void tracePath(const TerrainParams& p, int64_t ax, int64_t az, int64_t bx, int64_t bz, RiverPath& out) {
+    const int64_t ex = bx - ax, ez = bz - az;
+    const int64_t len = std::max<int64_t>(1, int64_t(isqrt(uint64_t(ex * ex + ez * ez))));
+    const int n = int(std::max<int64_t>(2, (len + STATION / 2) / STATION));
+    constexpr int K = 2 * SIDE + 1;
+    constexpr int64_t INF = INT64_MAX / 4;
+    // станция s, вариант k: точка на прямой + нормаль (-ez, ex)/len · сдвиг
+    const auto offsetOf = [](int k) { return SPREAD * (k - SIDE) / SIDE; };
+    const auto at = [&](int s, int64_t off, int64_t& x, int64_t& z) {
+        x = ax + ex * s / n - ez * off / len;
+        z = az + ez * s / n + ex * off / len;
+    };
+    std::vector<int64_t> cost(K, INF), next(K);
+    std::vector<uint8_t> from(size_t(n + 1) * K, uint8_t(SIDE));
+    cost[SIDE] = 0;
+    for (int s = 1; s <= n; ++s) {
+        for (int k = 0; k < K; ++k) {
+            next[k] = INF;
+            if (s == n && k != SIDE) continue;                    // конец - в узле
+            if (std::abs(k - SIDE) > std::min(s, n - s)) continue;   // от узлов не дальше шага на станцию
+            for (int kp = std::max(0, k - 1); kp <= std::min(K - 1, k + 1); ++kp) {
+                if (cost[kp] >= INF) continue;
+                const int64_t c = cost[kp] + BEND * std::abs(k - kp);
+                if (c < next[k]) { next[k] = c; from[size_t(s) * K + k] = uint8_t(kp); }
+            }
+            if (next[k] < INF && s < n) {
+                int64_t x, z;
+                at(s, offsetOf(k), x, z);
+                next[k] += groundLine(p, x, z);
+            }
+        }
+        std::swap(cost, next);
+    }
+    std::vector<int64_t> off(n + 1, 0);
+    for (int s = n, k = SIDE; s > 0; --s) {
+        off[s] = offsetOf(k);
+        k = from[size_t(s) * K + k];
+    }
+    off[0] = 0;
+    // меандры: на равнине во всю силу, на крутом (уклон земли от 1/30) - почти прямо, как у горных рек
+    const int64_t drop = std::max<int64_t>(0, groundLine(p, ax, az) - groundLine(p, bx, bz));
+    const fx::q16 grade = fx::q16(std::min<int64_t>(fx::ONE, (drop << fx::SHIFT) / len));
+    const fx::q16 flat = fx::ONE - fx::smoothstep(fx::ONE / 200, fx::ONE / 30, grade);
+    const fx::q16 kAmp = fx::ONE * 9 / 10 + gen::simplex2(int32_t(ax), int32_t(az), 15, p.seed ^ 0x5B7u) * 6 / 10;
+    const int64_t amp = (((MEANDER * kAmp) >> fx::SHIFT) * (fx::ONE / 5 + flat * 4 / 5)) >> fx::SHIFT;
+    std::vector<int64_t> px(n + 1), pz(n + 1);
+    for (int s = 0; s <= n; ++s) {
+        int64_t x, z;
+        at(s, 0, x, z);
+        const int64_t taper = std::min<int64_t>(fx::ONE, int64_t(std::min(s, n - s)) * fx::ONE / 3);
+        const int64_t m = (((int64_t(gen::simplex2(int32_t(x), int32_t(z), 13, p.seed ^ 0x3A11Du)) * amp) >> fx::SHIFT) * taper) >> fx::SHIFT;
+        at(s, off[s] + m, px[s], pz[s]);
+    }
+    // срезание углов: каждое ребро QR -> точки 3/4Q+1/4R и 1/4Q+3/4R; концы на месте
+    for (int it = 0; it < 2; ++it) {
+        std::vector<int64_t> nx{px.front()}, nz{pz.front()};
+        for (size_t k = 0; k + 1 < px.size(); ++k) {
+            nx.push_back((3 * px[k] + px[k + 1]) / 4);
+            nz.push_back((3 * pz[k] + pz[k + 1]) / 4);
+            nx.push_back((px[k] + 3 * px[k + 1]) / 4);
+            nz.push_back((pz[k] + 3 * pz[k + 1]) / 4);
+        }
+        nx.push_back(px.back());
+        nz.push_back(pz.back());
+        px.swap(nx);
+        pz.swap(nz);
+    }
+    out.x = std::move(px);
+    out.z = std::move(pz);
+}
+
+// вершины, длины, рамки групп рёбер
+void finishPath(RiverPath& r) {
+    const size_t nv = r.x.size();
+    r.cum.assign(nv, 0);
+    for (size_t k = 1; k < nv; ++k) {
+        const int64_t dx = r.x[k] - r.x[k - 1], dz = r.z[k] - r.z[k - 1];
+        r.cum[k] = r.cum[k - 1] + int64_t(isqrt(uint64_t(dx * dx + dz * dz)));
+    }
+    r.len = r.cum.back();
+    r.boxes.clear();
+    r.supers.clear();
+    r.boxLow.clear();
+    r.superLow.clear();
+    r.bounds = {r.x[0], r.z[0], r.x[0], r.z[0]};
+    const size_t ne = nv > 1 ? nv - 1 : 1;
+    for (size_t g = 0; g < ne; g += RiverPath::GROUP) {
+        RiverPath::Box b{INT64_MAX, INT64_MAX, INT64_MIN, INT64_MIN};
+        for (size_t k = g; k <= std::min(g + RiverPath::GROUP, nv - 1); ++k) {
+            b.x0 = std::min(b.x0, r.x[k]);
+            b.z0 = std::min(b.z0, r.z[k]);
+            b.x1 = std::max(b.x1, r.x[k]);
+            b.z1 = std::max(b.z1, r.z[k]);
+        }
+        int32_t low = INT32_MAX;
+        if (r.run.size() == nv)
+            for (size_t k = g; k <= std::min(g + RiverPath::GROUP, nv - 1); ++k) low = std::min(low, r.run[k]);
+        r.boxes.push_back(b);
+        r.boxLow.push_back(low);
+        if (r.boxes.size() % RiverPath::SUPER == 1) { r.supers.push_back(b); r.superLow.push_back(low); }
+        r.superLow.back() = std::min(r.superLow.back(), low);
+        RiverPath::Box& sb = r.supers.back();
+        sb.x0 = std::min(sb.x0, b.x0);
+        sb.z0 = std::min(sb.z0, b.z0);
+        sb.x1 = std::max(sb.x1, b.x1);
+        sb.z1 = std::max(sb.z1, b.z1);
+        r.bounds.x0 = std::min(r.bounds.x0, b.x0);
+        r.bounds.z0 = std::min(r.bounds.z0, b.z0);
+        r.bounds.x1 = std::max(r.bounds.x1, b.x1);
+        r.bounds.z1 = std::max(r.bounds.z1, b.z1);
+    }
+}
+
+// Р30: уровень вдоль вытекающего звена - бегущий минимум земли от уровня в узле, в каждой вершине русла (Р32).
+// Р31: и обязательный уклон по оставшейся высоте до устья, не положе 1/(256 + 64·√A)
+const RiverPath& outPath(const TerrainParams& p, int32_t i, int32_t j) {
+    if (const Info& n = info(p, i, j); n.path) return *n.path;
     const int32_t start = level(p, i, j);
     const int d = down(p, i, j);
-    std::vector<int32_t> run;
+    auto path = std::make_shared<RiverPath>();
+    int64_t ax, az;
+    anchor(p, i, j, ax, az);
     if (d < 0) {
-        run.push_back(start);
+        path->x = {ax};
+        path->z = {az};
+        path->run = {start};
     } else {
-        const Info& a = info(p, i, j);
-        const Info& b = info(p, i + DX[d], j + DZ[d]);
-        const int64_t ex = b.px - a.px, ez = b.pz - a.pz;
-        const int n = int(std::max<int64_t>(1, (std::abs(ex) + std::abs(ez)) / RiverSet::RUN_STEP));
-        const int64_t len = int64_t(isqrt(uint64_t(ex * ex + ez * ez)));
+        int64_t bx, bz;
+        anchor(p, i + DX[d], j + DZ[d], bx, bz);
+        tracePath(p, ax, az, bx, bz, *path);
         const int64_t s = int64_t(isqrt(uint64_t(std::max(1, area(p, i, j))) << 16));   // √A · 256
-        // уклон - по оставшейся высоте до устья: вода приходит к морю ровно к уровню моря, а не «прилипает»
-        // к нему за десятки километров (широкое плоское устье); не положе 1/(256 + 64·√A)
         int64_t mdist;
         int32_t mlevel;
         mouth(p, i, j, mdist, mlevel);
         const int64_t gradeDiv = 256 + 64 * s / 256;
+        // путь по руслу длиннее прямой между узлами: доля пути до устья - по доле длины русла
+        const Info& a = info(p, i, j);
+        const Info& b = info(p, i + DX[d], j + DZ[d]);
+        const int64_t sx = b.px - a.px, sz = b.pz - a.pz;
+        const int64_t straight = int64_t(isqrt(uint64_t(sx * sx + sz * sz)));
+        finishPath(*path);
         int32_t cur = start;
-        run.push_back(cur);
-        for (int k = 1; k <= n; ++k) {
-            cur = std::min(cur, groundLine(p, a.px + ex * k / n, a.pz + ez * k / n));
-            const int64_t u = len * k / n;
-            const int64_t byMouth = mdist > 0 ? int64_t(std::max(0, start - mlevel)) * u / mdist : 0;
+        path->run.push_back(cur);
+        for (size_t k = 1; k < path->x.size(); ++k) {
+            cur = std::min(cur, groundLine(p, path->x[k], path->z[k]));
+            const int64_t u = path->cum[k];
+            const int64_t us = path->len > 0 ? u * straight / path->len : 0;
+            const int64_t byMouth = mdist > 0 ? int64_t(std::max(0, start - mlevel)) * us / mdist : 0;
             cur = std::min(cur, start - int32_t(std::max(byMouth, u / gradeDiv)));
-            run.push_back(std::max(cur, p.seaLevel - 1));
+            path->run.push_back(std::max(cur, p.seaLevel - 1));
         }
     }
+    finishPath(*path);
     area(p, i, j);   // узел - целиком: публикуем вместе с полноводностью
     Info& m = info(p, i, j);
-    m.run = std::move(run);
+    m.path = std::move(path);
     publish(p, nodeKey(i, j), m);
-    return m.run;
-}
-
-// Целый корень, точный: приближение аппаратным корнем (по IEEE 754 он округлён правильно на любой машине) и
-// целочисленная поправка - результат - точное floor(√v) до бита, а не плавающее число (Р16)
-uint64_t isqrt(uint64_t v) {
-    uint64_t r = uint64_t(std::sqrt(double(v)));
-    while (r > 0 && r * r > v) --r;
-    while ((r + 1) * (r + 1) <= v) ++r;
-    return r;
+    return *m.path;
 }
 
 // шум вдоль реки в [-1, 1] (у каждого свойства - своё зерно)
@@ -239,9 +392,6 @@ constexpr int NSTEP_LOG2 = 3;   // узлы шумов рек - через 8 в�
 RiverSet::NoiseNode noiseNode(const TerrainParams& p, int32_t nx, int32_t nz) {
     const int32_t x = nx << NSTEP_LOG2, z = nz << NSTEP_LOG2;
     RiverSet::NoiseNode n;
-    n.v[RiverSet::N_WARP] = vary(p, x, z, 15, 0x5B7u);
-    n.v[RiverSet::N_WX] = vary(p, x, z, 14, 0x3A11Du);
-    n.v[RiverSet::N_WZ] = vary(p, x, z, 14, 0x7B23Fu);
     n.v[RiverSet::N_WIDTH] = vary(p, x, z, 12, 0x1D7u);
     n.v[RiverSet::N_DEPTH] = vary(p, x, z, 12, 0x2E9u);
     n.v[RiverSet::N_PLAIN] = vary(p, x, z, 13, 0x3F1u);
@@ -255,6 +405,107 @@ RiverSet::NoiseNode noiseNode(const TerrainParams& p, int32_t nx, int32_t nz) {
     n.v[RiverSet::N_WX2] = vary(p, x, z, 13, 0xC3Du);
     n.v[RiverSet::N_WZ2] = vary(p, x, z, 13, 0xD4Fu);
     return n;
+}
+
+// Р32: ближайшая точка русла: ребро e, доля f вдоль него (Q16), квадрат расстояния. Группы рёбер, чья рамка
+// дальше уже найденного (или предела), не проверяются.
+struct Hit { int64_t d2; int e; int64_t f; };
+Hit nearestOnPath(const RiverPath& r, int64_t x, int64_t z, int64_t limit2) {
+    Hit best{limit2, -1, 0};
+    const size_t nv = r.x.size();
+    if (nv == 1) {
+        const int64_t dx = x - r.x[0], dz = z - r.z[0];
+        const int64_t d2 = dx * dx + dz * dz;
+        if (d2 < best.d2) best = {d2, 0, 0};
+        return best;
+    }
+    for (size_t g = 0; g < r.boxes.size(); ++g) {
+        const RiverPath::Box& b = r.boxes[g];
+        const int64_t bx = std::max<int64_t>({0, b.x0 - x, x - b.x1}), bz = std::max<int64_t>({0, b.z0 - z, z - b.z1});
+        if (bx * bx + bz * bz >= best.d2) continue;
+        const size_t e1 = std::min(g * RiverPath::GROUP + RiverPath::GROUP, nv - 1);
+        for (size_t e = g * RiverPath::GROUP; e < e1; ++e) {
+            const int64_t ex = r.x[e + 1] - r.x[e], ez = r.z[e + 1] - r.z[e], px = x - r.x[e], pz = z - r.z[e];
+            const int64_t len2 = ex * ex + ez * ez;
+            int64_t t = 0;
+            if (len2 > 0) t = std::clamp<int64_t>(((px * ex + pz * ez) << 16) / len2, 0, fx::ONE);
+            const int64_t dx = px - ((ex * t) >> 16), dz = pz - ((ez * t) >> 16);
+            const int64_t d2 = dx * dx + dz * dz;
+            if (d2 < best.d2) best = {d2, int(e), t};
+        }
+    }
+    return best;
+}
+
+// Р32: обход «оснований перпендикуляров» на русле ближе предела: visit(ребро, квадрат расстояния, доля t вдоль
+// ребра Q16). Ребро даёт точку, только если перпендикуляр из столбца падает на него; вершина - только если столбец
+// в клине снаружи изгиба (за концом одного ребра и до начала следующего) или за концом русла. Так долина
+// считается поперёк русла, а не конусом во все стороны: у ручья круче стенок долина нижнего участка не
+// прорезает русло выше по течению. Непрерывно: на границе ребра и клина основание - сама вершина.
+// reach(low) - дальше какого расстояния участок с нижним уровнем low столбец точно не меняет; блоки групп и
+// группы, чьи рамки дальше, не смотрятся (вершина на стыке групп - в рамках обеих).
+template <class Reach, class Visit>
+void forEdges(const RiverPath& r, int g0, int g1, int64_t x, int64_t z, Reach reach, Visit visit) {
+    if (r.x.size() == 1) {
+        const int64_t lim = reach(r.run[0]);
+        const int64_t dx = x - r.x[0], dz = z - r.z[0];
+        if (dx * dx + dz * dz < lim * lim) visit(0, dx * dx + dz * dz, 0);
+        return;
+    }
+    const size_t nv = r.x.size();
+    // проекция столбца на ребро e: < 0 - до начала, > |ребра|² - за концом
+    const auto proj = [&](size_t e) {
+        return (x - r.x[e]) * (r.x[e + 1] - r.x[e]) + (z - r.z[e]) * (r.z[e + 1] - r.z[e]);
+    };
+    for (int g = g0; g <= g1; ++g) {
+        if (g % RiverPath::SUPER == 0 || g == g0) {   // начало блока групп: весь блок дальше предела - мимо
+            const size_t sbi = size_t(g / RiverPath::SUPER);
+            const RiverPath::Box& sb = r.supers[sbi];
+            const int64_t lim = reach(r.superLow[sbi]);
+            const int64_t sx = std::max<int64_t>({0, sb.x0 - x, x - sb.x1}), sz = std::max<int64_t>({0, sb.z0 - z, z - sb.z1});
+            if (sx * sx + sz * sz >= lim * lim) { g = (g / RiverPath::SUPER + 1) * RiverPath::SUPER - 1; continue; }
+        }
+        const RiverPath::Box& b = r.boxes[size_t(g)];
+        const int64_t lim = reach(r.boxLow[size_t(g)]), limit2 = lim * lim;
+        const int64_t bx = std::max<int64_t>({0, b.x0 - x, x - b.x1}), bz = std::max<int64_t>({0, b.z0 - z, z - b.z1});
+        if (bx * bx + bz * bz >= limit2) continue;
+        const size_t e1 = std::min(size_t(g) * RiverPath::GROUP + RiverPath::GROUP, nv - 1);
+        for (size_t e = size_t(g) * RiverPath::GROUP; e < e1; ++e) {
+            const int64_t ex = r.x[e + 1] - r.x[e], ez = r.z[e + 1] - r.z[e];
+            const int64_t len2 = ex * ex + ez * ez;
+            const int64_t pr = proj(e);
+            if (len2 > 0 && pr >= 0 && pr <= len2) {   // перпендикуляр на ребро
+                const int64_t t = (pr << 16) / len2;
+                const int64_t dx = x - r.x[e] - ((ex * t) >> 16), dz = z - r.z[e] - ((ez * t) >> 16);
+                const int64_t d2 = dx * dx + dz * dz;
+                if (d2 < limit2) visit(e, d2, t);
+            } else if (len2 == 0 || pr < 0) {          // до начала ребра: вершина e, если за концом предыдущего
+                if (e == 0 || proj(e - 1) > (r.x[e] - r.x[e - 1]) * (r.x[e] - r.x[e - 1]) + (r.z[e] - r.z[e - 1]) * (r.z[e] - r.z[e - 1])) {
+                    const int64_t dx = x - r.x[e], dz = z - r.z[e];
+                    if (dx * dx + dz * dz < limit2) visit(e, dx * dx + dz * dz, 0);
+                }
+            } else {                                   // за концом ребра: вершина e+1, если до начала следующего
+                if (e + 2 >= nv || proj(e + 1) < 0) {
+                    const int64_t dx = x - r.x[e + 1], dz = z - r.z[e + 1];
+                    if (dx * dx + dz * dz < limit2) visit(e, dx * dx + dz * dz, fx::ONE);
+                }
+            }
+        }
+    }
+}
+
+// Р32: уровень ступенями в блок: плёс - ровная вода, перекат - ступень вниз на блок; где земля под рекой падает
+// круто - ступени идут часто (пороги, каскад), где обрывается - падают разом (водопад). Ступени - по значению
+// уровня, а не по звену: на стыке звеньев и в слиянии разрыва нет. Уровни вида 16k-1 - уровень моря среди них.
+inline int32_t stepLevel(int32_t l) { return ((l + 1) & ~(VOXELS_PER_BLOCK - 1)) - 1; }
+
+// уровень (без ступеней) в точке u русла: между вершинами - линейно
+int32_t runAt(const RiverPath& r, int64_t u) {
+    if (r.run.size() == 1 || r.len <= 0) return r.run[0];
+    u = std::clamp<int64_t>(u, 0, r.len);
+    const size_t k = std::min<size_t>(size_t(std::upper_bound(r.cum.begin(), r.cum.end(), u) - r.cum.begin()), r.cum.size() - 1);
+    const int64_t a = r.cum[k - 1], span = std::max<int64_t>(1, r.cum[k] - a);
+    return r.run[k - 1] + int32_t(int64_t(r.run[k] - r.run[k - 1]) * (u - a) / span);
 }
 
 }  // namespace
@@ -273,7 +524,7 @@ RiverNode riverNode(const TerrainParams& p, int32_t i, int32_t j) {
     const int d = down(p, i, j);
     const int32_t a = info(p, i, j).sea ? 0 : area(p, i, j);
     const int32_t lv = level(p, i, j);
-    const int32_t end = outRun(p, i, j).back();
+    const int32_t end = outPath(p, i, j).run.back();
     const Info& n = info(p, i, j);
     return {n.px, n.pz, n.pot, n.sea, d, a, lv, end};
 }
@@ -285,7 +536,7 @@ void RiverSet::build(const TerrainParams& p, int32_t x0, int32_t z0, int32_t x1,
         g_cache.seed = p.seed;
     }
     segs.clear();
-    const int64_t margin = 2 * CELL;   // звено, долина и извилистость - не дальше двух клеток
+    const int64_t margin = 2 * CELL;   // звено, коридор поиска и долина - не дальше двух клеток
     const auto cell = [](int64_t v) { return int32_t(v >= 0 ? v / CELL : -((-v + CELL - 1) / CELL)); };
     for (int32_t j = cell(z0 - margin); j <= cell(z1 + margin); ++j)
         for (int32_t i = cell(x0 - margin); i <= cell(x1 + margin); ++i) {
@@ -297,46 +548,59 @@ void RiverSet::build(const TerrainParams& p, int32_t x0, int32_t z0, int32_t x1,
             const int64_t s = int64_t(isqrt(uint64_t(a) << 16));   // √A · 256
             Seg g;
             g.area = a;
-            g.ax = info(p, i, j).px;
-            g.az = info(p, i, j).pz;
             if (d >= 0) {   // река к соседу ниже
-                g.bx = info(p, i + DX[d], j + DZ[d]).px;
-                g.bz = info(p, i + DX[d], j + DZ[d]).pz;
                 g.half = int32_t(24 + s * 14 / 256);
-                g.depth = int32_t(16 + s * 6 / 256);
                 g.valley = g.half + int32_t(384 + s * 80 / 256);
+                g.depth = int32_t(16 + s * 6 / 256);
             } else {        // котловина - озеро
-                g.bx = g.ax;
-                g.bz = g.az;
                 g.half = int32_t(256 + s * 64 / 256);
-                g.depth = int32_t(32 + s * 5 / 256);
                 g.valley = g.half + 640;
+                g.depth = int32_t(32 + s * 5 / 256);
             }
-            // шаг плёс-перекат - около 12 ширин русла, в пределах 24..160 блоков
-            // шаг плёс-перекат - около 24 ширин русла, 48..240 блоков: падение собирается в заметные перекаты
-            g.pool = std::clamp(24 * 2 * g.half, 48 * VOXELS_PER_BLOCK, 240 * VOXELS_PER_BLOCK);
-            // задевает ли прямоугольник (с долиной, извилистостью и разбросом ширины)
-            const int64_t r = 2 * g.valley + VALLEY_CAP + 2 * WARP;
-            if (std::max(g.ax, g.bx) + r < x0 || std::min(g.ax, g.bx) - r > x1 || std::max(g.az, g.bz) + r < z0 ||
-                std::min(g.az, g.bz) - r > z1)
-                continue;
-            const int64_t ex = g.bx - g.ax, ez = g.bz - g.az;
-            g.len = int64_t(isqrt(uint64_t(ex * ex + ez * ez)));
-            g.run = outRun(p, i, j);
+            // грубо, до русла: задевает ли прямоугольник прямая между узлами с коридором поиска и меандрами
+            const int64_t r = 2 * g.valley + VALLEY_CAP;
+            {
+                const Info& na = info(p, i, j);
+                const Info& nb = d >= 0 ? info(p, i + DX[d], j + DZ[d]) : na;
+                const int64_t rr = r + SPREAD + 3 * MEANDER / 2 + 2 * ANCHOR;
+                if (std::max(na.px, nb.px) + rr < x0 || std::min(na.px, nb.px) - rr > x1 ||
+                    std::max(na.pz, nb.pz) + rr < z0 || std::min(na.pz, nb.pz) - rr > z1)
+                    continue;
+            }
+            if (!info(p, i, j).path) outPath(p, i, j);
+            g.path = info(p, i, j).path;
             if (d < 0) {
                 // озеро: уровень не выше самой низкой точки кольца берега - вода не переливается стеной
                 int32_t rim = INT32_MAX;
                 static constexpr int RX[8] = {2, 1, 0, -1, -2, -1, 0, 1}, RZ[8] = {0, 1, 2, 1, 0, -1, -2, -1};
+                const int64_t cx = g.path->x[0], cz = g.path->z[0];
                 for (int k = 0; k < 8; ++k)
-                    rim = std::min(rim, groundLine(p, g.ax + RX[k] * g.half / 2, g.az + RZ[k] * g.half / 2));
-                g.run = {std::max(std::min(g.run[0], rim), p.seaLevel - 1)};
+                    rim = std::min(rim, groundLine(p, cx + RX[k] * g.half / 2, cz + RZ[k] * g.half / 2));
+                auto lake = std::make_shared<RiverPath>(*g.path);
+                lake->run = {std::max(std::min(lake->run[0], rim), p.seaLevel - 1)};
+                g.path = std::move(lake);
             }
-            g.minLevel = *std::min_element(g.run.begin(), g.run.end());
-            // шаг плёс-перекат и по уклону: на перекат - не больше ~4 блоков падения (в горах - лестница каскадов,
-            // на равнине - длинные плёсы); настоящий обрыв земли всё равно даёт большой водопад
-            if (g.len > 0 && g.run.front() > g.run.back()) {
-                const int64_t byDrop = int64_t(4 * VOXELS_PER_BLOCK) * g.len / (g.run.front() - g.run.back());
-                g.pool = int32_t(std::clamp<int64_t>(std::min<int64_t>(g.pool, byDrop), 8 * VOXELS_PER_BLOCK, g.pool));
+            const RiverPath::Box& b = g.path->bounds;
+            if (b.x1 + r < x0 || b.x0 - r > x1 || b.z1 + r < z0 || b.z0 - r > z1) continue;
+            g.len = g.path->len;
+            // Р32: какие группы рёбер могут дотянуться до прямоугольника, и нижний уровень на них (а не на всём
+            // звене: у горной реки он на километры ниже - отсечка по нему пропускала бы всё)
+            {
+                const RiverPath& P = *g.path;
+                const int64_t reach = g.valley + VALLEY_CAP + 8 * int64_t(g.half);
+                g.gFirst = INT32_MAX;
+                g.gLast = -1;
+                int32_t lo = INT32_MAX;
+                for (size_t k = 0; k < P.boxes.size(); ++k) {
+                    const RiverPath::Box& bb = P.boxes[k];
+                    if (bb.x1 + reach < x0 || bb.x0 - reach > x1 || bb.z1 + reach < z0 || bb.z0 - reach > z1) continue;
+                    g.gFirst = std::min(g.gFirst, int32_t(k));
+                    g.gLast = int32_t(k);
+                    const size_t v1 = std::min(k * RiverPath::GROUP + RiverPath::GROUP, P.run.size() - 1);
+                    for (size_t v = k * RiverPath::GROUP; v <= v1; ++v) lo = std::min(lo, P.run[v]);
+                }
+                if (g.gLast < 0) continue;
+                g.minLevel = lo;
             }
             segs.push_back(std::move(g));
         }
@@ -374,177 +638,173 @@ void RiverSet::noiseAt(const TerrainParams& p, int32_t x, int32_t z, fx::q16 out
     for (int k = 0; k < N_COUNT; ++k) out[k] = top.v[k];
 }
 
-// уровень бегущего минимума в точке u звена (точки run - равномерно по длине, между ними - линейно)
-static int32_t runAt(const RiverSet::Seg& g, int64_t u) {
-    if (g.run.size() == 1 || g.len <= 0) return g.run[0];
-    const int64_t n = int64_t(g.run.size()) - 1;
-    u = std::clamp<int64_t>(u, 0, g.len);
-    const int64_t num = u * n;
-    const int64_t k = std::min<int64_t>(num / g.len, n - 1);
-    const int64_t f = num - k * g.len;   // доля шага · len
-    return g.run[size_t(k)] + int32_t(int64_t(g.run[size_t(k) + 1] - g.run[size_t(k)]) * f / g.len);
-}
-
-int32_t RiverSet::levelAlong(const Seg& g, int64_t u, int32_t* drop) {
-    if (drop) *drop = 0;
-    if (g.run.size() == 1 || g.len <= 0) return g.run[0];
-    // Р31: плёсы и перекаты. Плёс k - [k·S, (k+1)·S): ровный, на уровне своего нижнего конца (поэтому вода не
-    // выше земли - уровень бегущего минимума вниз только падает); последняя четверть шага - перекат вниз к
-    // уровню следующего плёса. Всё падение участка собрано в перекат: в горах он - порог или водопад.
-    const int64_t S = g.pool, r = std::max<int64_t>(S / 4, 1);
-    u = std::clamp<int64_t>(u, 0, g.len);
-    const int64_t k = u / S;
-    const int64_t endK = std::min((k + 1) * S, g.len), endNext = std::min((k + 2) * S, g.len);
-    const int32_t pool = runAt(g, endK), next = runAt(g, endNext);
-    if (u <= endK - r || endK >= g.len) return pool;
-    if (drop) *drop = pool - next;
-    return pool + int32_t(int64_t(next - pool) * (u - (endK - r)) / r);
-}
+int32_t RiverSet::levelAlong(const Seg& g, int64_t u) { return stepLevel(runAt(*g.path, u)); }
 
 void RiverSet::apply(const TerrainParams& p, int32_t x, int32_t z, int32_t& h, int32_t& water, bool& shore) const {
     if (segs.empty()) return;
-    fx::q16 nv[N_COUNT];
-    noiseAt(p, x, z, nv);   // Р31: шумы рек - из сетки узлов
-    // извилистость: точку запроса сдвигаем медленным шумом - русла петляют (сам рельеф этим не искажается)
-    const fx::q16 kWarp = fx::ONE * 9 / 10 + nv[N_WARP] * 6 / 10;      // извилистость ×0.3..1.5
-    const int64_t warp = (int64_t(WARP) * kWarp) >> fx::SHIFT;
-    const int64_t qx = x + ((int64_t(nv[N_WX]) * warp) >> fx::SHIFT);
-    const int64_t qz = z + ((int64_t(nv[N_WZ]) * warp) >> fx::SHIFT);
-    const int32_t h0 = h, water0 = water;   // water0 - вода до рек (море)
-    // расстояние до звена от сдвинутой точки (q) и доля пути t (Q16)
-    const auto nearest = [](const Seg& g, int64_t qx_, int64_t qz_, int64_t& t) {
-        const int64_t ex = g.bx - g.ax, ez = g.bz - g.az, px = qx_ - g.ax, pz = qz_ - g.az;
-        const int64_t len2 = ex * ex + ez * ez;
-        t = 0;
-        if (len2 > 0) t = std::clamp<int64_t>(((px * ex + pz * ez) << 16) / len2, 0, fx::ONE);
-        const int64_t dx = px - ((ex * t) >> 16), dz = pz - ((ez * t) >> 16);
-        return dx * dx + dz * dz;
+    const int32_t h0 = h;
+    // дальше какого расстояния звено с уровнем воды не ниже low столбец точно не меняет (профиль ниже): пойма до
+    // 8 полуширин звена, стенки не положе 1:8 (неровность до 2 блоков), не дальше края долины; берег и рукав - до
+    // 8 полуширин и 4 блоков
+    const auto reachOf = [&](const Seg& g, int32_t low) {
+        const int64_t cut = int64_t(std::max(0, h0 - stepLevel(low))) + 3 * VOXELS_PER_BLOCK;
+        return std::max<int64_t>(std::min<int64_t>(8 * int64_t(g.half) + 8 * cut, g.valley + VALLEY_CAP),
+                                 8 * int64_t(g.half) + 4 * VOXELS_PER_BLOCK) + 1;
     };
-
-    // Проход 1 (дёшево): какие звенья вообще могут задеть этот столбец - по грубой верхней границе долины
-    // (наибольшие ширина русла, пойма и заложение стенок). Шумы считаем, только если такие есть.
-    struct Near { const Seg* g; int32_t d, lw; int64_t t; };
-    Near nearBuf[32];
-    int nNear = 0;
-    bool braidable = false;
+    // Проход 1 (дёшево): задевает ли столбец хоть одно звено - шумы считаем, только если да
+    bool any = false, braidable = false;
     for (const Seg& g : segs) {
-        int64_t t;
-        const int64_t d2 = nearest(g, qx, qz, t);
-        const int64_t reach = 2 * g.valley + VALLEY_CAP;
-        if (d2 >= reach * reach) continue;
-        // грубая отсечка ДО уровня: уровень здесь не ниже нижнего уровня звена
-        const int64_t rup = std::clamp<int64_t>(8 * int64_t(g.half) + 11 * std::max(0, h0 - g.minLevel), g.valley,
-                                                g.valley + VALLEY_CAP) + 8 * g.half;
-        if (d2 >= rup * rup) continue;
-        const int32_t lw = levelAlong(g, (g.len * t) >> 16);
-        const int64_t rmax = std::clamp<int64_t>(8 * int64_t(g.half) + 11 * std::max(0, h0 - lw), g.valley, g.valley + VALLEY_CAP);
-        if (d2 >= (rmax + 8 * g.half) * (rmax + 8 * g.half)) continue;
-        const int32_t d = int32_t(isqrt(uint64_t(d2)));
-        if (nNear < 32) nearBuf[nNear++] = {&g, d, lw, t};
+        const int64_t r = reachOf(g, g.minLevel);
+        const RiverPath::Box& b = g.path->bounds;
+        if (x < b.x0 - r || x > b.x1 + r || z < b.z0 - r || z > b.z1 + r) continue;
+        any = true;
         braidable |= g.area >= 20 && g.len > 0;
     }
-    if (nNear == 0) return;
+    if (!any) return;
 
-    // Проход 2: шумы. Р30: медленные (ширина, глубина, пойма, стенки); Р31: местные - неровная кромка (32 блока),
+    // Шумы. Р30: медленные (ширина, глубина, пойма, стенки); Р31: местные - неровная кромка (32 блока),
     // бугры поймы (16 и 8 блоков), неровные берега и дно
+    fx::q16 nv[N_COUNT];
+    noiseAt(p, x, z, nv);   // Р31: шумы рек - из сетки узлов
     const fx::q16 nWidth = nv[N_WIDTH], nDepth = nv[N_DEPTH], nPlain = nv[N_PLAIN], nBank = nv[N_BANK];
     const fx::q16 nEdge = nv[N_EDGE], nBankL = nv[N_BANKL], nBed = nv[N_BED], b1 = nv[N_B1], b2 = nv[N_B2];
     const int32_t bump = int32_t(((int64_t(std::abs(b1)) * 2 + std::abs(b2)) * (2 * VOXELS_PER_BLOCK)) / (3 * int64_t(fx::ONE)));
     const fx::q16 kWidth = fx::mul(fx::ONE * 11 / 10 + nWidth / 2, fx::ONE + nEdge / 4);   // ×0.6..1.6, кромка ±25%
     const fx::q16 kDepth = fx::mul(fx::ONE + nDepth * 3 / 10, fx::ONE + nBed / 5);         // ±30%, дно ±20%
     const fx::q16 kPlain = fx::ONE * 7 / 4 + nPlain * 5 / 4;                               // пойма ×0.5..3
-    // стенки долины 1:2..1:8, местами ±30% - заложение bankRun (Q16, непрерывно: целый делитель прыгал бы)
-    const int64_t bankRun = (int64_t(5 * fx::ONE + 3 * int64_t(nBank)) * (fx::ONE + nBankL * 3 / 10)) >> fx::SHIFT;
-    // Р31: рукава - второе русло с другой извилистостью, у больших рек на ровных участках
-    fx::q16 braid = 0;
-    int64_t qx2 = 0, qz2 = 0;
-    if (braidable) {
-        braid = fx::smoothstep(fx::ONE * 15 / 100, fx::ONE * 35 / 100, nv[N_BRAID]);
-        qx2 = x + ((int64_t(nv[N_WX2]) * warp) >> fx::SHIFT);
-        qz2 = z + ((int64_t(nv[N_WZ2]) * warp) >> fx::SHIFT);
-    }
+    // стенки долины 1:2..1:8 - заложение bankRun (Q16, непрерывно: целый делитель прыгал бы). Р32: местная
+    // неровность стенок - добавкой не больше 2 блоков, а не множителем заложения: множитель на глубокой прорези
+    // раскачивал стену на десятки блоков за 32 блока (уклон до 4:1)
+    const int64_t bankRun = 5 * int64_t(fx::ONE) + 3 * int64_t(nBank);
+    const int64_t invBank = (int64_t(fx::ONE) << fx::SHIFT) / bankRun;   // 1/заложение, Q16
+    // Р31: рукава - второе русло у больших рек на ровных участках. Р32: точка запроса для рукава сдвигается
+    // шумом на несколько ширин русла (рукав расходится с основным и сходится снова); только на ровном - сдвиг
+    // вдоль реки там уровня не меняет
+    const fx::q16 braid = braidable ? fx::smoothstep(fx::ONE * 15 / 100, fx::ONE * 35 / 100, nv[N_BRAID]) : 0;
 
-    int32_t levee = INT32_MIN;   // вал: земля не ниже воды у берега (если точка не в русле и не в море)
-    bool channel = false;
-    for (int k = 0; k < nNear; ++k) {
-        const Seg& g = *nearBuf[k].g;
-        const int32_t d = nearBuf[k].d, lw = nearBuf[k].lw;
+    // Р32: прорезь звена - минимум по всем его рёбрам высоты, которую дало бы каждое ребро (профиль долины с
+    // маской к краю). Минимум непрерывных функций непрерывен: у петли, у крутого ручья, на стыке рёбер нет
+    // перескоков (сменилось ближайшее ребро - высота нет).
+    struct Cut { int32_t h, lw; bool wet; };
+    Cut cuts[64];
+    int nCuts = 0;
+    for (const Seg& g : segs) {
+        if (nCuts == 64) break;
+        const RiverPath& path = *g.path;
+        const int64_t rup = reachOf(g, g.minLevel);
+        const RiverPath::Box& b = path.bounds;
+        if (x < b.x0 - rup || x > b.x1 + rup || z < b.z0 - rup || z > b.z1 + rup) continue;
         const int32_t half = std::max<int32_t>(16, int32_t((int64_t(g.half) * (g.len > 0 ? kWidth : fx::ONE)) >> fx::SHIFT));
         const int32_t depth = int32_t((int64_t(g.depth) * kDepth) >> fx::SHIFT);
-        // у моря пойма сужается (уровень воды в 8 блоках от моря - до нуля): устье - русло с берегами, а не разлив
-        const fx::q16 nearSea = fx::smoothstep(p.seaLevel, p.seaLevel + 8 * VOXELS_PER_BLOCK, lw);
-        const int32_t plain = half + int32_t((int64_t(half) * fx::mul(kPlain, nearSea)) >> fx::SHIFT);
-        const int32_t radius = int32_t(std::clamp<int64_t>(plain + ((bankRun * std::max(0, h0 - lw)) >> fx::SHIFT),
-                                                           g.valley, g.valley + VALLEY_CAP));
-        // за краем долины, берега и вала (и рукава здесь быть не может) - звено столбец не меняет
-        if (d >= radius && d >= half + 4 * VOXELS_PER_BLOCK && (water0 != NO_WATER || d >= half + (lw + 1 - h0)) &&
-            !(braid > 0 && g.area >= 20 && g.len > 0))
-            continue;
-        // профиль: в русле - дно чашей; пойма - на блок выше воды, бугры нарастают от кромки за 3 блока;
-        // дальше стенки с заложением bankRun. Непрерывен (на кромке - ступенька в воксель).
-        const auto dish = [&](int32_t dd, int32_t hh) { return lw - depth + int32_t(int64_t(depth) * dd * dd / (int64_t(hh) * hh)); };
-        const int32_t bumpHere = int32_t((int64_t(bump) * fx::smoothstep(half, half + 3 * VOXELS_PER_BLOCK, d)) >> fx::SHIFT);
-        int32_t profile;
-        if (d < half) profile = dish(d, half);
-        else if (d < plain) profile = lw + 1 + bumpHere;
-        else profile = lw + 1 + bumpHere + int32_t((int64_t(d - plain) << fx::SHIFT) / bankRun);
+        // высота от ребра: профиль - в русле дно чашей; пойма на блок выше воды, бугры нарастают от кромки за
+        // 3 блока; дальше стенки с заложением bankRun и неровностью. Маска: только прорезает, к краю долины -
+        // исходный рельеф; ширина долины - по глубине прорези (на равнине широкая пологая, в горах V-образная,
+        // не шире VALLEY_CAP); считается от уровня без ступеней (от ступенчатого прыгала бы на перекатах)
+        const auto carve = [&](int64_t d, int32_t lw, int32_t raw) -> int64_t {
+            const fx::q16 nearSea = fx::smoothstep(p.seaLevel, p.seaLevel + 8 * VOXELS_PER_BLOCK, lw);
+            const int64_t plain = half + ((int64_t(half) * fx::mul(kPlain, nearSea)) >> fx::SHIFT);
+            const int64_t radius = std::clamp<int64_t>(plain + ((bankRun * std::max(0, h0 - raw)) >> fx::SHIFT),
+                                                       g.valley, g.valley + VALLEY_CAP);
+            if (d >= radius) return h0;
+            int64_t prof;
+            const int32_t dc = int32_t(d);
+            if (d < half) prof = lw - depth + int64_t(depth) * d * d / (int64_t(half) * half);
+            else {
+                const int64_t bumpHere = (int64_t(bump) * fx::smoothstep(half, half + 3 * VOXELS_PER_BLOCK, dc)) >> fx::SHIFT;
+                // пойма и стенки - от уровня без ступеней: гладкие, без террас поперёк поймы на каждом перекате
+                // (ступени - только у воды и дна русла; на кромке русла берег до блока)
+                if (d < plain) prof = raw + 1 + bumpHere;
+                else {
+                    const int64_t wall = ((d - plain) * invBank) >> fx::SHIFT;
+                    const int64_t rough = std::min<int64_t>(2 * VOXELS_PER_BLOCK, (d - plain) / 8);   // от кромки поймы
+                    prof = raw + 1 + bumpHere + wall + ((int64_t(nBankL) * rough) >> fx::SHIFT);
+                }
+            }
+            const fx::q16 w = fx::ONE - fx::smoothstep(int32_t(radius * 6 / 10), int32_t(radius), dc);
+            return h0 + ((int64_t(w) * std::min<int64_t>(0, prof - h0)) >> fx::SHIFT);
+        };
+        int64_t best = INT64_MAX, bestD = INT64_MAX, minD = INT64_MAX;
+        int32_t bestLw = 0;
+        const auto visit = [&](size_t e, int64_t d2, int64_t t) {
+            const int64_t d = int64_t(isqrt(uint64_t(d2)));
+            minD = std::min(minD, d);
+            const int32_t raw = path.run.size() == 1 ? path.run[0]
+                                                     : path.run[e] + int32_t((int64_t(path.run[e + 1] - path.run[e]) * t) >> 16);
+            const int32_t lw = stepLevel(raw);
+            const int64_t f = carve(d, lw, raw);
+            if (f < best || (f == best && d < bestD)) { best = f; bestD = d; bestLw = lw; }
+        };
+        forEdges(path, g.gFirst, g.gLast, x, z, [&](int32_t low) { return reachOf(g, low); }, visit);
+        if (best == INT64_MAX || (best >= h0 && minD >= half + 2 * VOXELS_PER_BLOCK && braid == 0)) continue;
+        bool wet = bestD < half;
         // рукав: у рек от 20 узлов, только на ровном (вода у земли) - второе русло той же глубины и уровня,
         // вокруг него откос 1:1 (через минимум с основным профилем - без ступенек)
-        bool inBraid = false;
         if (braid > 0 && g.area >= 20 && g.len > 0) {
-            const fx::q16 flat = fx::ONE - fx::smoothstep(0, 4 * VOXELS_PER_BLOCK, h0 - lw);
+            const fx::q16 flat = fx::ONE - fx::smoothstep(0, 4 * VOXELS_PER_BLOCK, h0 - bestLw);
             const int32_t half2 = int32_t((int64_t(half) * 6 / 10 * fx::mul(braid, flat)) >> fx::SHIFT);
             if (half2 > 8) {
-                int64_t t2;
-                const int64_t e2 = nearest(g, qx2, qz2, t2);
+                const int64_t shift = 6 * int64_t(g.half);
+                const int64_t qx2 = x + ((int64_t(nv[N_WX2]) * shift) >> fx::SHIFT);
+                const int64_t qz2 = z + ((int64_t(nv[N_WZ2]) * shift) >> fx::SHIFT);
                 const int64_t outer = int64_t(half2) + 4 * VOXELS_PER_BLOCK;
-                if (e2 < outer * outer) {
-                    const int32_t d2b = int32_t(isqrt(uint64_t(e2)));
-                    profile = std::min(profile, d2b < half2 ? dish(d2b, half2) : lw + (d2b - half2));
-                    inBraid = d2b < half2;
+                const Hit h2 = nearestOnPath(path, qx2, qz2, outer * outer);
+                if (h2.e >= 0) {
+                    const int64_t d2b = int64_t(isqrt(uint64_t(h2.d2)));
+                    const int64_t pb = d2b < half2 ? bestLw - depth + int64_t(depth) * d2b * d2b / (int64_t(half2) * half2)
+                                                   : bestLw + (d2b - half2);
+                    best = std::min(best, pb);   // у русла маска - 1: рукав прорезает прямо
+                    wet |= d2b < half2;
                 }
             }
         }
-        // маска: только прорезает, к краю долины - исходный рельеф. Ширина долины - по глубине прорези в этой
-        // точке (radius выше): на равнине - широкая пологая, в горах - V-образная, не шире VALLEY_CAP
-        const fx::q16 w = fx::ONE - fx::smoothstep(radius * 6 / 10, radius, d);
-        h = std::min(h, h0 + int32_t((int64_t(w) * std::min(0, profile - h0)) >> fx::SHIFT));
-        // вал у берега - насыпью: у кромки на воксель выше воды, наружу снижается 1:1, пока не встретит землю
-        // (вал - только на сухой земле: в море у устья он давал «волнорез» вдоль продолжения русла)
-        if (d >= half && !inBraid && water0 == NO_WATER) levee = std::max(levee, lw + 1 - (d - half));
-        if (d < half || inBraid) { water = std::max(water, lw); channel = true; }
-        if (d < half + 2 * VOXELS_PER_BLOCK) shore = true;
+        const int32_t hc = int32_t(std::min<int64_t>(h0, best));
+        h = std::min(h, hc);
+        cuts[nCuts++] = {hc, bestLw, wet};
+        if (minD < half + 2 * VOXELS_PER_BLOCK) shore = true;
     }
-    if (!channel && levee > h) h = levee;
+    // Р32: вода русла. Вала больше нет: уровень по построению не выше земли на русле (остаток - рябь до блока).
+    // Но долина ДРУГОЙ реки может прорезать землю под этим руслом ниже его воды (ручей идёт по дну чужой долины,
+    // приток - по пойме главной реки; своё другое плечо у петли уже учтено минимумом по рёбрам). Тогда вода здесь
+    // не держится: если поверхность от других звеньев (их прорезь или их вода) ниже уровня этого русла больше чем
+    // на SPILL - русло здесь сухое, вода сливается в долину ниже (маленький водопад на краю), а не висит столбом.
+    for (int k = 0; k < nCuts; ++k) {
+        if (!cuts[k].wet) continue;
+        int32_t other = INT32_MAX;
+        for (int j = 0; j < nCuts; ++j)
+            if (j != k) other = std::min(other, cuts[j].wet ? std::max(cuts[j].h, cuts[j].lw) : cuts[j].h);
+        if (other < cuts[k].lw - SPILL) continue;
+        water = std::max(water, cuts[k].lw);
+    }
 }
 
 RiverSet::Current RiverSet::current(const TerrainParams& p, int32_t x, int32_t z) const {
-    // Р31: течение в русле - вдоль звена (от истока к устью); скорость - как в гидравлике (Маннинг):
-    // растёт с глубиной (полноводность) и с падением уровня (крутизна): плёс - медленно, перекат - быстро,
-    // водопад - предел. v = 8 · √(уклон) · √(глубина в блоках) блоков/с, от 0.2 до 12.
+    // Р31: течение в русле - вдоль русла (от истока к устью); скорость - как в гидравлике (Маннинг):
+    // растёт с глубиной (полноводность) и с уклоном воды (крутизна): плёс - медленно, порог - быстро,
+    // водопад - предел. v = 8 · √(уклон) · √(глубина в блоках) блоков/с, от 0.2 до 12. Р32: уклон - по уровню
+    // без ступеней на 8 блоках пути (средний уклон участка, а не ноль на плёсе и бесконечность на ступени).
+    (void)p;
     Current c{};
-    fx::q16 nv[N_COUNT];
-    noiseAt(p, x, z, nv);
-    const int64_t warp = (int64_t(WARP) * (fx::ONE * 9 / 10 + nv[N_WARP] * 6 / 10)) >> fx::SHIFT;
-    const int64_t qx = x + ((int64_t(nv[N_WX]) * warp) >> fx::SHIFT);
-    const int64_t qz = z + ((int64_t(nv[N_WZ]) * warp) >> fx::SHIFT);
     int64_t best = INT64_MAX;
     for (const Seg& g : segs) {
         if (g.len <= 0) continue;
-        const int64_t ex = g.bx - g.ax, ez = g.bz - g.az, px = qx - g.ax, pz = qz - g.az;
-        const int64_t t = std::clamp<int64_t>(((px * ex + pz * ez) << 16) / (ex * ex + ez * ez), 0, fx::ONE);
-        const int64_t dx = px - ((ex * t) >> 16), dz = pz - ((ez * t) >> 16);
-        const int64_t d2 = dx * dx + dz * dz;
-        if (d2 >= int64_t(g.half) * g.half * 3 || d2 >= best) continue;   // в русле (с запасом на разброс ширины)
-        best = d2;
-        const int64_t u = (g.len * t) >> 16, step = 16;
-        const int32_t l0 = levelAlong(g, u), l1 = levelAlong(g, u + step);
+        const RiverPath& path = *g.path;
+        const int64_t lim = std::min<int64_t>(best, int64_t(g.half) * g.half * 3);   // в русле (с запасом на ширину)
+        const RiverPath::Box& b = path.bounds;
+        if (x < b.x0 - 2 * g.half || x > b.x1 + 2 * g.half || z < b.z0 - 2 * g.half || z > b.z1 + 2 * g.half) continue;
+        const Hit hit = nearestOnPath(path, x, z, lim);
+        if (hit.e < 0) continue;
+        best = hit.d2;
+        const size_t e = size_t(hit.e);
+        const int64_t ex = path.x[e + 1] - path.x[e], ez = path.z[e + 1] - path.z[e];
+        const int64_t elen = std::max<int64_t>(1, path.cum[e + 1] - path.cum[e]);
+        const int64_t u = path.cum[e] + ((elen * hit.f) >> 16), step = 8 * VOXELS_PER_BLOCK;
+        const int32_t l0 = runAt(path, u), l1 = runAt(path, u + step);
         const int64_t slope = (int64_t(std::max(0, l0 - l1)) << fx::SHIFT) / step;   // Q16, вокселей на воксель
         const int64_t depthBlocks = std::max<int64_t>(1, g.depth / VOXELS_PER_BLOCK);
         int64_t v = 8 * int64_t(isqrt(uint64_t(slope) << 16)) * int64_t(isqrt(uint64_t(depthBlocks) << 32)) >> 16;   // Q16
         v = std::clamp<int64_t>(v, fx::ONE / 5, 12 * int64_t(fx::ONE));
-        c.dirX = fx::q16((ex << fx::SHIFT) / g.len);
-        c.dirZ = fx::q16((ez << fx::SHIFT) / g.len);
+        c.dirX = fx::q16((ex << fx::SHIFT) / elen);
+        c.dirZ = fx::q16((ez << fx::SHIFT) / elen);
         c.speed = fx::q16(v);
         c.inRiver = true;
     }
