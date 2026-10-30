@@ -40,6 +40,15 @@ Node caveNode(const TerrainParams& p, int32_t x, int32_t y, int32_t z) {
 
 }  // namespace
 
+bool caveMouth(const TerrainParams& p, int32_t x, int32_t z, int32_t top, int32_t widenBlocks) {
+    const CaveParams& c = p.caves;
+    if (gen::simplex2(x, z, c.entranceCellLog2, caveSeed(p.seed, ENTRANCE)) <= c.entranceFrom) return false;
+    const fx::q16 w2 = fx::mul(c.tunnelWidth, c.tunnelWidth);
+    const int64_t k = std::min<int64_t>(15, int64_t(widenBlocks) * widenBlocks / 4);   // толщина ×√(1+k)
+    const Node n = caveNode(p, x, top - c.tunnelCover / 2, z);
+    return int64_t(n.tunnel) + w2 * k > 0;
+}
+
 bool caveEntranceNear(const TerrainParams& p, int32_t cx, int32_t cz) {
     const CaveParams& c = p.caves;
     return gen::simplex2(cx * CHUNK - 1 + CHUNK / 2, cz * CHUNK - 1 + CHUNK / 2, c.entranceCellLog2, caveSeed(p.seed, ENTRANCE)) >=

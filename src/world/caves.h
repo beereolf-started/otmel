@@ -21,4 +21,9 @@ bool caveAir(const TerrainParams& p, ChunkPos pos, const ColumnHeights& hm, uint
 // Р39: может ли у столбца кусков (cx, cz) быть вход в пещеру (шум входов у центра - с запасом, как в быстром отказе)
 bool caveEntranceNear(const TerrainParams& p, int32_t cx, int32_t cz);
 
+// Р41: устье пещеры у поверхности top в точке (x, z) - для дальних плиток (бурое пятно): вход разрешён и тоннель
+// подходит к поверхности. widenBlocks - шаг сетки плитки в блоках: на дальних уровнях тоннель считается толще,
+// иначе узкий ход проскакивает между вершинами
+bool caveMouth(const TerrainParams& p, int32_t x, int32_t z, int32_t top, int32_t widenBlocks);
+
 }  // namespace world

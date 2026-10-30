@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 
+#include "world/caves.h"
 #include "world/rivers.h"
 
 namespace world {
@@ -87,8 +88,11 @@ void buildTile(const TerrainParams& p, TileKey k, TileMesh& out) {
             coarseGrad[j][i] = slope256(hc[j + 1][i + 2] - hc[j + 1][i], 2 * step) |
                                slope256(hc[j + 2][i + 1] - hc[j][i + 1], 2 * step) << 16;
             const int32_t wx = int32_t(x0 + i * 2 * step), wz = int32_t(z0 + j * 2 * step);
-            const Cover c = shoreC[j + 1][i + 1] ? Cover{SAND, SAND}
-                                                   : coverAt(p, climateAt(p, wx, wz, slowFine(wx, wz)), hc[j + 1][i + 1]);   // климату отсечка октав не нужна
+            Cover c = shoreC[j + 1][i + 1] ? Cover{SAND, SAND}
+                                             : coverAt(p, climateAt(p, wx, wz, slowFine(wx, wz)), hc[j + 1][i + 1]);   // климату отсечка октав не нужна
+            // Р41: устье пещеры - бурым пятном (вдали пещер нет - только метка); шаг грубой сетки - вдвое
+            if (!shoreC[j + 1][i + 1] && !wetC[j + 1][i + 1] && caveMouth(p, wx, wz, hc[j + 1][i + 1], int32_t(2 * step / VOXELS_PER_BLOCK)))
+                c = Cover{DIRT, DIRT};
             coarseCover[j][i] = uint32_t(c.top) | uint32_t(c.under) << 4;
         }
 
@@ -107,9 +111,12 @@ void buildTile(const TerrainParams& p, TileKey k, TileMesh& out) {
             const int ci = i >> 1, cj = j >> 1;
             const int32_t hcT = hc[cj + 1][ci + 1];
 
-            const Cover c = shoreF[j + 1][i + 1] ? Cover{SAND, SAND}
-                                                   : coverAt(p, climateAt(p, int32_t(x0 + i * step), int32_t(z0 + j * step),
-                                                                      slowFine(x0 + i * step, z0 + j * step)), h);
+            Cover c = shoreF[j + 1][i + 1] ? Cover{SAND, SAND}
+                                             : coverAt(p, climateAt(p, int32_t(x0 + i * step), int32_t(z0 + j * step),
+                                                                slowFine(x0 + i * step, z0 + j * step)), h);
+            if (!shoreF[j + 1][i + 1] && !wetF[j + 1][i + 1] &&
+                caveMouth(p, int32_t(x0 + i * step), int32_t(z0 + j * step), h, int32_t(step / VOXELS_PER_BLOCK)))
+                c = Cover{DIRT, DIRT};
             uint32_t* w = &out.data[(size_t(j) * TILE_VERTS + i) * TILE_WORDS];
             w[0] = h16(h) | h16(hcT) << 16;
             w[1] = slope256(hf[j + 1][i + 2] - hf[j + 1][i], step) | slope256(hf[j + 2][i + 1] - hf[j][i + 1], step) << 16;

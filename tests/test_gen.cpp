@@ -148,8 +148,10 @@ int main() {
             for (fx::q16 w : {r.wPlains, r.wHills, r.wMount}) if (w < 0 || w > fx::ONE) rangeOk = false;
             maxW = std::max({maxW, std::abs(r.wPlains - prev.wPlains), std::abs(r.wHills - prev.wHills),
                              std::abs(r.wMount - prev.wMount)});
-            // Р32: на кромке реки берег до блока над водой - это берег, а не стык зон: пары вода/суша не считаем
-            const int32_t step = (r.water > r.height) == (prev.water > prev.height) ? std::abs(r.height - prev.height) : 0;
+            // Р32: на кромке реки берег до блока над водой - это берег, а не стык зон: пары вода/суша не считаем.
+            // Р41: и пары у реки (берег): у горной реки берег врезан - ступень до 3 блоков у кромки русла задумана
+            const bool bank = r.shore || prev.shore || (r.water > r.height) != (prev.water > prev.height);
+            const int32_t step = bank ? 0 : std::abs(r.height - prev.height);
             maxStep = std::max(maxStep, step);
             if (r.wMount == fx::ONE && prev.wMount == fx::ONE) maxStepPure = std::max(maxStepPure, step);
             if (r.wPlains == fx::ONE) zonesSeen[0] = 1;

@@ -904,9 +904,15 @@ void RiverSet::apply(const TerrainParams& p, int32_t x, int32_t z, int32_t& h, i
         // 3 блока; дальше стенки с заложением bankRun и неровностью. Маска: только прорезает, к краю долины -
         // исходный рельеф; ширина долины - по глубине прорези (на равнине широкая пологая, в горах V-образная,
         // не шире VALLEY_CAP); считается от уровня без ступеней (от ступенчатого прыгала бы на перекатах)
-        const auto carve = [&](int64_t d, int32_t lw, int32_t raw, int32_t half, int32_t depth) -> int64_t {
+        // Р41: горные реки - mount (0..1, по уклону воды): мелко, без поймы, берег сразу выше воды на 2 блока (река
+        // в желобе, а не вровень с грунтом); plunge - яма под перепадом. На равнинах и плато mount = 0 - как было.
+        const auto carve = [&](int64_t d, int32_t lw, int32_t raw, int32_t half, int32_t depth, fx::q16 mount,
+                               int32_t plunge) -> int64_t {
             const fx::q16 nearSea = fx::smoothstep(p.seaLevel, p.seaLevel + 8 * VOXELS_PER_BLOCK, lw);
-            const int64_t plain = half + ((int64_t(half) * fx::mul(kPlain, nearSea)) >> fx::SHIFT);
+            const int64_t plainFull = half + ((int64_t(half) * fx::mul(kPlain, nearSea)) >> fx::SHIFT);
+            const int64_t plain = plainFull - (((plainFull - half) * mount) >> fx::SHIFT);
+            const int64_t incise = (int64_t(2 * VOXELS_PER_BLOCK) * mount) >> fx::SHIFT;
+            depth = int32_t((int64_t(depth) * (fx::ONE - mount * 6 / 10)) >> fx::SHIFT) + plunge;
             const int64_t radius = std::clamp<int64_t>(plain + ((bankRun * std::max(0, h0 - raw)) >> fx::SHIFT),
                                                        g.valley, g.valley + VALLEY_CAP);
             if (d >= radius) return h0;
@@ -917,11 +923,11 @@ void RiverSet::apply(const TerrainParams& p, int32_t x, int32_t z, int32_t& h, i
                 const int64_t bumpHere = (int64_t(bump) * fx::smoothstep(half, half + 3 * VOXELS_PER_BLOCK, dc)) >> fx::SHIFT;
                 // пойма и стенки - от уровня без ступеней: гладкие, без террас поперёк поймы на каждом перекате
                 // (ступени - только у воды и дна русла; на кромке русла берег до блока)
-                if (d < plain) prof = raw + 1 + bumpHere;
+                if (d < plain) prof = raw + 1 + incise + bumpHere;
                 else {
                     const int64_t wall = ((d - plain) * invBank) >> fx::SHIFT;
                     const int64_t rough = std::min<int64_t>(2 * VOXELS_PER_BLOCK, (d - plain) / 8);   // от кромки поймы
-                    prof = raw + 1 + bumpHere + wall + ((int64_t(nBankL) * rough) >> fx::SHIFT);
+                    prof = raw + 1 + incise + bumpHere + wall + ((int64_t(nBankL) * rough) >> fx::SHIFT);
                 }
             }
             const fx::q16 w = fx::ONE - fx::smoothstep(int32_t(radius * 6 / 10), int32_t(radius), dc);
@@ -949,7 +955,17 @@ void RiverSet::apply(const TerrainParams& p, int32_t x, int32_t z, int32_t& h, i
             const int32_t dE = narrow ? std::max<int32_t>(8, int32_t((int64_t(depth) * (fx::ONE + wq) / 2) >> fx::SHIFT)) : depth;
             nearShore |= d < hE + 2 * VOXELS_PER_BLOCK;
             const int32_t lw = stepLevel(raw);
-            const int64_t f = carve(d, lw, raw, hE, dE);
+            // Р41: уклон воды на ребре и падение за последние 32 блока выше по течению (яма под перепадом)
+            fx::q16 mount = 0;
+            int32_t plunge = 0;
+            if (path.run.size() > 1) {
+                const int64_t el = std::max<int64_t>(1, path.cum[e + 1] - path.cum[e]);
+                const int64_t slope = (int64_t(std::max(0, path.run[e] - path.run[e + 1])) << fx::SHIFT) / el;
+                mount = fx::smoothstep(fx::ONE / 60, fx::ONE / 15, fx::q16(std::min<int64_t>(slope, fx::ONE)));
+                const int32_t up = runAt(path, std::max<int64_t>(0, u - 32 * VOXELS_PER_BLOCK));
+                plunge = std::min(6 * VOXELS_PER_BLOCK, std::max(0, up - raw - VOXELS_PER_BLOCK) * 8 / 10);
+            }
+            const int64_t f = carve(d, lw, raw, hE, dE, mount, plunge);
             if (f < best || (f == best && d < bestD)) { best = f; bestD = d; bestLw = lw; bestHalf = hE; }
         };
         forEdges(path, g.gFirst, g.gLast, x, z, [&](int32_t low) { return reachOf(g, low); }, visit);
