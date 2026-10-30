@@ -206,6 +206,7 @@ void saveShot(render::Backend& gpu, int w, int h, const char* path) {
 }
 
 int main(int argc, char** argv) {
+    journal::installCrashHandler();   // Р64
     // Ключи (пока вместо меню настроек):
     //   --voxels B   зона вокселей: квадрат ±B блоков вокруг точки старта (по умолчанию 128) - дальше гладко (Р20)
     //   --draw B     дальность видимости, блоков (24576)
@@ -469,6 +470,11 @@ int main(int argc, char** argv) {
     int forestGroundSide = 0;
     std::unordered_map<uint64_t, ForestTree> forest;
     std::vector<std::future<ForestBuilt>> forestRunning;
+    // Р64: замеры для журнала - долгие кадры и сводка раз в 10 с
+    int forestUploads = 0, fineShown = 0;
+    double statSum = 0, statWorst = 0;
+    int statFrames = 0;
+    auto statAt = clock_t_::now(), spikeAt = clock_t_::now();
     uint32_t dropRng = 0x9E3779B9u;
     const auto rnd = [&dropRng] { dropRng ^= dropRng << 13; dropRng ^= dropRng >> 17; dropRng ^= dropRng << 5; return float(dropRng >> 8) / 16777216.0f; };
     int simFrame = 0;
@@ -804,6 +810,7 @@ int main(int argc, char** argv) {
                     blocks.push_back(f.origin.y + k / FINE);
                 }
                 gpu->setFineWater(f.origin, FINE, tex, mask, blocks);
+                fineShown = int(blocks.size() / 2);
                 fineData->blocks = blocks;
                 simArea = glm::vec4(float(f.origin.x) / 16.0f, float(f.origin.y) / 16.0f, float(FINE) / 16.0f, 1.0f);
                 journal::info("вода", "мелкая вода: зона ({}, {}), блоков {}", f.origin.x, f.origin.y, blocks.size() / 2);
@@ -940,6 +947,7 @@ int main(int argc, char** argv) {
                 for (const OakMesh& m : t.meshes) gpu->destroyMesh(m.mesh);   // старая сетка - только теперь
                 t.meshes.clear();
                 for (const OakChunk& oc : fb.chunks) t.meshes.push_back({gpu->uploadChunkMesh(oc.verts, 0), fb.base, oc.fineOff, 1 << fb.level});
+                forestUploads += int(fb.chunks.size());
                 t.level = fb.level;
                 t.building = -1;
             }
@@ -1022,6 +1030,31 @@ int main(int argc, char** argv) {
             }
         }
         gpu->present();
+        // Р64: долгий кадр (больше 50 мс) - в журнал, не чаще раза в секунду; раз в 10 с - сводка
+        {
+            const double frameMs = double(dt) * 1000.0;
+            statSum += frameMs;
+            statWorst = std::max(statWorst, frameMs);
+            ++statFrames;
+            int trees = 0, lv[5] = {};
+            for (const auto& [key, t] : forest) if (t.level >= 0) { ++trees; ++lv[t.level]; }
+            const auto counts = [&] {
+                return std::format("мелкая вода {} блоков, брызг {}, дубов {} (по уровням 0-4: {} {} {} {} {}), строится {}, выгружено сеток леса {}; "
+                                   "прямоугольников {}, вызовов {}", fineShown, drops.size(), trees, lv[0], lv[1], lv[2], lv[3], lv[4],
+                                   forestRunning.size(), forestUploads, fs.quads, fs.drawCalls);
+            };
+            if (frameMs > 50.0 && msSince(spikeAt) > 1000.0) {
+                spikeAt = clock_t_::now();
+                journal::warn("кадр", "долгий кадр {:.0f} мс: {}", frameMs, counts());
+            }
+            if (msSince(statAt) > 10000.0) {
+                journal::info("кадр", "за 10 с: кадров {}, средний {:.1f} мс, худший {:.0f} мс; {}", statFrames, statSum / std::max(1, statFrames), statWorst, counts());
+                statAt = clock_t_::now();
+                statSum = statWorst = 0;
+                statFrames = 0;
+            }
+            forestUploads = 0;
+        }
 
         if (now - titleAt > std::chrono::milliseconds(500)) {
             const double ms = sumMs / frames;

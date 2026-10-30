@@ -45,7 +45,7 @@ add_executable(otmel
     src/render/gl/gl_backend.cpp
 )
 target_include_directories(otmel PRIVATE src)
-target_link_libraries(otmel PRIVATE otmel_world SDL3::SDL3-static glm::glm glad)
+target_link_libraries(otmel PRIVATE otmel_world SDL3::SDL3-static glm::glm glad dbghelp)
 
 # Шейдеры: GLSL -> SPIR-V при сборке (Р8), рядом с программой в папке shaders
 file(GLOB GLSLC_CANDIDATES "C:/VulkanSDK/*/Bin/glslc.exe")
