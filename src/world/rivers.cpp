@@ -419,8 +419,17 @@ const RiverPath& outPath(const TerrainParams& p, int32_t i, int32_t j) {
         finishPath(*path);
         int32_t cur = start;
         path->run.push_back(cur);
+        // Р38: земля - не только на оси, но и поперёк русла: на склоне (река идёт вдоль склона, а не вниз) земля
+        // ниже по склону в нескольких блоках сбоку уже гораздо ниже оси - вода по уровню оси стояла над ней стеной.
+        // Минимум - на оси и по обе стороны на две ширины русла (с берегом): на склоне река врезается террасой.
+        const int64_t across = 2 * 2 * (24 + s * 14 / 256) + 2 * VOXELS_PER_BLOCK;
         for (size_t k = 1; k < path->x.size(); ++k) {
-            cur = std::min(cur, groundLine(p, path->x[k], path->z[k]));
+            const size_t kn = std::min(k + 1, path->x.size() - 1);
+            const int64_t tx = path->x[kn] - path->x[k - 1], tz = path->z[kn] - path->z[k - 1];
+            const int64_t tl = std::max<int64_t>(1, int64_t(isqrt(uint64_t(tx * tx + tz * tz))));
+            const int64_t nx = -tz * across / tl, nz = tx * across / tl;
+            cur = std::min({cur, groundLine(p, path->x[k], path->z[k]), groundLine(p, path->x[k] + nx, path->z[k] + nz),
+                            groundLine(p, path->x[k] - nx, path->z[k] - nz)});
             const int64_t u = path->cum[k];
             const int64_t us = path->len > 0 ? u * straight / path->len : 0;
             const int64_t byMouth = mdist > 0 ? int64_t(std::max(0, start - mlevel)) * us / mdist : 0;
