@@ -241,7 +241,9 @@ void columnHeights(const TerrainParams& p, int32_t chunkX, int32_t chunkZ, Colum
     }
     // Р47: растекание как в Minecraft - по сетке блоков с запасом 10 блоков вокруг куска: источники -
     // сгенерированная вода, результат - сразу в уровень воды столбцов (вшит в генерацию)
-    {
+    // Р60: ВЫКЛЮЧЕНО. После Р54 (воксель = блок) сетка растекания - клетки 16×16 блоков: вода расплывалась
+    // на 7 клеток (>100 блоков) по склону за русло; берега держит вал (Р50), мелкую гладь рисует мелкая вода (Р58)
+    if constexpr (false) {
         constexpr int M = 10;
         const auto fdiv = [](int32_t v) { return v >= 0 ? v / VOXELS_PER_BLOCK : -((-v + VOXELS_PER_BLOCK - 1) / VOXELS_PER_BLOCK); };
         const int32_t bx0 = fdiv(x0) - M, bz0 = fdiv(z0) - M;

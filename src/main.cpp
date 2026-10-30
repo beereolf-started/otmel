@@ -231,7 +231,27 @@ int main(int argc, char** argv) {
             g = std::min(g, world::reliefAt(tp, x + dx, z + dz).height);
         return g + 1;
     };
+    // Р60: роща - n дубов в круге радиусом r блоков у точки (cx, cz), не ближе 5 блоков друг к другу (бросками),
+    // у каждого своё семя; основа - на земле под комлем
+    const auto plantGrove = [&](int32_t cx, int32_t cz, int n, int r, uint32_t seed) {
+        std::vector<std::pair<int32_t, int32_t>> at;
+        uint32_t h = seed * 2654435761u + 12345u;
+        const auto next = [&h] { h ^= h << 13; h ^= h >> 17; h ^= h << 5; return h; };
+        for (int tries = 0; tries < n * 40 && int(at.size()) < n; ++tries) {
+            const float a = float(next() % 6283) / 1000.0f, d = r * std::sqrt(float(next() % 10000) / 10000.0f);
+            const int32_t x = cx + int32_t(std::cos(a) * d), z = cz + int32_t(std::sin(a) * d);
+            bool ok = true;
+            for (const auto& [px, pz] : at) ok &= (px - x) * (px - x) + (pz - z) * (pz - z) >= 25;
+            if (!ok) continue;
+            at.push_back({x, z});
+            oaks.push_back({x, oakBase(x, z), z, next()});
+        }
+    };
     for (OakSpot& o : oaks) o.y = oakBase(o.x, o.z);
+    for (int i = 1; i + 3 < argc; ++i)
+        if (std::string(argv[i]) == "--grove")
+            plantGrove(int32_t(std::floor(std::stof(argv[i + 1]) * 16)), int32_t(std::floor(std::stof(argv[i + 2]) * 16)),
+                       std::stoi(argv[i + 3]), 40, 7);
     // эталон размеров (--ruler X Z): столб из 10 блоков мира (Р54: воксель = блок), чередуются по цвету
     glm::ivec3 ruler(INT32_MIN);
     for (int i = 1; i + 2 < argc; ++i)
@@ -403,6 +423,12 @@ int main(int argc, char** argv) {
                 buildOaks();
             }
             if (ev.type == SDL_EVENT_MOUSE_BUTTON_DOWN && ev.button.button == SDL_BUTTON_RIGHT) { oaks.clear(); buildOaks(); }
+            if (ev.type == SDL_EVENT_KEY_DOWN && ev.key.key == SDLK_G) {   // Р60: роща в 40 блоках перед камерой
+                const glm::vec2 f = glm::normalize(glm::vec2(std::cos(yaw), std::sin(yaw)));
+                oakSeed = oakSeed * 1664525u + 1013904223u;
+                plantGrove(int32_t(std::floor((eye.x + f.x * 2.5f) * 16)), int32_t(std::floor((eye.z + f.y * 2.5f) * 16)), 25, 40, oakSeed);
+                buildOaks();
+            }
             if (ev.type == SDL_EVENT_KEY_DOWN && ev.key.key == SDLK_R) { hideRoots = !hideRoots; buildOaks(); }
             if (ev.type == SDL_EVENT_MOUSE_WHEEL) speedScale = std::clamp(speedScale * std::pow(1.25f, ev.wheel.y), 0.1f, 100.0f);
             if (ev.type == SDL_EVENT_MOUSE_MOTION) {
