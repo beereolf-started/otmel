@@ -141,15 +141,26 @@ bool spillOutlet(const TerrainParams& p, int32_t i, int32_t j, int32_t& ti, int3
     }
 }
 
+int32_t groundLine(const TerrainParams& p, int64_t x, int64_t z);
+
 int down(const TerrainParams& p, int32_t i, int32_t j) {
     Info& n = info(p, i, j);
     if (n.down != -2) return n.down;
     int best = -1;
     int32_t lowest = n.pot, ti = 0, tj = 0;
     if (!n.sea) {
+        // Р40: из соседей строго ниже по потенциалу (иначе котловина; кругов нет) - с самым низким перевалом:
+        // наибольшая земля на прямой между узлами (7 точек). По сглаженной высоте прямая к самому низкому соседу
+        // могла пересекать плато или хребет - река резала его ущельем в сотни блоков, хотя рядом был путь низом.
+        // При равном перевале - самый низкий сосед.
+        const int64_t ax = n.px, az = n.pz;
+        int32_t bestPass = INT32_MAX;
         for (int d = 0; d < 8; ++d) {
-            const int32_t s = info(p, i + DX[d], j + DZ[d]).pot;
-            if (s < lowest) { lowest = s; best = d; }   // строго ниже по потенциалу - иначе котловина
+            const Info& c = info(p, i + DX[d], j + DZ[d]);
+            if (c.pot >= n.pot) continue;
+            int32_t pass = INT32_MIN;
+            for (int k = 1; k < 8; ++k) pass = std::max(pass, groundLine(p, ax + (c.px - ax) * k / 8, az + (c.pz - az) * k / 8));
+            if (pass < bestPass || (pass == bestPass && c.pot < lowest)) { bestPass = pass; lowest = c.pot; best = d; }
         }
         if (best >= 0) { ti = i + DX[best]; tj = j + DZ[best]; }
         else if (spillOutlet(p, i, j, ti, tj)) best = 8;
