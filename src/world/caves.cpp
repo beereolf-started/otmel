@@ -40,6 +40,12 @@ Node caveNode(const TerrainParams& p, int32_t x, int32_t y, int32_t z) {
 
 }  // namespace
 
+bool caveEntranceNear(const TerrainParams& p, int32_t cx, int32_t cz) {
+    const CaveParams& c = p.caves;
+    return gen::simplex2(cx * CHUNK - 1 + CHUNK / 2, cz * CHUNK - 1 + CHUNK / 2, c.entranceCellLog2, caveSeed(p.seed, ENTRANCE)) >=
+           c.entranceFrom - fx::ONE / 10;
+}
+
 bool caveAir(const TerrainParams& p, ChunkPos pos, const ColumnHeights& hm, uint64_t air[CHUNK + 2][CHUNK + 2]) {
     const CaveParams& c = p.caves;
     const int32_t x0 = pos.x * CHUNK - 1, y0 = pos.y * CHUNK - 1, z0 = pos.z * CHUNK - 1;   // начало каймы

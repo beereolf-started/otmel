@@ -115,12 +115,62 @@ void Builder::worker() {
         // там строятся только куски с пещерами (сплошной камень граней не даёт), Р26
         const int cyLo = (hm.minH - 1) >> world::CHUNK_LOG2, cyHi = hm.maxH >> world::CHUNK_LOG2;
         constexpr int32_t WORLD_BOTTOM = -500 * world::VOXELS_PER_BLOCK / world::CHUNK;   // Р10
-        const int cyFrom = col.cyMin == NO_DEPTH ? cyLo : std::max(std::min(cyLo, col.cyMin), WORLD_BOTTOM);
+        // Р39: LOD пещер. Вне ближнего яруса - пещеры с входами до SHALLOW вглубь, ниже - закрыты дном (вход виден
+        // провалом с дном, а не дырой в пустоту). Пол столбца - гладко по рельефу (без рек, крупными формами)
+        // минус SHALLOW; пещера обрывается не ниже наибольшего пола из столбца и 8 соседей: каждый сосед построен
+        // вниз до своего пола, значит до этого уровня - и стенки пещеры у границы столбцов есть с обеих сторон.
+        constexpr int32_t SHALLOW = 24 * world::VOXELS_PER_BLOCK;
+        int32_t caveFloor = INT32_MIN;
+        int cyShallow = cyLo;
+        // закрытые тоннели без входа сверху не видны - вне ближнего яруса пещеры только у столбцов рядом со входом
+        // (вход в столбце или у соседа); со стороны соседа без пещер - заглушка: у границы пещера закрыта своей
+        // стенкой (у соседа там сплошной камень без граней - иначе пустота видна насквозь)
+        const auto hasCaves = [&](int32_t cx, int32_t cz) {
+            for (int dz = -1; dz <= 1; ++dz)
+                for (int dx = -1; dx <= 1; ++dx)
+                    if (world::caveEntranceNear(tp_, cx + dx, cz + dz)) return true;
+            return false;
+        };
+        bool shallowCaves = true;
+        uint8_t shallowCaps = 0;
+        if (col.cyMin == NO_DEPTH) {
+            shallowCaves = hasCaves(col.cx, col.cz);
+            if (shallowCaves)
+                shallowCaps = uint8_t((hasCaves(col.cx - 1, col.cz) ? 0 : CAP_NX) | (hasCaves(col.cx + 1, col.cz) ? 0 : CAP_PX) |
+                                      (hasCaves(col.cx, col.cz - 1) ? 0 : CAP_NZ) | (hasCaves(col.cx, col.cz + 1) ? 0 : CAP_PZ));
+        }
+        if (col.cyMin == NO_DEPTH && shallowCaves) {
+            const auto floorOf = [&](int32_t cx, int32_t cz) {
+                const int32_t x = cx * world::CHUNK + world::CHUNK / 2, z = cz * world::CHUNK + world::CHUNK / 2;
+                return world::baseReliefAt(tp_, x, z, world::slowAt(tp_, x, z, 7), 7).height - SHALLOW;
+            };
+            const int32_t own = floorOf(col.cx, col.cz);
+            caveFloor = own;
+            for (int dz = -1; dz <= 1; ++dz)
+                for (int dx = -1; dx <= 1; ++dx)
+                    if ((dx || dz) && hasCaves(col.cx + dx, col.cz + dz)) caveFloor = std::max(caveFloor, floorOf(col.cx + dx, col.cz + dz));
+            cyShallow = std::min(cyLo, own >> world::CHUNK_LOG2);
+        }
+        const int cyFrom = col.cyMin == NO_DEPTH ? cyShallow : std::max(std::min(cyLo, col.cyMin), WORLD_BOTTOM);
         for (int cy = cyFrom; cy <= cyHi; ++cy) {
             const world::ChunkPos pos{col.cx, cy, col.cz};
-            // Р37: пещеры - только в подземном ярусе у камеры (там есть и куски под ними); вне яруса поверхность
-            // сплошная - иначе входы видны насквозь в пустоту (под ними ничего не строится)
-            bool caves = col.cyMin != NO_DEPTH && world::caveAir(tp_, pos, hm, air);
+            bool caves = shallowCaves && world::caveAir(tp_, pos, hm, air);
+            if (caves && caveFloor != INT32_MIN) {   // Р39: ниже пола (с соседями) пещеры закрыты; заглушки у соседей без пещер
+                const int64_t n = std::clamp<int64_t>(int64_t(caveFloor) - (int64_t(cy) * world::CHUNK - 1), 0, 34);
+                const uint64_t keep = n >= 64 ? 0 : ~((uint64_t(1) << n) - 1);
+                constexpr int E = world::CHUNK + 1;
+                bool left = false;
+                for (int z = 0; z <= E; ++z)
+                    for (int x = 0; x <= E; ++x) {
+                        uint64_t& a = air[z][x];
+                        a &= keep;
+                        if (((shallowCaps & CAP_NX) && x <= 1) || ((shallowCaps & CAP_PX) && x >= E - 1) ||
+                            ((shallowCaps & CAP_NZ) && z <= 1) || ((shallowCaps & CAP_PZ) && z >= E - 1))
+                            a = 0;
+                        left |= a != 0;
+                    }
+                caves = left;
+            }
             const bool underground = cy < cyLo;
             if (caves) {
                 // Р27, заглушки: ниже самого нижнего построенного куска ничего нет - его нижний слой и кайма под

@@ -222,7 +222,8 @@ int VoxelZone::draw(const Frustum& fr, render::CommandList& out) const {
         // Р27: подземные куски - только в ярусе вокруг камеры (вне его их заглушки уже не те - просвечивали бы)
         const bool under = inUnder(cx, cz);
         for (const ChunkMesh& m : c.chunks) {
-            if (m.underground && !under) continue;
+            // Р39: у столбцов вне яруса подземные куски - мелкие пещеры (LOD), закрытые дном, - их рисуем
+            if (m.underground && !under && c.builtMin != Builder::NO_DEPTH) continue;
             const glm::vec3 lo = glm::vec3(m.origin) / float(world::VOXELS_PER_BLOCK);
             if (!fr.visible(lo, lo + glm::vec3(float(BLOCKS_PER_COLUMN)))) continue;
             out.drawChunk(m.mesh, m.origin);

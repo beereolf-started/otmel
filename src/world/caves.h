@@ -18,4 +18,7 @@ namespace world {
 // сетки (Р18). Ответ false - в куске и кайме воздуха пещер нет вовсе (air тогда не заполняется).
 bool caveAir(const TerrainParams& p, ChunkPos pos, const ColumnHeights& hm, uint64_t air[CHUNK + 2][CHUNK + 2]);
 
+// Р39: может ли у столбца кусков (cx, cz) быть вход в пещеру (шум входов у центра - с запасом, как в быстром отказе)
+bool caveEntranceNear(const TerrainParams& p, int32_t cx, int32_t cz);
+
 }  // namespace world
