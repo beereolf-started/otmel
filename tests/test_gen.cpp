@@ -248,7 +248,6 @@ int main() {
         for (int cz = -4; cz < 4; ++cz)
             for (int cx = -4; cx < 4; ++cx) cols.push_back({wx + cx, wz + cz});
         for (const auto& [cx, cz] : cols) {
-            {
                 world::columnHeights(tp, cx, cz, hm);
                 for (int cy = (hm.minH - 1) >> 5; cy <= (hm.maxH >> 5); ++cy) {
                     c.pos = {cx, cy, cz};

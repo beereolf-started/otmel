@@ -375,6 +375,12 @@ const RiverPath& outPath(const TerrainParams& p, int32_t i, int32_t j) {
             cur = std::min(cur, start - int32_t(std::max(byMouth, u / gradeDiv)));
             path->run.push_back(std::max(cur, p.seaLevel - 1));
         }
+        // Р35: исток (водосбор - один свой узел) - ручеёк: ширина от четверти нарастает до полной за 96 блоков
+        if (area(p, i, j) == 1) {
+            path->wq.resize(path->x.size());
+            for (size_t k = 0; k < path->x.size(); ++k)
+                path->wq[k] = fx::q16(std::min<int64_t>(fx::ONE, fx::ONE / 4 + int64_t(fx::ONE) * 3 / 4 * path->cum[k] / (96 * VOXELS_PER_BLOCK)));
+        }
     }
     finishPath(*path);
     area(p, i, j);   // узел - целиком: публикуем вместе с полноводностью
@@ -513,6 +519,8 @@ std::shared_ptr<const RiverPath> drawPath(const TerrainParams& p, int32_t i, int
     const int d = down(p, i, j);
     if (d >= 0 && base.x.size() >= 2) {
         size_t cut = base.x.size();   // первая вершина, где ручей впадает (size - нет)
+        std::shared_ptr<const RiverPath> into;   // Р35: в какую реку
+        int64_t intoHalf = 0, intoDepth = 0;
         for (int32_t l = j - 3; l <= j + 3; ++l)
             for (int32_t k = i - 3; k <= i + 3; ++k) {
                 if (k == i && l == j) continue;
@@ -549,15 +557,62 @@ std::shared_ptr<const RiverPath> drawPath(const TerrainParams& p, int32_t i, int
                     const int64_t bottom = dd < 2 * oHalf ? oRaw - 2 * oDepth
                                          : dd < 4 * oHalf ? oRaw + 1
                                                           : oRaw + 1 + (dd - 4 * oHalf) / 5 - 2 * VOXELS_PER_BLOCK;
-                    if (bottom < lw - SPILL) { cut = v; break; }
+                    if (bottom < lw - SPILL) {
+                        cut = v;
+                        into = info(p, k, l).path;
+                        intoHalf = oHalf;
+                        intoDepth = oDepth;
+                        break;
+                    }
                 }
             }
         if (cut < base.x.size()) {
+            // Р35: не обрыв, а ручеёк до русла реки. Последняя вершина ручья, где вода ещё не висит, - cut-1; от неё
+            // прямо к ближайшей точке русла реки, вершины через 16 блоков. Уровень на продолжении спускается по дну
+            // чужой долины (на блок ниже оценки дна), не ниже воды реки в месте впадения и только вниз - вода идёт
+            // по склону каскадом и сливается с рекой. Ширина сужается к устью до трети - ручеёк, а не чаша.
+            const RiverPath& o = *into;
+            const size_t keep = std::max<size_t>(cut, 1);
             auto t = std::make_shared<RiverPath>();
-            const size_t keep = std::max<size_t>(cut + 1, 2);   // вершина встречи - последняя (не меньше одного ребра)
             t->x.assign(base.x.begin(), base.x.begin() + keep);
             t->z.assign(base.z.begin(), base.z.begin() + keep);
             t->run.assign(base.run.begin(), base.run.begin() + keep);
+            if (base.wq.size() == base.x.size()) t->wq.assign(base.wq.begin(), base.wq.begin() + keep);
+            else t->wq.assign(keep, fx::ONE);
+            const int64_t sx = t->x.back(), sz = t->z.back();
+            const Hit join = nearestOnPath(o, sx, sz, INT64_MAX);
+            if (join.e >= 0) {
+                const auto oRawAt = [&](const Hit& h) {
+                    return o.run.size() == 1 ? o.run[0]
+                                             : o.run[size_t(h.e)] + int32_t((int64_t(o.run[size_t(h.e) + 1] - o.run[size_t(h.e)]) * h.f) >> 16);
+                };
+                int64_t qx = o.x[size_t(join.e)], qz = o.z[size_t(join.e)];
+                if (o.x.size() > 1) {
+                    qx += ((o.x[size_t(join.e) + 1] - o.x[size_t(join.e)]) * join.f) >> 16;
+                    qz += ((o.z[size_t(join.e) + 1] - o.z[size_t(join.e)]) * join.f) >> 16;
+                }
+                const int32_t joinLevel = oRawAt(join);
+                const int64_t ex = qx - sx, ez = qz - sz;
+                const int64_t len = int64_t(isqrt(uint64_t(ex * ex + ez * ez)));
+                const int n = int(std::max<int64_t>(1, (len + 128) / 256));
+                int32_t lv = t->run.back();
+                const fx::q16 w0 = t->wq.back();
+                for (int k = 1; k <= n; ++k) {
+                    const int64_t px = sx + ex * k / n, pz = sz + ez * k / n;
+                    const Hit h = nearestOnPath(o, px, pz, INT64_MAX);
+                    const int64_t dd = int64_t(isqrt(uint64_t(h.d2)));
+                    const int32_t oRaw = oRawAt(h);
+                    const int64_t bottom = dd < 2 * intoHalf ? oRaw - 2 * intoDepth
+                                         : dd < 4 * intoHalf ? oRaw + 1
+                                                             : oRaw + 1 + (dd - 4 * intoHalf) / 5 - 2 * VOXELS_PER_BLOCK;
+                    lv = std::max(joinLevel, std::min<int32_t>(lv, int32_t(bottom - VOXELS_PER_BLOCK)));
+                    if (k == n) lv = std::min(lv, joinLevel);
+                    t->x.push_back(px);
+                    t->z.push_back(pz);
+                    t->run.push_back(std::max(lv, p.seaLevel - 1));
+                    t->wq.push_back(w0 - fx::q16(int64_t(w0 - fx::ONE / 3) * k / n));
+                }
+            }
             finishPath(*t);
             result = std::move(t);
         }
@@ -759,7 +814,7 @@ void RiverSet::apply(const TerrainParams& p, int32_t x, int32_t z, int32_t& h, i
         // 3 блока; дальше стенки с заложением bankRun и неровностью. Маска: только прорезает, к краю долины -
         // исходный рельеф; ширина долины - по глубине прорези (на равнине широкая пологая, в горах V-образная,
         // не шире VALLEY_CAP); считается от уровня без ступеней (от ступенчатого прыгала бы на перекатах)
-        const auto carve = [&](int64_t d, int32_t lw, int32_t raw) -> int64_t {
+        const auto carve = [&](int64_t d, int32_t lw, int32_t raw, int32_t half, int32_t depth) -> int64_t {
             const fx::q16 nearSea = fx::smoothstep(p.seaLevel, p.seaLevel + 8 * VOXELS_PER_BLOCK, lw);
             const int64_t plain = half + ((int64_t(half) * fx::mul(kPlain, nearSea)) >> fx::SHIFT);
             const int64_t radius = std::clamp<int64_t>(plain + ((bankRun * std::max(0, h0 - raw)) >> fx::SHIFT),
@@ -782,24 +837,34 @@ void RiverSet::apply(const TerrainParams& p, int32_t x, int32_t z, int32_t& h, i
             const fx::q16 w = fx::ONE - fx::smoothstep(int32_t(radius * 6 / 10), int32_t(radius), dc);
             return h0 + ((int64_t(w) * std::min<int64_t>(0, prof - h0)) >> fx::SHIFT);
         };
-        int64_t best = INT64_MAX, bestD = INT64_MAX, minD = INT64_MAX;
-        int32_t bestLw = 0;
+        int64_t best = INT64_MAX, bestD = INT64_MAX;
+        int32_t bestLw = 0, bestHalf = half;
+        bool nearShore = false;
+        const bool narrow = path.wq.size() == path.x.size();
         const auto visit = [&](size_t e, int64_t d2, int64_t u) {
             const int64_t d = int64_t(isqrt(uint64_t(d2)));
-            minD = std::min(minD, d);
             int32_t raw;
+            fx::q16 wq = fx::ONE;
             if (path.run.size() == 1) raw = path.run[0];
             else if (u >= path.cum[e]) {   // на ребре - между его вершинами
                 const int64_t el = std::max<int64_t>(1, path.cum[e + 1] - path.cum[e]);
                 raw = path.run[e] + int32_t(int64_t(path.run[e + 1] - path.run[e]) * (u - path.cum[e]) / el);
-            } else raw = runAt(path, u);   // до начала ребра - выше по течению
+                if (narrow) wq = path.wq[e] + fx::q16(int64_t(path.wq[e + 1] - path.wq[e]) * (u - path.cum[e]) / el);
+            } else {                       // до начала ребра - выше по течению
+                raw = runAt(path, u);
+                if (narrow) wq = path.wq[e];
+            }
+            // Р35: ширина и глубина русла - по ребру (у истока и у впадения - ручеёк)
+            const int32_t hE = narrow ? std::max<int32_t>(8, int32_t((int64_t(half) * wq) >> fx::SHIFT)) : half;
+            const int32_t dE = narrow ? std::max<int32_t>(8, int32_t((int64_t(depth) * (fx::ONE + wq) / 2) >> fx::SHIFT)) : depth;
+            nearShore |= d < hE + 2 * VOXELS_PER_BLOCK;
             const int32_t lw = stepLevel(raw);
-            const int64_t f = carve(d, lw, raw);
-            if (f < best || (f == best && d < bestD)) { best = f; bestD = d; bestLw = lw; }
+            const int64_t f = carve(d, lw, raw, hE, dE);
+            if (f < best || (f == best && d < bestD)) { best = f; bestD = d; bestLw = lw; bestHalf = hE; }
         };
         forEdges(path, g.gFirst, g.gLast, x, z, [&](int32_t low) { return reachOf(g, low); }, visit);
-        if (best == INT64_MAX || (best >= h0 && minD >= half + 2 * VOXELS_PER_BLOCK && braid == 0)) continue;
-        bool wet = bestD < half;
+        if (best == INT64_MAX || (best >= h0 && !nearShore && braid == 0)) continue;
+        bool wet = bestD < bestHalf;
         // рукав: у рек от 20 узлов, только на ровном (вода у земли) - второе русло той же глубины и уровня,
         // вокруг него откос 1:1 (через минимум с основным профилем - без ступенек)
         if (braid > 0 && g.area >= 20 && g.len > 0) {
@@ -823,7 +888,7 @@ void RiverSet::apply(const TerrainParams& p, int32_t x, int32_t z, int32_t& h, i
         const int32_t hc = int32_t(std::min<int64_t>(h0, best));
         h = std::min(h, hc);
         cuts[nCuts++] = {hc, bestLw, wet};
-        if (minD < half + 2 * VOXELS_PER_BLOCK) shore = true;
+        if (nearShore) shore = true;
     }
     // Р32: вода русла. Вала больше нет: уровень по построению не выше земли на русле (остаток - рябь до блока).
     // Но долина ДРУГОЙ реки может прорезать землю под этим руслом ниже его воды (ручей идёт по дну чужой долины,
