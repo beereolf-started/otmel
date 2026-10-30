@@ -11,6 +11,7 @@ layout(std140, binding = 0) uniform Frame {
     vec4 sky;
     vec4 flowArea;     // Р43: поле течений - угол x, z, сторона (блоки)
     vec4 timeV;        // Р43: x - секунды
+    vec4 simArea;      // Р45: зона автомата воды - угол x, z, сторона (блоки), w - 1, если есть
 };
 layout(location = 0) uniform ivec3 uChunk;   // начало куска в вокселях
 

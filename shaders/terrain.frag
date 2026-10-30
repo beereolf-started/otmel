@@ -14,6 +14,7 @@ layout(std140, binding = 0) uniform Frame {
     vec4 sky;
     vec4 flowArea;     // Р43: поле течений - угол x, z, сторона (блоки)
     vec4 timeV;        // Р43: x - секунды
+    vec4 simArea;      // Р45: зона автомата воды - угол x, z, сторона (блоки), w - 1, если есть
 };
 layout(binding = 1) uniform sampler2D uFlow;   // Р43: скорость воды, блоки/с (x, z)
 
@@ -28,6 +29,10 @@ float ripples(vec2 q) { return valueNoise(q) * 0.6 + valueNoise(q * 2.3 + 7.1) *
 
 void main() {
     if (vWater == 0u) { outColor = vColor; return; }   // грунт - как был
+    // Р45: в зоне автомата сгенерированную воду не рисуем - там вода автомата (своя сетка, vWater = 2)
+    if (vWater == 1u && simArea.w > 0.0 && all(greaterThanEqual(vWorld.xz, simArea.xy + 1.0)) &&
+        all(lessThanEqual(vWorld.xz, simArea.xy + simArea.z - 1.0)))
+        discard;
     // Р43: скорость воды здесь - из поля течений (вне поля - стоячая)
     vec2 uv = (vWorld.xz - flowArea.xy) / max(flowArea.z, 1.0);
     vec2 v = all(greaterThanEqual(uv, vec2(0))) && all(lessThanEqual(uv, vec2(1))) ? texture(uFlow, uv).xy : vec2(0);

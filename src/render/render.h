@@ -34,6 +34,7 @@ struct CmdCamera {
     Color sky;
     float time = 0;           // Р43: секунды с начала - рябь, пена, падающая вода
     glm::vec4 flowArea{0};    // Р43: поле течений: угол x, z (блоки), сторона (блоки)
+    glm::vec4 simArea{0};     // Р45: зона автомата воды: угол x, z, сторона (блоки), w - 1, если есть
 };
 struct CmdDrawChunk { MeshId mesh; glm::ivec3 originVoxels; };
 // Плитка дальнего уровня (Р20): начало в блоках, шаг узлов в блоках, где идёт морфинг, какие четверти
@@ -69,6 +70,8 @@ public:
     virtual void updateVoxelMask(int side, std::span<const uint8_t> mask) = 0;
     // Р43: поле течений side×side блоков, 2 числа на блок (скорость x, z, блоки/с)
     virtual void updateFlowField(int side, std::span<const float> velocity) = 0;
+    // Р45: вода автомата - треугольники, на вершину 4 числа: x, y, z (блоки), нормаль 0..5
+    virtual void setSimWater(std::span<const float> vertices) = 0;
     // параметр отладки шейдеров: 1 - раскрасить плитки по уровням
     virtual void setDebug(int mode) = 0;
     virtual void execute(const CommandList& list, FrameStats& stats) = 0;

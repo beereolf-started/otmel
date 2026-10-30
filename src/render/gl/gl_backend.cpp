@@ -42,9 +42,9 @@ GLuint loadSpirv(const std::string& path, GLenum stage) {
     return s;
 }
 
-GLuint loadProgram(const std::string& dir, const char* name) {
+GLuint loadProgram(const std::string& dir, const char* name, const char* fragName = nullptr) {
     const GLuint vs = loadSpirv(dir + "/" + name + ".vert.spv", GL_VERTEX_SHADER);
-    const GLuint fs = loadSpirv(dir + "/" + name + ".frag.spv", GL_FRAGMENT_SHADER);
+    const GLuint fs = loadSpirv(dir + "/" + (fragName ? fragName : name) + ".frag.spv", GL_FRAGMENT_SHADER);
     if (!vs || !fs) return 0;
     const GLuint p = glCreateProgram();
     glAttachShader(p, vs);
@@ -73,6 +73,7 @@ struct FrameUbo {
     float sky[4];
     float flow[4];   // Р43: поле течений - угол x, z, сторона (блоки)
     float time[4];   // Р43: секунды
+    float simArea[4];   // Р45: зона автомата воды
 };
 
 class GLBackend final : public Backend {
@@ -95,7 +96,13 @@ public:
     bool init(const std::string& shaderDir, int w, int h) {
         program_ = loadProgram(shaderDir, "terrain");
         tileProgram_ = loadProgram(shaderDir, "tile");
-        if (!program_ || !tileProgram_) return false;
+        dynProgram_ = loadProgram(shaderDir, "dynwater", "terrain");   // Р45: вода автомата
+        if (!program_ || !tileProgram_ || !dynProgram_) return false;
+        glCreateVertexArrays(1, &dynVao_);
+        glEnableVertexArrayAttrib(dynVao_, 0);
+        glVertexArrayAttribFormat(dynVao_, 0, 4, GL_FLOAT, GL_FALSE, 0);
+        glVertexArrayAttribBinding(dynVao_, 0, 0);
+        glCreateBuffers(1, &dynVbo_);
 
         // Вершина куска - одно целое: атрибут 0, uint, без перевода в float
         glCreateVertexArrays(1, &vao_);
@@ -199,6 +206,12 @@ public:
         glTextureSubImage2D(flowTex_, 0, 0, 0, side, side, GL_RG, GL_FLOAT, v.data());
     }
 
+    void setSimWater(std::span<const float> v) override {
+        dynCount_ = static_cast<GLsizei>(v.size() / 4);
+        if (v.empty()) return;
+        glNamedBufferData(dynVbo_, static_cast<GLsizeiptr>(v.size_bytes()), v.data(), GL_DYNAMIC_DRAW);
+    }
+
     void execute(const CommandList& list, FrameStats& stats) override {
         stats = {};
         GLuint current = 0;
@@ -223,6 +236,7 @@ public:
                 u.sky[0] = cam->sky.r; u.sky[1] = cam->sky.g; u.sky[2] = cam->sky.b; u.sky[3] = cam->sky.a;
                 for (int i = 0; i < 4; ++i) u.flow[i] = cam->flowArea[i];
                 u.time[0] = cam->time;
+                for (int i = 0; i < 4; ++i) u.simArea[i] = cam->simArea[i];
                 glNamedBufferSubData(ubo_, 0, sizeof(u), &u);
                 glBindBufferBase(GL_UNIFORM_BUFFER, 0, ubo_);
             } else if (auto* d = std::get_if<CmdDrawChunk>(&cmd)) {
@@ -298,7 +312,7 @@ private:
     // но не пишет: вода не заслоняет воду за собой. Порядок между кусками воды не сортируется - слоёв воды
     // друг за другом почти не бывает (край водопада над гладью).
     void drawWater(FrameStats& stats) {
-        if (water_.empty()) return;
+        if (water_.empty() && dynCount_ == 0) return;
         glEnable(GL_BLEND);
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
         glDepthMask(GL_FALSE);
@@ -327,6 +341,17 @@ private:
                 }
                 drawTile(*t, meshes_[t->mesh], stats);
             }
+        }
+        // Р45: вода автомата - поверх, тем же смешением; стенки водопадов видны с обеих сторон
+        if (dynCount_ > 0) {
+            glUseProgram(dynProgram_);
+            glBindVertexArray(dynVao_);
+            glBindTextureUnit(1, flowTex_);
+            glVertexArrayVertexBuffer(dynVao_, 0, dynVbo_, 0, 16);
+            glDisable(GL_CULL_FACE);
+            glDrawArrays(GL_TRIANGLES, 0, dynCount_);
+            glEnable(GL_CULL_FACE);
+            ++stats.drawCalls;
         }
         glProgramUniform1i(tileProgram_, 5, 0);
         glDepthMask(GL_TRUE);
@@ -378,6 +403,8 @@ private:
     SDL_GLContext context_;
     GLuint program_ = 0, tileProgram_ = 0, vao_ = 0, tileVao_ = 0, ibo_ = 0, tileIbo_ = 0, ubo_ = 0;
     GLuint fbo_ = 0, colorRb_ = 0, depthRb_ = 0, maskTex_ = 0, flowTex_ = 0;
+    GLuint dynProgram_ = 0, dynVao_ = 0, dynVbo_ = 0;   // Р45: вода автомата
+    GLsizei dynCount_ = 0;
     int flowSide_ = 0;
     int maskSide_ = 0;
     int width_ = 1, height_ = 1;
