@@ -30,12 +30,17 @@ struct RiverNode {
     int64_t px, pz;     // положение, воксели
     int32_t smooth;     // потенциал стока: сглаженная высота + уклон к морю, воксели
     bool sea;           // ниже уровня моря - река здесь кончается
-    int down;           // в какого соседа стекает: 0..7, -1 - никуда (котловина или море)
+    int down;           // в какого соседа стекает: 0..7; 8 - сток котловины через перевал (Р37, узел ti, tj);
+                        // -1 - никуда (бессточная котловина или море)
     int32_t area;       // полноводность A, узлов
     int32_t level;      // уровень воды в узле (Р30), воксели
     int32_t outEnd;     // уровень воды в конце вытекающего звена (у соседа ниже), воксели
+    int32_t ti, tj;     // куда стекает (узел), если down >= 0
 };
 RiverNode riverNode(const TerrainParams& p, int32_t i, int32_t j);
+// Р37: только сток узла - без уровней и русел (дёшево; для карт бассейнов)
+struct RiverFlow { int64_t px, pz; int32_t pot; bool sea; int down; int32_t ti, tj; };
+RiverFlow riverFlow(const TerrainParams& p, int32_t i, int32_t j);
 void riverNeighbor(int32_t i, int32_t j, int dir, int32_t& ni, int32_t& nj);
 
 // Р32: русло звена - явная ломаная от узла к узлу ниже. Строится один раз на узел: поиск ложбины (река идёт

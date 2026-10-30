@@ -96,7 +96,9 @@ void VoxelZone::reprioritize(glm::vec3 eye, const Frustum& fr) {
                 if (it == ready_.end()) continue;
                 const bool shallow = it->second.builtMin > want;
                 const bool recap = want != Builder::NO_DEPTH && it->second.caps != caps;
-                if (!shallow && !recap) continue;
+                // Р37: ушёл из подземного яруса - перестроить без пещер (вход в пустоту просвечивал бы)
+                const bool closed = want == Builder::NO_DEPTH && it->second.builtMin != Builder::NO_DEPTH;
+                if (!shallow && !recap && !closed) continue;
             }
             const int64_t dx = cx - ccx_, dz = cz - ccz_;
             const float bx = float(cx * BLOCKS_PER_COLUMN), bz = float(cz * BLOCKS_PER_COLUMN);
@@ -151,7 +153,10 @@ void VoxelZone::update(glm::vec3 eye, const Frustum& fr, double uploadBudgetMs) 
         if (old != ready_.end()) {
             const bool deeperNow = r.cyMin < old->second.builtMin;
             const bool capsFixed = r.caps == wantCaps(r.cx, r.cz) && old->second.caps != r.caps;
-            if (!deeperNow && !capsFixed) continue;
+            // Р37: столбец, ушедший из яруса, - перестроенный без пещер заменяет прежний
+            const bool closedNow = r.cyMin == Builder::NO_DEPTH && wantMin(r.cx, r.cz) == Builder::NO_DEPTH &&
+                                   old->second.builtMin != Builder::NO_DEPTH;
+            if (!deeperNow && !capsFixed && !closedNow) continue;
             release(old->second);
         }
         Column& c = ready_[key(r.cx, r.cz)];

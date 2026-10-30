@@ -433,9 +433,7 @@ int main() {
                 if (n.sea) continue;
                 maxArea = std::max(maxArea, n.area);
                 if (n.down < 0) { if (n.area >= 3) ++lakes; continue; }
-                int32_t ni, nj;
-                world::riverNeighbor(i, j, n.down, ni, nj);
-                const world::RiverNode t = world::riverNode(tp, ni, nj);
+                const world::RiverNode t = world::riverNode(tp, n.ti, n.tj);   // Р37: сосед или выход котловины
                 if (t.smooth >= n.smooth) downhill = false;
                 if (!t.sea && t.down >= 0 && t.level > n.level) levels = false;
                 if (n.area >= 3) ++rivers;

@@ -32,13 +32,15 @@ constexpr int64_t BEND = 4 * VOXELS_PER_BLOCK;
 constexpr int64_t MEANDER = 100 * VOXELS_PER_BLOCK;         // меандры поверх найденного пути: до ±100 блоков ×0.3..1.5
 constexpr int64_t ANCHOR = 192 * VOXELS_PER_BLOCK;          // узел садится в самую низкую из 3×3 точек через 192 блока
 constexpr int32_t SPILL = 2 * VOXELS_PER_BLOCK;             // русло над чужой долиной выше этого - вода сливается
+constexpr int SPILL_R = 5;                                  // Р37: выход котловины ищется не дальше 5 узлов (~10 км)
 
 struct Info {
     int64_t px, pz;
     int32_t smooth;     // сглаженная высота
     int32_t pot;        // потенциал стока: сглаженная высота + уклон к морю
     bool sea;
-    int down = -2;      // -2: ещё не считали
+    int down = -2;      // -2: ещё не считали; 0..7 - сосед; 8 - сток котловины через перевал (Р37)
+    int32_t ti = 0, tj = 0;   // куда стекает
     int32_t area = -1;  // -1: ещё не считали
     bool anchored = false;          // Р32: точка русла в узле (самая низкая около узла)
     int64_t ax = 0, az = 0;
@@ -108,18 +110,64 @@ Info& info(const TerrainParams& p, int32_t i, int32_t j) {
     return n;
 }
 
+// Р37: сток котловины. Узел, у которого все соседи выше (котловина), стекает через самый низкий перевал: волна от
+// котловины по узлам в радиусе SPILL_R, в порядке высоты прохода (наибольший потенциал на пути); первый узел НИЖЕ
+// котловины по потенциалу - выход. Связь - прямо к нему (русло проложит поиск ложбины, через перевал - ущельем).
+// Каждая связь ведёт строго вниз по потенциалу - кругов нет. Выхода в радиусе нет - бессточное озеро.
+bool spillOutlet(const TerrainParams& p, int32_t i, int32_t j, int32_t& ti, int32_t& tj) {
+    constexpr int W = 2 * SPILL_R + 1;
+    const int32_t pot0 = info(p, i, j).pot;
+    int32_t key[W][W];
+    bool done[W][W] = {};
+    for (auto& row : key) for (int32_t& k : row) k = INT32_MAX;
+    key[SPILL_R][SPILL_R] = pot0;
+    for (;;) {
+        int bi = -1, bj = -1;
+        int32_t bk = INT32_MAX;
+        for (int b = 0; b < W; ++b)
+            for (int a = 0; a < W; ++a)
+                if (!done[b][a] && key[b][a] < bk) { bk = key[b][a]; bi = a; bj = b; }
+        if (bi < 0) return false;
+        done[bj][bi] = true;
+        const int32_t ci = i + bi - SPILL_R, cj = j + bj - SPILL_R;
+        const Info& c = info(p, ci, cj);
+        if ((bi != SPILL_R || bj != SPILL_R) && c.pot < pot0) { ti = ci; tj = cj; return true; }
+        for (int d = 0; d < 8; ++d) {
+            const int a = bi + DX[d], b = bj + DZ[d];
+            if (a < 0 || b < 0 || a >= W || b >= W || done[b][a]) continue;
+            const int32_t k = std::max(bk, info(p, i + a - SPILL_R, j + b - SPILL_R).pot);
+            if (k < key[b][a]) key[b][a] = k;
+        }
+    }
+}
+
 int down(const TerrainParams& p, int32_t i, int32_t j) {
     Info& n = info(p, i, j);
     if (n.down != -2) return n.down;
     int best = -1;
-    int32_t lowest = n.pot;
-    if (!n.sea)
+    int32_t lowest = n.pot, ti = 0, tj = 0;
+    if (!n.sea) {
         for (int d = 0; d < 8; ++d) {
             const int32_t s = info(p, i + DX[d], j + DZ[d]).pot;
             if (s < lowest) { lowest = s; best = d; }   // строго ниже по потенциалу - иначе котловина
         }
-    info(p, i, j).down = best;
+        if (best >= 0) { ti = i + DX[best]; tj = j + DZ[best]; }
+        else if (spillOutlet(p, i, j, ti, tj)) best = 8;
+    }
+    Info& m = info(p, i, j);
+    m.down = best;
+    m.ti = ti;
+    m.tj = tj;
     return best;
+}
+
+// куда стекает узел (false - никуда)
+bool target(const TerrainParams& p, int32_t i, int32_t j, int32_t& ti, int32_t& tj) {
+    if (down(p, i, j) < 0) return false;
+    const Info& n = info(p, i, j);
+    ti = n.ti;
+    tj = n.tj;
+    return true;
 }
 
 int32_t area(const TerrainParams& p, int32_t i, int32_t j) {
@@ -130,10 +178,10 @@ int32_t area(const TerrainParams& p, int32_t i, int32_t j) {
             int32_t ci = i + di, cj = j + dj;
             for (int step = 0; step <= CHAIN; ++step) {
                 if (ci == i && cj == j) { ++count; break; }
-                const int d = down(p, ci, cj);
-                if (d < 0) break;
-                ci += DX[d];
-                cj += DZ[d];
+                int32_t ni, nj;
+                if (!target(p, ci, cj, ni, nj)) break;
+                ci = ni;
+                cj = nj;
             }
         }
     info(p, i, j).area = count;
@@ -184,11 +232,13 @@ int32_t level(const TerrainParams& p, int32_t i, int32_t j) {
     int64_t ax, az;
     anchor(p, i, j, ax, az);
     int32_t lv = groundLine(p, ax, az);
-    for (int d = 0; d < 8; ++d) {
-        const int32_t ci = i + DX[d], cj = j + DZ[d];
-        const int cd = down(p, ci, cj);
-        if (cd >= 0 && ci + DX[cd] == i && cj + DZ[cd] == j) lv = std::min(lv, outPath(p, ci, cj).run.back());
-    }
+    // притоки: соседи, стекающие сюда, и котловины в радиусе SPILL_R, чей выход - здесь (Р37)
+    for (int32_t cj = j - SPILL_R; cj <= j + SPILL_R; ++cj)
+        for (int32_t ci = i - SPILL_R; ci <= i + SPILL_R; ++ci) {
+            int32_t ti, tj;
+            if ((ci != i || cj != j) && target(p, ci, cj, ti, tj) && ti == i && tj == j)
+                lv = std::min(lv, outPath(p, ci, cj).run.back());
+        }
     Info& m = info(p, i, j);
     m.level = std::max(lv, p.seaLevel - 1);
     m.leveled = true;
@@ -207,9 +257,10 @@ void mouth(const TerrainParams& p, int32_t i, int32_t j, int64_t& dist, int32_t&
         ml = n.sea ? p.seaLevel - 1 : std::max(groundLine(p, n.px, n.pz), p.seaLevel - 1);
     } else {
         int64_t dd;
-        mouth(p, i + DX[d], j + DZ[d], dd, ml);
+        const int32_t ti = info(p, i, j).ti, tj = info(p, i, j).tj;
+        mouth(p, ti, tj, dd, ml);
         const Info& a = info(p, i, j);
-        const Info& b = info(p, i + DX[d], j + DZ[d]);
+        const Info& b = info(p, ti, tj);
         const int64_t ex = b.px - a.px, ez = b.pz - a.pz;
         md = dd + int64_t(isqrt(uint64_t(ex * ex + ez * ez)));
     }
@@ -352,7 +403,8 @@ const RiverPath& outPath(const TerrainParams& p, int32_t i, int32_t j) {
         path->run = {start};
     } else {
         int64_t bx, bz;
-        anchor(p, i + DX[d], j + DZ[d], bx, bz);
+        const int32_t ti = info(p, i, j).ti, tj = info(p, i, j).tj;
+        anchor(p, ti, tj, bx, bz);
         tracePath(p, ax, az, bx, bz, *path);
         const int64_t s = int64_t(isqrt(uint64_t(std::max(1, area(p, i, j))) << 16));   // √A · 256
         int64_t mdist;
@@ -361,7 +413,7 @@ const RiverPath& outPath(const TerrainParams& p, int32_t i, int32_t j) {
         const int64_t gradeDiv = 256 + 64 * s / 256;
         // путь по руслу длиннее прямой между узлами: доля пути до устья - по доле длины русла
         const Info& a = info(p, i, j);
-        const Info& b = info(p, i + DX[d], j + DZ[d]);
+        const Info& b = info(p, ti, tj);
         const int64_t sx = b.px - a.px, sz = b.pz - a.pz;
         const int64_t straight = int64_t(isqrt(uint64_t(sx * sx + sz * sz)));
         finishPath(*path);
@@ -528,7 +580,7 @@ std::shared_ptr<const RiverPath> drawPath(const TerrainParams& p, int32_t i, int
                 const int32_t a = area(p, k, l);
                 const int od = down(p, k, l);
                 if (a < (od >= 0 ? AREA_MIN : LAKE_AREA_MIN)) continue;
-                if (od >= 0 && k + DX[od] == i && l + DZ[od] == j) continue;   // свой приток - выше, не обрезает
+                if (od >= 0 && info(p, k, l).ti == i && info(p, k, l).tj == j) continue;   // свой приток - выше, не обрезает
                 const RiverPath& o = outPath(p, k, l);
                 const int64_t s = int64_t(isqrt(uint64_t(a) << 16));
                 const int64_t oHalf = od >= 0 ? 24 + s * 14 / 256 : 256 + s * 64 / 256;
@@ -641,7 +693,18 @@ RiverNode riverNode(const TerrainParams& p, int32_t i, int32_t j) {
     const int32_t lv = level(p, i, j);
     const int32_t end = outPath(p, i, j).run.back();
     const Info& n = info(p, i, j);
-    return {n.px, n.pz, n.pot, n.sea, d, a, lv, end};
+    return {n.px, n.pz, n.pot, n.sea, d, a, lv, end, n.ti, n.tj};
+}
+
+RiverFlow riverFlow(const TerrainParams& p, int32_t i, int32_t j) {
+    if (g_cache.params != &p || g_cache.seed != p.seed || g_cache.nodes.size() > 400000) {
+        g_cache.nodes.clear();
+        g_cache.params = &p;
+        g_cache.seed = p.seed;
+    }
+    const int d = down(p, i, j);
+    const Info& n = info(p, i, j);
+    return {n.px, n.pz, n.pot, n.sea, d, n.ti, n.tj};
 }
 
 void RiverSet::build(const TerrainParams& p, int32_t x0, int32_t z0, int32_t x1, int32_t z1) {
@@ -651,7 +714,7 @@ void RiverSet::build(const TerrainParams& p, int32_t x0, int32_t z0, int32_t x1,
         g_cache.seed = p.seed;
     }
     segs.clear();
-    const int64_t margin = 2 * CELL;   // звено, коридор поиска и долина - не дальше двух клеток
+    const int64_t margin = (SPILL_R + 1) * CELL;   // звено (Р37: сток котловины - до SPILL_R узлов), коридор, долина
     const auto cell = [](int64_t v) { return int32_t(v >= 0 ? v / CELL : -((-v + CELL - 1) / CELL)); };
     for (int32_t j = cell(z0 - margin); j <= cell(z1 + margin); ++j)
         for (int32_t i = cell(x0 - margin); i <= cell(x1 + margin); ++i) {
@@ -676,7 +739,7 @@ void RiverSet::build(const TerrainParams& p, int32_t x0, int32_t z0, int32_t x1,
             const int64_t r = 2 * g.valley + VALLEY_CAP;
             {
                 const Info& na = info(p, i, j);
-                const Info& nb = d >= 0 ? info(p, i + DX[d], j + DZ[d]) : na;
+                const Info& nb = d >= 0 ? info(p, na.ti, na.tj) : na;
                 const int64_t rr = r + SPREAD + 3 * MEANDER / 2 + 2 * ANCHOR;
                 if (std::max(na.px, nb.px) + rr < x0 || std::min(na.px, nb.px) - rr > x1 ||
                     std::max(na.pz, nb.pz) + rr < z0 || std::min(na.pz, nb.pz) - rr > z1)

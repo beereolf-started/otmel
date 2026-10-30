@@ -104,8 +104,9 @@ bool caveAir(const TerrainParams& p, ChunkPos pos, const ColumnHeights& hm, uint
                 if (maxT > 0) {
                     fx::q16 t = tri([](const Node& n) { return n.tunnel; });
                     if (t > 0 && d < c.tunnelCover) {
-                        // под водой входов нет: вода прозрачна (Р34) - дыра в дне видна насквозь до неба
-                        if (entrance < 0) entrance = hm.water[z][x] <= top && entranceAt(wx, wz) ? 1 : 0;
+                        // под водой и на берегу входов нет: вода прозрачна (Р34) - дыра в дне или в боку русла
+                        // видна насквозь (Р37: и у берега - вход в берегу открывался в бок русла)
+                        if (entrance < 0) entrance = !hm.nearWater[z][x] && entranceAt(wx, wz) ? 1 : 0;
                         // не у входа: тоннель гаснет за последний блок перед верхним слоем
                         if (!entrance) t -= fx::q16(int64_t(fx::mul(c.tunnelWidth, c.tunnelWidth)) * (c.tunnelCover - d) / VOXELS_PER_BLOCK);
                     }

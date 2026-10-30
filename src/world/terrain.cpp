@@ -222,8 +222,10 @@ void columnHeights(const TerrainParams& p, int32_t chunkX, int32_t chunkZ, Colum
             out.water[z][x] = r.water;
             shore[z][x] = r.shore;
             const int32_t surface = std::max(r.height, r.water);   // Р28: поверхность - дно или вода над ним
-            out.minH = std::min(out.minH, surface);
+            // Р37: нижний кусок - по дну: вода прозрачна, дно под ней должно строиться (было по воде - дыры в дне)
+            out.minH = std::min(out.minH, r.height);
             out.maxH = std::max(out.maxH, surface);
+            out.nearWater[z][x] = r.shore || r.water > r.height;
         }
     }
     // климат и покров - только своим столбцам, не кайме; у воды рек и озёр - песок (Р29)

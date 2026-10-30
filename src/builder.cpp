@@ -118,7 +118,9 @@ void Builder::worker() {
         const int cyFrom = col.cyMin == NO_DEPTH ? cyLo : std::max(std::min(cyLo, col.cyMin), WORLD_BOTTOM);
         for (int cy = cyFrom; cy <= cyHi; ++cy) {
             const world::ChunkPos pos{col.cx, cy, col.cz};
-            bool caves = world::caveAir(tp_, pos, hm, air);
+            // Р37: пещеры - только в подземном ярусе у камеры (там есть и куски под ними); вне яруса поверхность
+            // сплошная - иначе входы видны насквозь в пустоту (под ними ничего не строится)
+            bool caves = col.cyMin != NO_DEPTH && world::caveAir(tp_, pos, hm, air);
             const bool underground = cy < cyLo;
             if (caves) {
                 // Р27, заглушки: ниже самого нижнего построенного куска ничего нет - его нижний слой и кайма под
