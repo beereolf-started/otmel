@@ -1,6 +1,6 @@
 #version 460
 // Р59: брызги и водяная пыль - кубики, экземпляр - капля: a0 = (x, y, z) в прежних мерах (16 блоков), размер;
-// a1 = (непрозрачность, вид: 0 капля, 1 пыль). Три грани к камере (18 вершин), фрагменты - terrain.frag (брызги).
+// a1 = (непрозрачность, вид: 0 капля, 1 пыль, 2 падающая масса). Три грани к камере (18 вершин), фрагменты - terrain.frag (брызги).
 layout(location = 0) in vec4 aPos;
 layout(location = 1) in vec4 aInfo;
 
@@ -38,7 +38,8 @@ void main() {
     gl_Position = viewProj * vec4(p, 1.0);
     uint n = uint(ax * 2 + (plus ? 0 : 1));
     float light = 0.6 + 0.4 * max(dot(NORMALS[n], normalize(sunDir.xyz)), 0.0);
-    vec3 c = aInfo.y > 0.5 ? vec3(0.9, 0.94, 0.97) : vec3(0.86, 0.92, 0.97);
+    // 0 капля, 1 пыль - белые; 2 падающая масса - вода
+    vec3 c = aInfo.y > 1.5 ? vec3(0.3, 0.58, 0.85) : aInfo.y > 0.5 ? vec3(0.9, 0.94, 0.97) : vec3(0.86, 0.92, 0.97);
     vColor = vec4(c * light, aInfo.x);
     vWorld = p;
     vNormal = n;
