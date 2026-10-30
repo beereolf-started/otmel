@@ -19,6 +19,7 @@ layout(std140, binding = 0) uniform Frame {
 };
 layout(binding = 1) uniform sampler2D uFlow;         // Р43: скорость воды, блоки/с (x, z)
 layout(binding = 2) uniform sampler2D uSceneDepth;   // Р51: глубина сцены без воды
+layout(binding = 5) uniform usampler2D uFineMask;   // Р58: 1 - блок рисуется мелкой водой (зона - simArea)
 
 // шум для ряби: значения в узлах решётки, между ними - плавно
 // Р55: хеш - целочисленный: sin от мировых координат (сотни тысяч блоков, Р54) теряет точность - рябь
@@ -51,6 +52,12 @@ void main() {
     vec3 px = (floor(wb * 16.0 - NORMALS[min(vNormal, 5u)] * 0.5) + 0.5) / 16.0;
     float t = floor(timeV.x * 8.0) / 8.0;
     // вдали тексель меньше пикселя - мелочь гаснет к среднему (иначе мерцает при движении)
+    // Р58: вода кусков там, где рисуется мелкая вода (столбики в тексель), - не рисуется
+    if (vWater == 1u && simArea.w > 0.0) {
+        ivec2 b = ivec2(floor(px.xz - simArea.xy * 16.0));
+        int side = int(simArea.z * 16.0 + 0.5);
+        if (all(greaterThanEqual(b, ivec2(0))) && all(lessThan(b, ivec2(side))) && texelFetch(uFineMask, b, 0).r != 0u) discard;
+    }
     float tpp = max(fwidth(wb.x), fwidth(wb.z)) * 16.0;   // текселей на пиксель
     float detail = clamp(1.5 - tpp, 0.0, 1.0);
     // Р43: скорость воды здесь - из поля течений (вне поля - стоячая); блоки/с = м/с

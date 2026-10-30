@@ -98,7 +98,10 @@ public:
         program_ = loadProgram(shaderDir, "terrain");
         tileProgram_ = loadProgram(shaderDir, "tile");
         dynProgram_ = loadProgram(shaderDir, "dynwater", "terrain");   // Р45: вода автомата
-        if (!program_ || !tileProgram_ || !dynProgram_) return false;
+        fineProgram_ = loadProgram(shaderDir, "finewater", "terrain");   // Р58: мелкая вода у камеры
+        if (!program_ || !tileProgram_ || !dynProgram_ || !fineProgram_) return false;
+        glCreateVertexArrays(1, &fineVao_);
+        glCreateBuffers(1, &fineSsbo_);
         glCreateVertexArrays(1, &dynVao_);
         glEnableVertexArrayAttrib(dynVao_, 0);
         glVertexArrayAttribFormat(dynVao_, 0, 4, GL_FLOAT, GL_FALSE, 0);
@@ -205,6 +208,31 @@ public:
         }
         glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
         glTextureSubImage2D(flowTex_, 0, 0, 0, side, side, GL_RG, GL_FLOAT, v.data());
+    }
+
+    void setFineWater(glm::ivec2 origin, int side, std::span<const float> data, std::span<const uint8_t> mask,
+                      std::span<const int32_t> blocks) override {
+        if (side != fineSide_) {
+            if (fineTex_) glDeleteTextures(1, &fineTex_);
+            if (fineMask_) glDeleteTextures(1, &fineMask_);
+            glCreateTextures(GL_TEXTURE_2D, 1, &fineTex_);
+            glTextureStorage2D(fineTex_, 1, GL_RG32F, side + 2, side + 2);
+            glTextureParameteri(fineTex_, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+            glTextureParameteri(fineTex_, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+            glCreateTextures(GL_TEXTURE_2D, 1, &fineMask_);
+            glTextureStorage2D(fineMask_, 1, GL_R8UI, side, side);
+            glTextureParameteri(fineMask_, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+            glTextureParameteri(fineMask_, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+            fineSide_ = side;
+        }
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+        glTextureSubImage2D(fineTex_, 0, 0, 0, side + 2, side + 2, GL_RG, GL_FLOAT, data.data());
+        glTextureSubImage2D(fineMask_, 0, 0, 0, side, side, GL_RED_INTEGER, GL_UNSIGNED_BYTE, mask.data());
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+        fineCount_ = static_cast<GLsizei>(blocks.size() / 2);
+        if (fineCount_ > 0)
+            glNamedBufferData(fineSsbo_, static_cast<GLsizeiptr>(blocks.size_bytes()), blocks.data(), GL_DYNAMIC_DRAW);
+        fineOrigin_ = origin;
     }
 
     void setSimWater(std::span<const float> v) override {
@@ -328,6 +356,7 @@ private:
         // толщину воды по лучу - мелко прозрачно, глубоко темно и мутно
         glBlitNamedFramebuffer(fbo_, depthFbo_, 0, 0, width_, height_, 0, 0, width_, height_, GL_DEPTH_BUFFER_BIT, GL_NEAREST);
         glBindTextureUnit(2, depthTex_);
+        if (fineMask_) glBindTextureUnit(5, fineMask_);   // Р58: где вода кусков спрятана (там мелкая)
         GLuint current = 0;
         for (const Command* cmd : water_) {
             if (auto* d = std::get_if<CmdDrawChunk>(cmd)) {
@@ -337,13 +366,6 @@ private:
                     glBindVertexArray(vao_);
                     glBindTextureUnit(1, flowTex_);   // Р43: поле течений
                     current = program_;
-                }
-                // Р45: в зоне автомата воду кусков не рисуем - там вода автомата; граница зоны кратна 32 блокам,
-                // кусок (2 блока) её не пересекает
-                if (simArea_.w > 0) {
-                    const float bx = float(d->originVoxels.x) / 16.0f, bz = float(d->originVoxels.z) / 16.0f;
-                    if (bx >= simArea_.x && bz >= simArea_.y && bx + 2 <= simArea_.x + simArea_.z && bz + 2 <= simArea_.y + simArea_.z)
-                        continue;
                 }
                 glProgramUniform3i(program_, 0, d->originVoxels.x, d->originVoxels.y, d->originVoxels.z);
                 glProgramUniform3i(program_, 1, d->fineOff.x, d->fineOff.y, d->fineOff.z);
@@ -361,6 +383,19 @@ private:
                 }
                 drawTile(*t, meshes_[t->mesh], stats);
             }
+        }
+        // Р58: мелкая вода у камеры - столбики в тексель, строит вершинный шейдер
+        if (fineCount_ > 0) {
+            glUseProgram(fineProgram_);
+            glBindVertexArray(fineVao_);
+            glBindTextureUnit(1, flowTex_);
+            glBindTextureUnit(4, fineTex_);
+            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, fineSsbo_);
+            glProgramUniform2i(fineProgram_, 0, fineOrigin_.x, fineOrigin_.y);
+            glDisable(GL_CULL_FACE);
+            glDrawArraysInstanced(GL_TRIANGLES, 0, 256 * 30, fineCount_);
+            glEnable(GL_CULL_FACE);
+            ++stats.drawCalls;
         }
         // Р45: вода автомата - поверх, тем же смешением; стенки водопадов видны с обеих сторон
         if (dynCount_ > 0) {
@@ -438,6 +473,10 @@ private:
     GLuint fbo_ = 0, colorRb_ = 0, depthRb_ = 0, maskTex_ = 0, flowTex_ = 0;
     GLuint depthFbo_ = 0, depthTex_ = 0;   // Р51: копия глубины сцены для воды
     GLuint dynProgram_ = 0, dynVao_ = 0, dynVbo_ = 0;   // Р45: вода автомата
+    GLuint fineProgram_ = 0, fineVao_ = 0, fineSsbo_ = 0, fineTex_ = 0, fineMask_ = 0;   // Р58: мелкая вода
+    GLsizei fineCount_ = 0;
+    int fineSide_ = 0;
+    glm::ivec2 fineOrigin_{0};
     GLsizei dynCount_ = 0;
     glm::vec4 simArea_{0};
     int flowSide_ = 0;

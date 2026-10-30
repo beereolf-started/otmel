@@ -375,6 +375,13 @@ int main(int argc, char** argv) {
     struct Drop { glm::vec3 p, v; float life; };
     std::vector<Drop> drops;
     std::vector<float> flowGround, flowSurface, dropVerts;
+    // Р58: мелкая вода у камеры - зона 128×128 блоков (4×4 куска); уровни по блокам - в фоне при смене куска камеры
+    constexpr int FINE = 128;
+    constexpr float NONE = -1e9f;
+    struct FineData { glm::ivec2 origin; std::vector<float> vb, ground; std::vector<uint8_t> wet; float flat[FINE * FINE]; };
+    std::future<std::unique_ptr<FineData>> fineJob;
+    glm::ivec2 fineAt(INT32_MIN / 2);
+    std::unique_ptr<FineData> fineData;
     uint32_t dropRng = 0x9E3779B9u;
     const auto rnd = [&dropRng] { dropRng ^= dropRng << 13; dropRng ^= dropRng >> 17; dropRng ^= dropRng << 5; return float(dropRng >> 8) / 16777216.0f; };
     int simFrame = 0;
@@ -539,6 +546,92 @@ int main(int argc, char** argv) {
                 }
             }
             gpu->setSimWater(dropVerts);
+        }
+        // Р58: мелкая вода. Зона - от куска камеры (32 блока) на 2 куска в стороны; данные (+2 блока каймы для
+        // соседей): vb - верх глади в центре блока (у мокрого - верх воды; у сухого рядом с водой - вровень с самой
+        // низкой соседней водой или его земля, если ниже), верх земли. Блок рисуется мелкой водой, если он мокрый и
+        // гладь в 3×3 вокруг не ровная (ступень, скат) или вода быстрее 1.5 м/с; там вода кусков прячется.
+        {
+            const glm::ivec2 eb(int(std::floor(eye.x * 16.0f)), int(std::floor(eye.z * 16.0f)));
+            const auto fd = [](int v) { return v >= 0 ? v / 32 : -((-v + 31) / 32); };
+            const glm::ivec2 want((fd(eb.x) - 2) * 32, (fd(eb.y) - 2) * 32);
+            if (!fineJob.valid() && want != fineAt) {
+                fineAt = want;
+                fineJob = std::async(std::launch::async, [&tp, want, NONE] {
+                    auto f = std::make_unique<FineData>();
+                    f->origin = want;
+                    constexpr int R = FINE + 4;   // кайма 2 блока: vb каймы смотрит на соседей
+                    std::vector<int32_t> h(R * R), w(R * R);
+                    world::ColumnHeights hm;
+                    const auto fd2 = [](int v) { return v >= 0 ? v / 32 : -((-v + 31) / 32); };
+                    for (int cz = fd2(want.y - 2); cz <= fd2(want.y + FINE + 1); ++cz)
+                        for (int cx = fd2(want.x - 2); cx <= fd2(want.x + FINE + 1); ++cx) {
+                            world::columnHeights(tp, cx, cz, hm);
+                            for (int z = 0; z < 32; ++z)
+                                for (int x = 0; x < 32; ++x) {
+                                    const int i = cx * 32 + x - (want.x - 2), j = cz * 32 + z - (want.y - 2);
+                                    if (i < 0 || j < 0 || i >= R || j >= R) continue;
+                                    h[size_t(j) * R + i] = hm.h[z + 1][x + 1];
+                                    w[size_t(j) * R + i] = hm.water[z + 1][x + 1];
+                                }
+                        }
+                    constexpr int T = FINE + 2;
+                    f->vb.assign(size_t(T) * T, NONE);
+                    f->ground.assign(size_t(T) * T, 0);
+                    f->wet.assign(size_t(T) * T, 0);
+                    const auto surf = [&](int i, int j) { const size_t k = size_t(j) * R + i; return w[k] > h[k] ? float(w[k] + 1) : NONE; };
+                    for (int j = 1; j < R - 1; ++j)
+                        for (int i = 1; i < R - 1; ++i) {
+                            const size_t o = size_t(j - 1) * T + (i - 1);
+                            const float gr = float(h[size_t(j) * R + i] + 1), sv = surf(i, j);
+                            f->ground[o] = gr;
+                            f->wet[o] = sv > NONE;
+                            if (sv > NONE) { f->vb[o] = sv; continue; }
+                            float low = 1e9f;
+                            for (int dj = -1; dj <= 1; ++dj)
+                                for (int di = -1; di <= 1; ++di) { const float n = surf(i + di, j + dj); if (n > NONE) low = std::min(low, n); }
+                            if (low < 1e9f) f->vb[o] = std::min(low, gr);
+                        }
+                    // неровность глади в 3×3 у блоков зоны
+                    for (int j = 0; j < FINE; ++j)
+                        for (int i = 0; i < FINE; ++i) {
+                            float lo = 1e9f, hi = -1e9f;
+                            for (int dj = 0; dj <= 2; ++dj)
+                                for (int di = 0; di <= 2; ++di) {
+                                    const float v = f->vb[size_t(j + dj) * T + i + di];
+                                    if (v > NONE) { lo = std::min(lo, v); hi = std::max(hi, v); }
+                                }
+                            f->flat[j * FINE + i] = hi >= lo ? hi - lo : 0.0f;
+                        }
+                    return f;
+                });
+            }
+            if (fineJob.valid() && fineJob.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+                fineData = fineJob.get();
+                const FineData& f = *fineData;
+                constexpr int T = FINE + 2;
+                std::vector<float> tex(size_t(T) * T * 2);
+                for (size_t k = 0; k < size_t(T) * T; ++k) { tex[k * 2] = f.vb[k]; tex[k * 2 + 1] = f.ground[k]; }
+                std::vector<uint8_t> mask(FINE * FINE, 0);
+                std::vector<int32_t> blocks;
+                const std::vector<float>& vel = shownVel.empty() ? fieldVel : shownVel;
+                for (int j = 0; j < FINE; ++j)
+                    for (int i = 0; i < FINE; ++i) {
+                        if (!f.wet[size_t(j + 1) * T + i + 1]) continue;
+                        const int bx = f.origin.x + i, bz = f.origin.y + j;
+                        float sp = 0;
+                        const int fx = (bx >> 4) - flowAt.x, fz = (bz >> 4) - flowAt.y;
+                        if (!vel.empty() && fx >= 0 && fz >= 0 && fx < FLOW_SIZE && fz < FLOW_SIZE)
+                            sp = std::hypot(vel[(size_t(fz) * FLOW_SIZE + fx) * 2], vel[(size_t(fz) * FLOW_SIZE + fx) * 2 + 1]);
+                        if (f.flat[j * FINE + i] < 1.0f / 32.0f && sp < 1.5f) continue;
+                        mask[size_t(j) * FINE + i] = 1;
+                        blocks.push_back(bx);
+                        blocks.push_back(bz);
+                    }
+                gpu->setFineWater(f.origin, FINE, tex, mask, blocks);
+                simArea = glm::vec4(float(f.origin.x) / 16.0f, float(f.origin.y) / 16.0f, float(FINE) / 16.0f, 1.0f);
+                journal::info("вода", "мелкая вода: зона ({}, {}), блоков {}", f.origin.x, f.origin.y, blocks.size() / 2);
+            }
         }
         frame.reset();
         frame.clear(sky);
