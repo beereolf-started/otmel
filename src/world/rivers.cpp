@@ -437,13 +437,13 @@ Hit nearestOnPath(const RiverPath& r, int64_t x, int64_t z, int64_t limit2) {
     return best;
 }
 
-// Р32: обход «оснований перпендикуляров» на русле ближе предела: visit(ребро, квадрат расстояния, доля t вдоль
-// ребра Q16). Ребро даёт точку, только если перпендикуляр из столбца падает на него; вершина - только если столбец
-// в клине снаружи изгиба (за концом одного ребра и до начала следующего) или за концом русла. Так долина
-// считается поперёк русла, а не конусом во все стороны: у ручья круче стенок долина нижнего участка не
-// прорезает русло выше по течению. Непрерывно: на границе ребра и клина основание - сама вершина.
+// Р32: обход рёбер русла ближе предела: visit(ребро, квадрат расстояния до ребра, u) - u - место на русле (путь
+// от начала, воксели), с которого берётся уровень для этого ребра. Расстояние - обычное (до отрезка): непрерывно.
+// Уровень: на ребре - в проекции точки; ДО начала ребра - выше по течению, в проекции на продолжение ребра назад
+// (у начала русла - уровень истока): долина нижнего участка не прорезает русло выше по течению ниже его воды
+// (у ручья круче стенок она осушала бы русло), а функция остаётся непрерывной; за концом ребра - уровень конца.
 // reach(low) - дальше какого расстояния участок с нижним уровнем low столбец точно не меняет; блоки групп и
-// группы, чьи рамки дальше, не смотрятся (вершина на стыке групп - в рамках обеих).
+// группы, чьи рамки дальше, не смотрятся.
 template <class Reach, class Visit>
 void forEdges(const RiverPath& r, int g0, int g1, int64_t x, int64_t z, Reach reach, Visit visit) {
     if (r.x.size() == 1) {
@@ -453,10 +453,6 @@ void forEdges(const RiverPath& r, int g0, int g1, int64_t x, int64_t z, Reach re
         return;
     }
     const size_t nv = r.x.size();
-    // проекция столбца на ребро e: < 0 - до начала, > |ребра|² - за концом
-    const auto proj = [&](size_t e) {
-        return (x - r.x[e]) * (r.x[e + 1] - r.x[e]) + (z - r.z[e]) * (r.z[e + 1] - r.z[e]);
-    };
     for (int g = g0; g <= g1; ++g) {
         if (g % RiverPath::SUPER == 0 || g == g0) {   // начало блока групп: весь блок дальше предела - мимо
             const size_t sbi = size_t(g / RiverPath::SUPER);
@@ -471,25 +467,16 @@ void forEdges(const RiverPath& r, int g0, int g1, int64_t x, int64_t z, Reach re
         if (bx * bx + bz * bz >= limit2) continue;
         const size_t e1 = std::min(size_t(g) * RiverPath::GROUP + RiverPath::GROUP, nv - 1);
         for (size_t e = size_t(g) * RiverPath::GROUP; e < e1; ++e) {
-            const int64_t ex = r.x[e + 1] - r.x[e], ez = r.z[e + 1] - r.z[e];
-            const int64_t len2 = ex * ex + ez * ez;
-            const int64_t pr = proj(e);
-            if (len2 > 0 && pr >= 0 && pr <= len2) {   // перпендикуляр на ребро
-                const int64_t t = (pr << 16) / len2;
-                const int64_t dx = x - r.x[e] - ((ex * t) >> 16), dz = z - r.z[e] - ((ez * t) >> 16);
-                const int64_t d2 = dx * dx + dz * dz;
-                if (d2 < limit2) visit(e, d2, t);
-            } else if (len2 == 0 || pr < 0) {          // до начала ребра: вершина e, если за концом предыдущего
-                if (e == 0 || proj(e - 1) > (r.x[e] - r.x[e - 1]) * (r.x[e] - r.x[e - 1]) + (r.z[e] - r.z[e - 1]) * (r.z[e] - r.z[e - 1])) {
-                    const int64_t dx = x - r.x[e], dz = z - r.z[e];
-                    if (dx * dx + dz * dz < limit2) visit(e, dx * dx + dz * dz, 0);
-                }
-            } else {                                   // за концом ребра: вершина e+1, если до начала следующего
-                if (e + 2 >= nv || proj(e + 1) < 0) {
-                    const int64_t dx = x - r.x[e + 1], dz = z - r.z[e + 1];
-                    if (dx * dx + dz * dz < limit2) visit(e, dx * dx + dz * dz, fx::ONE);
-                }
-            }
+            const int64_t ex = r.x[e + 1] - r.x[e], ez = r.z[e + 1] - r.z[e], px = x - r.x[e], pz = z - r.z[e];
+            const int64_t len2 = ex * ex + ez * ez, el = r.cum[e + 1] - r.cum[e];
+            const int64_t pr = px * ex + pz * ez;
+            int64_t t = 0;
+            if (len2 > 0) t = std::clamp<int64_t>((pr << 16) / len2, 0, fx::ONE);
+            const int64_t dx = px - ((ex * t) >> 16), dz = pz - ((ez * t) >> 16);
+            const int64_t d2 = dx * dx + dz * dz;
+            if (d2 >= limit2) continue;
+            const int64_t s = el > 0 ? pr / el : 0;   // проекция на ребро, воксели (до начала - меньше нуля)
+            visit(e, d2, std::max<int64_t>(0, r.cum[e] + std::min(s, el)));
         }
     }
 }
@@ -725,11 +712,15 @@ void RiverSet::apply(const TerrainParams& p, int32_t x, int32_t z, int32_t& h, i
         };
         int64_t best = INT64_MAX, bestD = INT64_MAX, minD = INT64_MAX;
         int32_t bestLw = 0;
-        const auto visit = [&](size_t e, int64_t d2, int64_t t) {
+        const auto visit = [&](size_t e, int64_t d2, int64_t u) {
             const int64_t d = int64_t(isqrt(uint64_t(d2)));
             minD = std::min(minD, d);
-            const int32_t raw = path.run.size() == 1 ? path.run[0]
-                                                     : path.run[e] + int32_t((int64_t(path.run[e + 1] - path.run[e]) * t) >> 16);
+            int32_t raw;
+            if (path.run.size() == 1) raw = path.run[0];
+            else if (u >= path.cum[e]) {   // на ребре - между его вершинами
+                const int64_t el = std::max<int64_t>(1, path.cum[e + 1] - path.cum[e]);
+                raw = path.run[e] + int32_t(int64_t(path.run[e + 1] - path.run[e]) * (u - path.cum[e]) / el);
+            } else raw = runAt(path, u);   // до начала ребра - выше по течению
             const int32_t lw = stepLevel(raw);
             const int64_t f = carve(d, lw, raw);
             if (f < best || (f == best && d < bestD)) { best = f; bestD = d; bestLw = lw; }
