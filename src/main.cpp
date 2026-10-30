@@ -231,6 +231,15 @@ int main(int argc, char** argv) {
         return g - 3;
     };
     for (OakSpot& o : oaks) o.y = oakBase(o.x, o.z);
+    // эталон размеров (--ruler X Z): куб ровно в блок (16³ вокселей древесины), на нём ступенька в 1 воксель
+    // и столбик из 16 чередующихся вокселей (кора / листва) - высота блока по вокселям
+    glm::ivec3 ruler(INT32_MIN);
+    for (int i = 1; i + 2 < argc; ++i)
+        if (std::string(argv[i]) == "--ruler") {
+            ruler.x = int32_t(std::floor(std::stof(argv[i + 1]))) * 16;
+            ruler.z = int32_t(std::floor(std::stof(argv[i + 2]))) * 16;
+            ruler.y = world::reliefAt(tp, ruler.x + 8, ruler.z + 8).height + 1;
+        }
     const auto buildOaks = [&] {
         for (const OakMesh& m : oakMeshes) gpu->destroyMesh(m.mesh);
         oakMeshes.clear();
@@ -281,6 +290,40 @@ int main(int argc, char** argv) {
         }
     };
     if (!oaks.empty()) buildOaks();
+    if (ruler.x != INT32_MIN) {
+        static world::ColumnHeights air;
+        for (auto& row : air.h) for (int32_t& v : row) v = INT32_MIN / 4;
+        for (auto& row : air.water) for (int32_t& v : row) v = world::NO_WATER;
+        const auto fdiv = [](int32_t v) { return v >= 0 ? v / world::CHUNK : -((-v + world::CHUNK - 1) / world::CHUNK); };
+        const auto solid = [&](int32_t x, int32_t y, int32_t z) -> world::Material {
+            const int32_t lx = x - ruler.x, ly = y - ruler.y, lz = z - ruler.z;
+            if (lx >= 0 && lx < 16 && lz >= 0 && lz < 16 && ly >= 0 && ly < 16) return world::WOOD;          // блок
+            if (lx == 7 && lz == 7 && ly == 16) return world::LEAVES;                                          // 1 воксель
+            if (lx == 20 && lz == 7 && ly >= 0 && ly < 16) return (ly & 1) ? world::LEAVES : world::BARK;      // 16 вокселей
+            return world::AIR;
+        };
+        auto c = std::make_unique<world::Chunk>();
+        std::vector<uint32_t> verts;
+        for (int32_t cy = fdiv(ruler.y); cy <= fdiv(ruler.y + 17); ++cy)
+            for (int32_t cz = fdiv(ruler.z); cz <= fdiv(ruler.z + 16); ++cz)
+                for (int32_t cx = fdiv(ruler.x); cx <= fdiv(ruler.x + 21); ++cx) {
+                    c->pos = {cx, cy, cz};
+                    c->edited = true;
+                    bool any = false;
+                    for (int y = 0; y < world::CHUNK; ++y)
+                        for (int z = 0; z < world::CHUNK; ++z)
+                            for (int x = 0; x < world::CHUNK; ++x) {
+                                const world::Material m = solid(cx * 32 + x, cy * 32 + y, cz * 32 + z);
+                                c->at(x, y, z) = m;
+                                any |= m != world::AIR;
+                            }
+                    if (!any) continue;
+                    world::MeshStats ms;
+                    world::buildMesh(*c, air, verts, ms);
+                    if (!verts.empty()) oakMeshes.push_back({gpu->uploadChunkMesh(verts, 0), glm::ivec3(cx, cy, cz) * world::CHUNK});
+                }
+        journal::info("эталон", "куб в блок у ({}, {}, {}) воксели", ruler.x, ruler.y, ruler.z);
+    }
     if (!shot) SDL_SetWindowRelativeMouseMode(window, true);
     // в режиме снимка - без ожидания обновления экрана: замер времени кадра не упирается в 60 Гц
     if (shot) SDL_GL_SetSwapInterval(0);
