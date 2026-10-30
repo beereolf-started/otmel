@@ -236,6 +236,13 @@ int main(int argc, char** argv) {
     sim.keepChannel = true;
     bool simOn = false;
     std::vector<float> fieldVel, shownVel, simVerts;
+    // Р52: брызги и капли - воксели у камеры: рождаются на быстрой воде (скаты, пороги, водопады), летят по
+    // течению и вверх, падают и пропадают
+    struct Drop { glm::vec3 p, v; float life; };
+    std::vector<Drop> drops;
+    std::vector<float> flowGround, flowSurface, dropVerts;
+    uint32_t dropRng = 0x9E3779B9u;
+    const auto rnd = [&dropRng] { dropRng ^= dropRng << 13; dropRng ^= dropRng >> 17; dropRng ^= dropRng << 5; return float(dropRng >> 8) / 16777216.0f; };
     int simFrame = 0;
     glm::vec4 simArea(0.0f);
     double sumMs = 0;
@@ -297,6 +304,8 @@ int main(int argc, char** argv) {
             if (flowJob.valid() && flowJob.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
                 FlowData f = flowJob.get();
                 fieldVel = std::move(f.vel);
+                flowGround = f.ground;
+                flowSurface = f.surface;
                 gpu->updateFlowField(FLOW_SIZE, fieldVel);
                 flowAt = flowPending;
                 flowArea = glm::vec4(float(flowAt.x), float(flowAt.y), float(FLOW_SIZE), 0.0f);
@@ -327,6 +336,61 @@ int main(int argc, char** argv) {
                     gpu->updateFlowField(FLOW_SIZE, shownVel);
                 }
             }
+        }
+        // Р52: брызги - на блоках у камеры (40 блоков), где вода быстрее 2.5 блока/с; на перепадах (вода у соседа
+        // ниже по течению ниже на полблока) - вчетверо чаще. Скорость - по течению, вбок и вверх по скорости;
+        // тяжесть 18 блоков/с² (взлёт до ~1.3 блока); живут 0.3..0.7 с, падая обратно в воду - пропадают
+        if (!flowGround.empty()) {
+            const std::vector<float>& vel = shownVel.empty() ? fieldVel : shownVel;
+            const float hdt = std::min(dt, 0.05f);
+            const int ex = int(std::floor(eye.x)) - flowAt.x, ez = int(std::floor(eye.z)) - flowAt.y;
+            constexpr int R = 40;
+            for (int z = std::max(0, ez - R); z < std::min(FLOW_SIZE, ez + R); ++z)
+                for (int x = std::max(0, ex - R); x < std::min(FLOW_SIZE, ex + R); ++x) {
+                    const size_t k = size_t(z) * FLOW_SIZE + x;
+                    const float sf = flowSurface[k];
+                    if (sf <= flowGround[k] + 0.05f) continue;
+                    const float vx = vel[k * 2], vz = vel[k * 2 + 1], sp = std::sqrt(vx * vx + vz * vz);
+                    if (sp < 2.5f) continue;
+                    float rate = (sp - 2.5f) * 1.5f;
+                    const int dx = x + int(std::round(vx / sp)), dz = z + int(std::round(vz / sp));
+                    if (dx >= 0 && dz >= 0 && dx < FLOW_SIZE && dz < FLOW_SIZE && flowSurface[size_t(dz) * FLOW_SIZE + dx] < sf - 0.5f) rate *= 4.0f;
+                    if (rnd() >= rate * hdt || drops.size() >= 4000) continue;
+                    const float up = (1.0f + 2.0f * rnd()) * std::min(1.5f, sp / 6.0f);
+                    drops.push_back({glm::vec3(float(flowAt.x + x) + rnd(), sf + 0.05f, float(flowAt.y + z) + rnd()),
+                                     glm::vec3(vx * 0.35f + (rnd() - 0.5f) * 0.8f, up * 1.5f, vz * 0.35f + (rnd() - 0.5f) * 0.8f),
+                                     0.3f + 0.4f * rnd()});
+                }
+            for (Drop& d : drops) {
+                d.v.y -= 18.0f * hdt;
+                d.p += d.v * hdt;
+                d.life -= hdt;
+                const int bx = int(std::floor(d.p.x)) - flowAt.x, bz = int(std::floor(d.p.z)) - flowAt.y;
+                if (d.v.y < 0 && bx >= 0 && bz >= 0 && bx < FLOW_SIZE && bz < FLOW_SIZE &&
+                    d.p.y < std::max(flowSurface[size_t(bz) * FLOW_SIZE + bx], flowGround[size_t(bz) * FLOW_SIZE + bx]))
+                    d.life = 0;
+            }
+            std::erase_if(drops, [](const Drop& d) { return d.life <= 0; });
+            // воксель капли - три грани к камере (нормаль + 6: шейдер рисует её брызгами)
+            dropVerts.clear();
+            constexpr float S = 1.0f / 16.0f;
+            for (const Drop& d : drops) {
+                const glm::vec3 b = glm::floor(d.p * 16.0f) / 16.0f;   // по сетке вокселей
+                for (int ax = 0; ax < 3; ++ax) {
+                    const bool plus = eye[ax] > b[ax] + S * 0.5f;
+                    const float n = float(ax * 2 + (plus ? 0 : 1) + 6);
+                    const int u = (ax + 1) % 3, w = (ax + 2) % 3;
+                    glm::vec3 c[4];
+                    for (int q = 0; q < 4; ++q) {
+                        c[q] = b;
+                        c[q][ax] += plus ? S : 0.0f;
+                        c[q][u] += (q == 1 || q == 2) ? S : 0.0f;
+                        c[q][w] += (q >= 2) ? S : 0.0f;
+                    }
+                    for (int q : {0, 1, 2, 0, 2, 3}) dropVerts.insert(dropVerts.end(), {c[q].x, c[q].y, c[q].z, n});
+                }
+            }
+            gpu->setSimWater(dropVerts);
         }
         frame.reset();
         frame.clear(sky);

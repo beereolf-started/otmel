@@ -26,9 +26,12 @@ const vec3 NORMALS[6] = vec3[](vec3(1, 0, 0), vec3(-1, 0, 0), vec3(0, 1, 0), vec
 void main() {
     gl_Position = viewProj * vec4(aPos.xyz, 1.0);
     uint n = uint(aPos.w + 0.5);
+    // Р52: нормаль 6..11 - воксель брызг (капли над быстрой водой): белая пена
+    bool spray = n >= 6u;
+    if (spray) n -= 6u;
     float light = 0.35 + 0.65 * max(dot(NORMALS[n], normalize(sunDir.xyz)), 0.0);
-    vColor = vec4(WATER * light, 0.55);
+    vColor = spray ? vec4(vec3(0.86, 0.92, 0.97) * (0.6 + 0.4 * light), 0.85) : vec4(WATER * light, 0.55);
     vWorld = aPos.xyz;
     vNormal = n;
-    vWater = 2u;   // вода автомата - в зоне автомата не прячется
+    vWater = spray ? 3u : 2u;   // 2 - вода автомата (Р45), 3 - брызги
 }
