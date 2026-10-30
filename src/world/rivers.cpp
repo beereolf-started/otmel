@@ -12,8 +12,8 @@ namespace world {
 namespace {
 
 constexpr int64_t CELL = int64_t(1) << RIVER_CELL_LOG2;
-constexpr int WINDOW = 8;                                   // окно водосбора 17×17 узлов
-constexpr int CHAIN = 16;                                   // не дальше 16 звеньев
+constexpr int WINDOW = 16;                                  // Р36: окно водосбора 33×33 узла (~66 км)
+constexpr int CHAIN = 32;                                   // не дальше 32 звеньев
 constexpr int32_t AREA_MIN = 1;                             // Р31: ручей - с первого узла водосбора
 constexpr int32_t LAKE_AREA_MIN = 3;                        // озеро - с 3 узлов
 constexpr int32_t VALLEY_CAP = 400 * VOXELS_PER_BLOCK;      // долина по глубине прорези - не шире на столько

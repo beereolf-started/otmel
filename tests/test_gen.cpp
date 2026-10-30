@@ -39,6 +39,17 @@ static int g_fail = 0;
         else { std::printf("НЕ ГОДЕН  %s\n", what); ++g_fail; }      \
     } while (0)
 
+// Р36: у начала мира - океан (континенты в океане); кусок на суше - от точки старта вглубь материка (на запад)
+static void landChunk(const world::TerrainParams& p, int& cx, int& cz) {
+    cx = -12450 / 2;
+    cz = 23560 / 2;
+    world::ColumnHeights hm;
+    for (int k = 0; k < 400; ++k, cx -= 25) {
+        world::columnHeights(p, cx, cz, hm);
+        if (hm.minH > p.seaLevel + 16 * world::VOXELS_PER_BLOCK) return;
+    }
+}
+
 static uint64_t chunkSum(const world::TerrainParams& p, int cx, int cy, int cz) {
     world::ColumnHeights hm;
     world::columnHeights(p, cx, cz, hm);
@@ -174,20 +185,23 @@ int main() {
 
     // воспроизводимость: один и тот же кусок - одна и та же сумма, в том числе на отрицательных координатах
     world::TerrainParams p;
-    // кусок, через который проходит поверхность (а не сплошной воздух или камень - те у любых зёрен одинаковы)
+    // кусок, через который проходит поверхность (а не сплошной воздух или камень - те у любых зёрен одинаковы),
+    // на суше (Р36: у начала мира - океан, дно у разных зёрен может совпасть)
+    int lx, lz;
+    landChunk(p, lx, lz);
     int cy0;
     {
         world::ColumnHeights hm;
-        world::columnHeights(p, 3, -5, hm);
+        world::columnHeights(p, lx, lz, hm);
         cy0 = hm.maxH >> world::CHUNK_LOG2;
     }
-    const uint64_t a = chunkSum(p, 3, cy0, -5), b = chunkSum(p, 3, cy0, -5);
+    const uint64_t a = chunkSum(p, lx, cy0, lz), b = chunkSum(p, lx, cy0, lz);
     CHECK(a == b, "кусок из одного зерна дважды - одинаков");
     world::TerrainParams q = p;
     q.seed = p.seed + 1;
-    CHECK(chunkSum(q, 3, cy0, -5) != a, "другое зерно - другой кусок");
+    CHECK(chunkSum(q, lx, cy0, lz) != a, "другое зерно - другой кусок");
     // Эта сумма должна совпадать в отладочной и быстрой сборке и на любой машине (Р2, Р16)
-    std::printf("сумма куска (3,%d,-5) при зерне 1337: %016llx\n", cy0, static_cast<unsigned long long>(a));
+    std::printf("сумма куска (%d,%d,%d) при зерне 1337: %016llx\n", lx, cy0, lz, static_cast<unsigned long long>(a));
     {
         // горный кусок у самой высокой вершины округи (ищем сами - тест не зависит от того, где сейчас горы):
         // хребты, симплекс, пояс цепи, смешение весов, климат и снег - тоже до бита
@@ -334,12 +348,14 @@ int main() {
         int64_t airVox = 0, allVox = 0, shallowAir = 0, shallowAll = 0;
         std::vector<uint32_t> mesh;
         world::MeshStats ms;
+        int clx, clz;
+        landChunk(tp, clx, clz);   // Р36: на суше - у начала мира океан
         for (int cz = -6; cz < 6 && checked < 40; ++cz)
             for (int cx = -6; cx < 6 && checked < 40; ++cx) {
-                world::columnHeights(tp, cx * 7, cz * 7, hm);
+                world::columnHeights(tp, clx + cx * 7, clz + cz * 7, hm);
                 const int cyLo = (hm.minH - 1) >> world::CHUNK_LOG2;
                 for (int cy = cyLo - 20; cy <= cyLo; ++cy) {
-                    const world::ChunkPos pos{cx * 7, cy, cz * 7};
+                    const world::ChunkPos pos{clx + cx * 7, cy, clz + cz * 7};
                     if (!world::caveAir(tp, pos, hm, air)) {
                         // без пещер: все воксели под поверхностью - камень (для честной доли пустот)
                         for (int z = 1; z <= world::CHUNK; ++z)
