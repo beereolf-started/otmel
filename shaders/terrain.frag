@@ -21,7 +21,14 @@ layout(binding = 1) uniform sampler2D uFlow;         // Р43: скорость �
 layout(binding = 2) uniform sampler2D uSceneDepth;   // Р51: глубина сцены без воды
 
 // шум для ряби: значения в узлах решётки, между ними - плавно
-float hash(vec2 q) { return fract(sin(dot(q, vec2(127.1, 311.7))) * 43758.5453); }
+// Р55: хеш - целочисленный: sin от мировых координат (сотни тысяч блоков, Р54) теряет точность - рябь
+// превращалась в «снег» по текселю
+float hash(vec2 q) {
+    uvec2 u = uvec2(ivec2(floor(q)));
+    uint h = u.x * 0x8DA6B343u ^ u.y * 0xD8163841u;
+    h ^= h >> 13; h *= 0x5BD1E995u; h ^= h >> 15;
+    return float(h & 0xFFFFFFu) / 16777215.0;
+}
 float valueNoise(vec2 q) {
     vec2 i = floor(q), f = fract(q);
     f = f * f * (3.0 - 2.0 * f);

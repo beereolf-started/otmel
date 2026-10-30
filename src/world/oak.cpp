@@ -79,9 +79,9 @@ struct Grower {
     // ветвь от узла from: шагами, направление блуждает (κ), тянется вверх (φ), длинная провисает (σ)
     void branch(int from, V3 dir, float length, int order, bool root, bool stub = false) {
         static constexpr float STEP[5] = {6, 5, 4, 3, 3};
-        static constexpr float KAPPA[5] = {0.18f, 0.5f, 0.6f, 0.7f, 0.7f};
-        static constexpr float PHI[5] = {0.45f, 0.24f, 0.17f, 0.16f, 0.16f};
-        static constexpr float SAG[5] = {0, 0.12f, 0.10f, 0.05f, 0.05f};
+        static constexpr float KAPPA[5] = {0.12f, 0.32f, 0.42f, 0.55f, 0.55f};
+        static constexpr float PHI[5] = {0.45f, 0.3f, 0.24f, 0.2f, 0.2f};
+        static constexpr float SAG[5] = {0, 0.06f, 0.05f, 0.03f, 0.03f};
         static constexpr float FORK[5] = {0, 0.5f, 0.6f, 0, 0};       // отвод на шаг
         const float step = STEP[std::min(order, 4)];
         const int n = std::max(1, int(length / step + 0.5f));
@@ -105,12 +105,12 @@ struct Grower {
                 const float a = rng.r(0.75f, 1.3f);   // 43..75°
                 const V3 cd = aside(dir, a);
                 if (!root && rng.f() < 0.12f)
-                    branch(at, cd, rng.r(6, 18), order + 1, false, true);   // обломанный сучок
+                    branch(at, cd, rng.r(4, 9), order + 1, false, true);   // обломанный сучок
                 else if (root)
                     branch(at, cd, length * (1 - t) * rng.r(0.4f, 0.7f), order + 1, true);
                 else
-                    branch(at, norm(cd + UP * (order == 1 ? 0.25f : 0.1f)),
-                           order == 1 ? rng.r(34, 66) : rng.r(12, 26), order + 1, false);
+                    branch(at, norm(cd + UP * (order == 1 ? 0.3f : 0.15f)),
+                           order == 1 ? rng.r(16, 28) : rng.r(6, 12), order + 1, false);
             }
         }
     }
@@ -118,7 +118,7 @@ struct Grower {
     void grow() {
         // ствол: низкий, с лёгким наклоном; комель - узел 0
         const int base = add({0, 0, 0}, -1, 0, false, false);
-        const float bole = rng.r(48, 90);
+        const float bole = rng.r(46, 58);   // 2.9-3.6 блока до развилки
         V3 d = norm(UP + V3{rng.r(-0.15f, 0.15f), 0, rng.r(-0.15f, 0.15f)});
         const int n = int(bole / 6);
         int at = base;
@@ -126,18 +126,18 @@ struct Grower {
         V3 w = norm(cross(d, rng.unit()));
         for (int i = 0; i < n; ++i) {
             w = norm(w * 0.7f + rng.unit() * 0.5f);
-            d = norm(d + w * 0.18f + UP * 0.35f);
+            d = norm(d + w * 0.1f + UP * 0.45f);   // ствол - ясный столб (удобно рубить)
             p = p + d * 6;
             at = add(p, at, 0, false, false);
-            if (i > 1 && i < n - 1 && rng.f() < 0.12f) branch(at, aside(d, 1.2f), rng.r(6, 14), 1, false, true);
+            if (i > 1 && i < n - 1 && rng.f() < 0.1f) branch(at, aside(d, 1.2f), rng.r(4, 8), 1, false, true);
         }
         // развилка: 2-4 сука врозь от вертикали
-        const int limbs = 2 + int(rng.f() * 3);
+        const int limbs = 2 + int(rng.f() * 2);
         const float az0 = rng.r(0, 6.283f);
         for (int k = 0; k < limbs; ++k) {
-            const float az = az0 + 6.283f * k / limbs + rng.r(-0.4f, 0.4f), a = rng.r(0.45f, 0.85f);
+            const float az = az0 + 6.283f * k / limbs + rng.r(-0.4f, 0.4f), a = rng.r(0.35f, 0.7f);
             const V3 ld = norm(UP * std::cos(a) + V3{std::cos(az), 0, std::sin(az)} * std::sin(a));
-            branch(at, ld, rng.r(80, 140), 1, false);
+            branch(at, ld, rng.r(58, 76), 1, false);
         }
         // корни: от комля наружу и вниз
         const int roots = 4 + int(rng.f() * 3);
@@ -145,13 +145,13 @@ struct Grower {
         for (int k = 0; k < roots; ++k) {
             const float az = 6.283f * k / roots + rng.r(-0.35f, 0.35f), b = rng.r(0.26f, 0.6f);
             const V3 rd = norm(V3{std::cos(az), 0, std::sin(az)} * std::cos(b) + UP * -std::sin(b));
-            branch(collar == 1 ? 1 : 0, rd, rng.r(40, 90), 1, true);
+            branch(collar == 1 ? 1 : 0, rd, rng.r(16, 34), 1, true);
         }
     }
 
     // толщина: правило Леонардо, от кончиков к комлю (дети всегда после родителя); комель расширен
     void radii() {
-        constexpr float E = 2.2f, TIP = 1.0f, ROOT_TIP = 1.2f;
+        constexpr float E = 2.5f, TIP = 0.85f, ROOT_TIP = 1.0f;   // Р57: молодой дуб - тоньше
         std::vector<float> acc(nodes.size(), 0.0f);
         for (size_t i = nodes.size(); i-- > 0;) {
             Node& nd = nodes[i];
@@ -160,7 +160,7 @@ struct Grower {
             if (nd.parent >= 0) acc[size_t(nd.parent)] += std::pow(nd.r, E);
         }
         for (Node& nd : nodes)
-            if (!nd.root && nd.order == 0) nd.r *= 1.0f + 0.7f * std::exp(-std::max(0.0f, nd.p.y) / 10.0f);
+            if (!nd.root && nd.order == 0) nd.r *= 1.0f + 0.3f * std::exp(-std::max(0.0f, nd.p.y) / 5.0f);
     }
 };
 
@@ -175,8 +175,8 @@ void growOak(uint32_t seed, OakVoxels& out) {
     struct Blob { V3 c; float r; };
     std::vector<Blob> blobs;
     for (const Node& nd : g.nodes)
-        if (nd.children == 0 && !nd.root && !nd.stub && nd.order >= 2)
-            blobs.push_back({nd.p + UP * g.rng.r(1, 4) + g.rng.unit() * 2.0f, g.rng.r(8, 14)});
+        if (!nd.root && !nd.stub && nd.order >= 2 && (nd.children == 0 || g.rng.f() < 0.35f))
+            blobs.push_back({nd.p + UP * g.rng.r(1, 3) + g.rng.unit() * 1.5f, nd.children == 0 ? g.rng.r(8, 12) : g.rng.r(6, 9)});
     // рамка
     float lo[3] = {1e9f, 1e9f, 1e9f}, hi[3] = {-1e9f, -1e9f, -1e9f};
     const auto grow = [&](V3 p, float r) {
@@ -227,7 +227,7 @@ void growOak(uint32_t seed, OakVoxels& out) {
                     const V3 q{x + 0.5f, y + 0.5f, z + 0.5f};
                     const float d = len(q - bl.c);
                     if (d > bl.r * (0.8f + 0.35f * noise3(q * 0.25f, ns ^ 0xA5A5u))) continue;
-                    if (noise3(q * 0.6f, ns ^ 0x5A5Au) > 0.2f) continue;   // просветы
+                    if (noise3(q * 0.6f, ns ^ 0x5A5Au) > 0.38f) continue;   // просветы (реже - крона плотная)
                     const size_t k = idx(x, y, z);
                     // два оттенка листвы пятнами
                     if (out.v[k] == AIR) out.v[k] = noise3(q * 0.15f, ns ^ 0x3C3Cu) > 0.1f ? LEAVES2 : LEAVES;
