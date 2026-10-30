@@ -199,9 +199,9 @@ int main(int argc, char** argv) {
     FarTerrain farTerrain(*gpu, builder);
 
     // Камера: в блоках. Мышь - взгляд, WASD - движение, пробел/Ctrl - вверх/вниз, Shift - быстрее,
-    // колесо - скорость, L - раскраска дальних уровней, Esc - выход. Старт - в 40 блоках над землёй.
+    // колесо - скорость, L - раскраска дальних уровней, Esc - выход. Старт - в 48 блоках мира над землёй (Р54: 3 прежних).
     const float ground = float(world::reliefAt(tp, int32_t(atX * 16), int32_t(atZ * 16)).height) / world::VOXELS_PER_BLOCK;
-    glm::vec3 eye(atX, ground + 40.0f, atZ);
+    glm::vec3 eye(atX, ground + 3.0f, atZ);
     float yaw = -0.6f, pitch = -0.35f, speedScale = 1.0f;
     int debug = 0;
     for (int i = 1; i + 5 < argc; ++i)
@@ -210,12 +210,13 @@ int main(int argc, char** argv) {
             yaw = std::stof(argv[i + 4]);
             pitch = std::stof(argv[i + 5]);
         }
-    // Р53: дубы-коряги для просмотра: левая кнопка - новый дуб в 20 блоках перед камерой, правая - убрать все,
+    // Р53: дубы-коряги для просмотра: левая кнопка - новый дуб в 32 блоках перед камерой, правая - убрать все,
     // R - корни под землёй прятать / показывать. Сетка - кусками 32³ поверх мира (в мир пока не вписаны).
     struct OakSpot { int32_t x, y, z; uint32_t seed; };
-    struct OakMesh { render::MeshId mesh; glm::ivec3 origin; };
+    struct OakMesh { render::MeshId mesh; glm::ivec3 base, fineOff; };
     std::vector<OakSpot> oaks;
     std::vector<OakMesh> oakMeshes;
+    std::vector<std::pair<render::MeshId, glm::ivec3>> rulerMeshes;
     bool hideRoots = true;
     uint32_t oakSeed = 1;
     for (int i = 1; i + 3 < argc; ++i)
@@ -226,9 +227,9 @@ int main(int argc, char** argv) {
     // основание - на самой низкой земле под комлем (не висит над склоном), чуть утоплено
     const auto oakBase = [&](int32_t x, int32_t z) {
         int32_t g = INT32_MAX;
-        for (const auto [dx, dz] : {std::pair{0, 0}, {10, 0}, {-10, 0}, {0, 10}, {0, -10}})
+        for (const auto [dx, dz] : {std::pair{0, 0}, {2, 0}, {-2, 0}, {0, 2}, {0, -2}})
             g = std::min(g, world::reliefAt(tp, x + dx, z + dz).height);
-        return g - 3;
+        return g + 1;
     };
     for (OakSpot& o : oaks) o.y = oakBase(o.x, o.z);
     // эталон размеров (--ruler X Z): куб ровно в блок (16³ вокселей древесины), на нём ступенька в 1 воксель
@@ -240,40 +241,59 @@ int main(int argc, char** argv) {
             ruler.z = int32_t(std::floor(std::stof(argv[i + 2]))) * 16;
             ruler.y = world::reliefAt(tp, ruler.x + 8, ruler.z + 8).height + 1;
         }
+    // Р56: дуб - из мелких вокселей (1/16 блока): основа - блок над землёй под комлем, куски 32³ мелких вокселей
+    // (2×2×2 блока) - от основы; корни прячутся, где мелкий воксель внутри блока земли
     const auto buildOaks = [&] {
         for (const OakMesh& m : oakMeshes) gpu->destroyMesh(m.mesh);
         oakMeshes.clear();
         static world::ColumnHeights air;
         for (auto& row : air.h) for (int32_t& v : row) v = INT32_MIN / 4;
         for (auto& row : air.water) for (int32_t& v : row) v = world::NO_WATER;
-        const auto fdiv = [](int32_t v) { return v >= 0 ? v / world::CHUNK : -((-v + world::CHUNK - 1) / world::CHUNK); };
+        const auto fdiv = [](int32_t v, int32_t d) { return v >= 0 ? v / d : -((-v + d - 1) / d); };
+        std::unordered_map<int64_t, int32_t> groundOf;   // верх земли блока-столбца (кэш)
+        const auto groundAt = [&](int32_t bx, int32_t bz) {
+            const int64_t key = (int64_t(bx) << 32) ^ uint32_t(bz);
+            if (auto it = groundOf.find(key); it != groundOf.end()) return it->second;
+            world::ColumnHeights hm;
+            const int32_t cx = fdiv(bx, world::CHUNK), cz = fdiv(bz, world::CHUNK);
+            world::columnHeights(tp, cx, cz, hm);
+            for (int z = 0; z < world::CHUNK; ++z)
+                for (int x = 0; x < world::CHUNK; ++x)
+                    groundOf[(int64_t(cx * world::CHUNK + x) << 32) ^ uint32_t(cz * world::CHUNK + z)] = hm.h[z + 1][x + 1];
+            return groundOf[key];
+        };
+        constexpr int SINK = 3;   // комель утоплен на 3 мелких вокселя
         for (const OakSpot& o : oaks) {
             const auto t0 = clock_t_::now();
             world::OakVoxels ov;
             world::growOak(o.seed, ov);
-            const int32_t wx0 = o.x + ov.x0, wy0 = o.y + ov.y0, wz0 = o.z + ov.z0;
+            const glm::ivec3 base(o.x, o.y, o.z);   // блок-основа: верх земли + 1
             int quads = 0, hidden = 0;
             auto c = std::make_unique<world::Chunk>();
-            world::ColumnHeights ground;
             std::vector<uint32_t> verts;
-            for (int32_t cz = fdiv(wz0); cz <= fdiv(wz0 + ov.sz - 1); ++cz)
-                for (int32_t cx = fdiv(wx0); cx <= fdiv(wx0 + ov.sx - 1); ++cx) {
-                    if (hideRoots) world::columnHeights(tp, cx, cz, ground);
-                    for (int32_t cy = fdiv(wy0); cy <= fdiv(wy0 + ov.sy - 1); ++cy) {
+            // мелкие воксели от основы: f = local + (x0, y0 - SINK, z0)
+            const int fx0 = ov.x0, fy0 = ov.y0 - SINK, fz0 = ov.z0;
+            for (int cz = fdiv(fz0, 32); cz <= fdiv(fz0 + ov.sz - 1, 32); ++cz)
+                for (int cx = fdiv(fx0, 32); cx <= fdiv(fx0 + ov.sx - 1, 32); ++cx)
+                    for (int cy = fdiv(fy0, 32); cy <= fdiv(fy0 + ov.sy - 1, 32); ++cy) {
                         c->pos = {cx, cy, cz};
                         c->edited = true;
                         c->voxels.fill(world::AIR);
                         bool any = false;
-                        for (int y = 0; y < world::CHUNK; ++y)
-                            for (int z = 0; z < world::CHUNK; ++z)
-                                for (int x = 0; x < world::CHUNK; ++x) {
-                                    const int lx = cx * world::CHUNK + x - wx0, ly = cy * world::CHUNK + y - wy0, lz = cz * world::CHUNK + z - wz0;
+                        for (int y = 0; y < 32; ++y)
+                            for (int z = 0; z < 32; ++z)
+                                for (int x = 0; x < 32; ++x) {
+                                    const int fx = cx * 32 + x, fy = cy * 32 + y, fz = cz * 32 + z;
+                                    const int lx = fx - fx0, ly = fy - fy0, lz = fz - fz0;
                                     if (lx < 0 || ly < 0 || lz < 0 || lx >= ov.sx || ly >= ov.sy || lz >= ov.sz) continue;
                                     const size_t k = (size_t(ly) * ov.sz + lz) * ov.sx + lx;
                                     const world::Material m = ov.v[k];
                                     if (m == world::AIR) continue;
-                                    // корень под землёй (в толще грунта) - не рисуем
-                                    if (hideRoots && ov.root[k] && cy * world::CHUNK + y <= ground.h[z + 1][x + 1]) { ++hidden; continue; }
+                                    if (hideRoots && ov.root[k]) {
+                                        // мелкий воксель - в блоке (bx, by, bz); под землёй - не рисуем
+                                        const int32_t bx = base.x + fdiv(fx, 16), by = base.y + fdiv(fy, 16), bz = base.z + fdiv(fz, 16);
+                                        if (by <= groundAt(bx, bz)) { ++hidden; continue; }
+                                    }
                                     c->at(x, y, z) = m;
                                     any = true;
                                 }
@@ -282,11 +302,10 @@ int main(int argc, char** argv) {
                         world::buildMesh(*c, air, verts, ms);
                         if (verts.empty()) continue;
                         quads += ms.quads;
-                        oakMeshes.push_back({gpu->uploadChunkMesh(verts, 0), glm::ivec3(cx, cy, cz) * world::CHUNK});
+                        oakMeshes.push_back({gpu->uploadChunkMesh(verts, 0), base, glm::ivec3(cx, cy, cz) * 32});
                     }
-                }
-            journal::info("дуб", "семя {}: узлов {}, древесины {} вокселей (корней {}, спрятано под землёй {}), листвы {}; прямоугольников {}; {:.0f} мс",
-                          o.seed, ov.nodes, ov.wood, ov.roots, hidden, ov.leaves, quads, msSince(t0));
+            journal::info("дуб", "семя {}: узлов {}, мелких вокселей древесины {} (корней {}, спрятано под землёй {}), листвы {}; высота {:.1f} блока; прямоугольников {}; {:.0f} мс",
+                          o.seed, ov.nodes, ov.wood, ov.roots, hidden, ov.leaves, (ov.y0 + ov.sy) / 16.0, quads, msSince(t0));
         }
     };
     if (!oaks.empty()) buildOaks();
@@ -320,7 +339,7 @@ int main(int argc, char** argv) {
                     if (!any) continue;
                     world::MeshStats ms;
                     world::buildMesh(*c, air, verts, ms);
-                    if (!verts.empty()) oakMeshes.push_back({gpu->uploadChunkMesh(verts, 0), glm::ivec3(cx, cy, cz) * world::CHUNK});
+                    if (!verts.empty()) rulerMeshes.push_back({gpu->uploadChunkMesh(verts, 0), glm::ivec3(cx, cy, cz) * world::CHUNK});
                 }
         journal::info("эталон", "куб в блок у ({}, {}, {}) воксели", ruler.x, ruler.y, ruler.z);
     }
@@ -374,7 +393,7 @@ int main(int argc, char** argv) {
             if (ev.type == SDL_EVENT_KEY_DOWN && ev.key.key == SDLK_L) gpu->setDebug(debug ^= 1);
             if (ev.type == SDL_EVENT_MOUSE_BUTTON_DOWN && ev.button.button == SDL_BUTTON_LEFT) {
                 const glm::vec2 f = glm::normalize(glm::vec2(std::cos(yaw), std::sin(yaw)));
-                const int32_t x = int32_t(std::floor((eye.x + f.x * 20.0f) * 16)), z = int32_t(std::floor((eye.z + f.y * 20.0f) * 16));
+                const int32_t x = int32_t(std::floor((eye.x + f.x * 2.0f) * 16)), z = int32_t(std::floor((eye.z + f.y * 2.0f) * 16));   // 32 блока
                 oakSeed = oakSeed * 1664525u + 1013904223u;
                 oaks.push_back({x, oakBase(x, z), z, oakSeed});
                 buildOaks();
@@ -400,7 +419,8 @@ int main(int argc, char** argv) {
         const glm::vec3 fwd(std::cos(pitch) * std::cos(yaw), std::sin(pitch), std::cos(pitch) * std::sin(yaw));
         const glm::vec3 right = glm::normalize(glm::cross(fwd, glm::vec3(0, 1, 0)));
         const bool* keys = SDL_GetKeyboardState(nullptr);
-        const float speed = (keys[SDL_SCANCODE_LSHIFT] ? 60.0f : 15.0f) * speedScale * dt;
+        // Р56: камера - в прежних мерах (16 блоков мира): шаг ~5 блоков/с, с Shift ~48 - чтобы разглядеть мелочь
+        const float speed = (keys[SDL_SCANCODE_LSHIFT] ? 3.0f : 0.3f) * speedScale * dt;
         if (keys[SDL_SCANCODE_W]) eye += fwd * speed;
         if (keys[SDL_SCANCODE_S]) eye -= fwd * speed;
         if (keys[SDL_SCANCODE_D]) eye += right * speed;
@@ -411,7 +431,7 @@ int main(int argc, char** argv) {
 
         // обратная глубина (Р20): ближняя и дальняя плоскости переставлены местами
         const float farPlane = float(lod.drawDistance) * 1.5f;
-        const glm::mat4 proj = glm::perspectiveRH_ZO(glm::radians(70.0f), float(width) / float(std::max(1, height)), farPlane, 0.05f);
+        const glm::mat4 proj = glm::perspectiveRH_ZO(glm::radians(70.0f), float(width) / float(std::max(1, height)), farPlane, 0.002f);   // Р56: ближняя плоскость - 3 см (вплотную к коре и листьям)
         const glm::mat4 viewProj = proj * glm::lookAt(eye, eye + fwd, glm::vec3(0, 1, 0));
         const Frustum fr(viewProj);
         const auto tUpd = clock_t_::now();
@@ -464,14 +484,16 @@ int main(int argc, char** argv) {
                 }
             }
         }
-        // Р52: брызги - на блоках у камеры (40 блоков), где вода быстрее 2.5 блока/с; на перепадах (вода у соседа
-        // ниже по течению ниже на полблока) - вчетверо чаще. Скорость - по течению, вбок и вверх по скорости;
-        // тяжесть 18 блоков/с² (взлёт до ~1.3 блока); живут 0.3..0.7 с, падая обратно в воду - пропадают
+        // Р52: брызги - у камеры, где вода быстрее 2.5 м/с; на перепадах (вода у соседа ниже по течению ниже) -
+        // вчетверо чаще. Р55 (Р54: воксель = блок мира): поле и камера - в прежних мерах (16 блоков мира);
+        // капля - 2 текселя (1/8 блока), летит по течению, вбок и вверх (1-3 м/с), тяжесть 9.8 м/с², живёт
+        // 0.3..0.7 с, падая в воду - пропадает; рождаются густо в 96 блоках вокруг камеры
         if (!flowGround.empty()) {
             const std::vector<float>& vel = shownVel.empty() ? fieldVel : shownVel;
             const float hdt = std::min(dt, 0.05f);
             const int ex = int(std::floor(eye.x)) - flowAt.x, ez = int(std::floor(eye.z)) - flowAt.y;
-            constexpr int R = 40;
+            constexpr int R = 6;
+            constexpr float U = 1.0f / 16.0f;   // блок мира в прежних мерах
             for (int z = std::max(0, ez - R); z < std::min(FLOW_SIZE, ez + R); ++z)
                 for (int x = std::max(0, ex - R); x < std::min(FLOW_SIZE, ex + R); ++x) {
                     const size_t k = size_t(z) * FLOW_SIZE + x;
@@ -479,17 +501,19 @@ int main(int argc, char** argv) {
                     if (sf <= flowGround[k] + 0.05f) continue;
                     const float vx = vel[k * 2], vz = vel[k * 2 + 1], sp = std::sqrt(vx * vx + vz * vz);
                     if (sp < 2.5f) continue;
-                    float rate = (sp - 2.5f) * 1.5f;
+                    float rate = (sp - 2.5f) * 80.0f;
                     const int dx = x + int(std::round(vx / sp)), dz = z + int(std::round(vz / sp));
                     if (dx >= 0 && dz >= 0 && dx < FLOW_SIZE && dz < FLOW_SIZE && flowSurface[size_t(dz) * FLOW_SIZE + dx] < sf - 0.5f) rate *= 4.0f;
-                    if (rnd() >= rate * hdt || drops.size() >= 4000) continue;
-                    const float up = (1.0f + 2.0f * rnd()) * std::min(1.5f, sp / 6.0f);
-                    drops.push_back({glm::vec3(float(flowAt.x + x) + rnd(), sf + 0.05f, float(flowAt.y + z) + rnd()),
-                                     glm::vec3(vx * 0.35f + (rnd() - 0.5f) * 0.8f, up * 1.5f, vz * 0.35f + (rnd() - 0.5f) * 0.8f),
-                                     0.3f + 0.4f * rnd()});
+                    for (float k = rate * hdt; k > 0 && drops.size() < 8000; k -= 1.0f) {
+                        if (k < 1.0f && rnd() >= k) break;
+                        const float up = (1.0f + 2.0f * rnd()) * std::min(1.0f, sp / 6.0f);
+                        drops.push_back({glm::vec3(float(flowAt.x + x) + rnd(), sf + 0.05f * U, float(flowAt.y + z) + rnd()),
+                                         glm::vec3(vx * 0.35f + (rnd() - 0.5f) * 1.2f, up, vz * 0.35f + (rnd() - 0.5f) * 1.2f) * U,
+                                         0.3f + 0.4f * rnd()});
+                    }
                 }
             for (Drop& d : drops) {
-                d.v.y -= 18.0f * hdt;
+                d.v.y -= 9.8f * U * hdt;
                 d.p += d.v * hdt;
                 d.life -= hdt;
                 const int bx = int(std::floor(d.p.x)) - flowAt.x, bz = int(std::floor(d.p.z)) - flowAt.y;
@@ -498,11 +522,11 @@ int main(int argc, char** argv) {
                     d.life = 0;
             }
             std::erase_if(drops, [](const Drop& d) { return d.life <= 0; });
-            // воксель капли - три грани к камере (нормаль + 6: шейдер рисует её брызгами)
+            // капля - кубик в 2 текселя, три грани к камере (нормаль + 6: шейдер рисует её брызгами)
             dropVerts.clear();
-            constexpr float S = 1.0f / 16.0f;
+            constexpr float S = 2.0f / 256.0f;
             for (const Drop& d : drops) {
-                const glm::vec3 b = glm::floor(d.p * 16.0f) / 16.0f;   // по сетке вокселей
+                const glm::vec3 b = glm::floor(d.p * 256.0f) / 256.0f;   // по сетке текселей
                 for (int ax = 0; ax < 3; ++ax) {
                     const bool plus = eye[ax] > b[ax] + S * 0.5f;
                     const float n = float(ax * 2 + (plus ? 0 : 1) + 6);
@@ -525,7 +549,8 @@ int main(int argc, char** argv) {
                       float(lod.drawDistance) * 0.85f, float(lod.drawDistance), 9000.0f, 0.6f, sky,
                       std::chrono::duration<float>(now - startAt).count(), flowArea, simArea});
         chunksDrawn = voxels.draw(fr, frame);
-        for (const OakMesh& m : oakMeshes) frame.drawChunk(m.mesh, m.origin);
+        for (const OakMesh& m : oakMeshes) frame.drawFineChunk(m.mesh, m.base, m.fineOff);
+        for (const auto& [mesh, origin] : rulerMeshes) frame.drawChunk(mesh, origin);
         const auto tFar = clock_t_::now();
         farTerrain.frame(lod, eye, fr, voxels, frame, farStats);
         part[1] = std::max(part[1], msSince(tFar));

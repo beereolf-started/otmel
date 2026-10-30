@@ -36,7 +36,9 @@ struct CmdCamera {
     glm::vec4 flowArea{0};    // Р43: поле течений: угол x, z (блоки), сторона (блоки)
     glm::vec4 simArea{0};     // Р45: зона автомата воды: угол x, z, сторона (блоки), w - 1, если есть
 };
-struct CmdDrawChunk { MeshId mesh; glm::ivec3 originVoxels; };
+// Р56: fine - мелкий кусок (воксель = 1/16 блока, тексель): originVoxels - блок-основа, fineOff - сдвиг куска от
+// неё в мелких вокселях (так нет больших дробных чисел - мелкий воксель не дрожит)
+struct CmdDrawChunk { MeshId mesh; glm::ivec3 originVoxels; glm::ivec3 fineOff{0}; bool fine = false; };
 // Плитка дальнего уровня (Р20): начало в блоках, шаг узлов в блоках, где идёт морфинг, какие четверти
 struct CmdDrawTile {
     MeshId mesh;
@@ -52,6 +54,7 @@ struct CommandList {
     void clear(Color c) { commands.push_back(CmdClear{c}); }
     void camera(const CmdCamera& c) { commands.push_back(c); }
     void drawChunk(MeshId m, glm::ivec3 origin) { commands.push_back(CmdDrawChunk{m, origin}); }
+    void drawFineChunk(MeshId m, glm::ivec3 baseBlock, glm::ivec3 fineOff) { commands.push_back(CmdDrawChunk{m, baseBlock, fineOff, true}); }
     void drawTile(const CmdDrawTile& t) { commands.push_back(t); }
     void reset() { commands.clear(); }
 };

@@ -210,11 +210,11 @@ void growOak(uint32_t seed, OakVoxels& out) {
                     float rr = pa.r + (nd.r - pa.r) * t;
                     if (rr > 2.0f) rr *= 1.0f + 0.22f * noise3(q * (1.0f / 7.0f), ns);
                     const float dd = len(q - f);
-                    if (dd >= std::max(rr, 0.6f)) continue;
+                    if (dd >= std::max(rr, 0.75f)) continue;   // тоньше вокселя - линия без разрывов
                     const size_t k = idx(x, y, z);
                     const bool inner = dd < rr - 1.6f && rr > 2.2f;
                     if (inner) out.v[k] = WOOD;
-                    else if (out.v[k] == AIR || out.v[k] == LEAVES) out.v[k] = BARK;
+                    else if (out.v[k] == AIR || out.v[k] == LEAVES || out.v[k] == LEAVES2) out.v[k] = BARK;
                     if (nd.root) out.root[k] = 1;
                 }
     }
@@ -229,11 +229,12 @@ void growOak(uint32_t seed, OakVoxels& out) {
                     if (d > bl.r * (0.8f + 0.35f * noise3(q * 0.25f, ns ^ 0xA5A5u))) continue;
                     if (noise3(q * 0.6f, ns ^ 0x5A5Au) > 0.2f) continue;   // просветы
                     const size_t k = idx(x, y, z);
-                    if (out.v[k] == AIR) out.v[k] = LEAVES;
+                    // два оттенка листвы пятнами
+                    if (out.v[k] == AIR) out.v[k] = noise3(q * 0.15f, ns ^ 0x3C3Cu) > 0.1f ? LEAVES2 : LEAVES;
                 }
     }
     for (size_t k = 0; k < out.v.size(); ++k) {
-        if (out.v[k] == LEAVES) ++out.leaves;
+        if (out.v[k] == LEAVES || out.v[k] == LEAVES2) ++out.leaves;
         else if (out.v[k] != AIR) { ++out.wood; if (out.root[k]) ++out.roots; }
     }
 }
