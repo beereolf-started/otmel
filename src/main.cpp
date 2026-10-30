@@ -26,6 +26,8 @@
 #include "render/render.h"
 #include "world/flow.h"
 #include "world/lod.h"
+#include "world/mesher.h"
+#include "world/oak.h"
 #include "world/water_sim.h"
 #include "world/terrain.h"
 #include "builder.h"
@@ -208,6 +210,77 @@ int main(int argc, char** argv) {
             yaw = std::stof(argv[i + 4]);
             pitch = std::stof(argv[i + 5]);
         }
+    // Р53: дубы-коряги для просмотра: левая кнопка - новый дуб в 20 блоках перед камерой, правая - убрать все,
+    // R - корни под землёй прятать / показывать. Сетка - кусками 32³ поверх мира (в мир пока не вписаны).
+    struct OakSpot { int32_t x, y, z; uint32_t seed; };
+    struct OakMesh { render::MeshId mesh; glm::ivec3 origin; };
+    std::vector<OakSpot> oaks;
+    std::vector<OakMesh> oakMeshes;
+    bool hideRoots = true;
+    uint32_t oakSeed = 1;
+    for (int i = 1; i + 3 < argc; ++i)
+        if (std::string(argv[i]) == "--oak") {
+            const int32_t x = int32_t(std::floor(std::stof(argv[i + 1]) * 16)), z = int32_t(std::floor(std::stof(argv[i + 2]) * 16));
+            oaks.push_back({x, 0, z, uint32_t(std::stoul(argv[i + 3]))});
+        }
+    // основание - на самой низкой земле под комлем (не висит над склоном), чуть утоплено
+    const auto oakBase = [&](int32_t x, int32_t z) {
+        int32_t g = INT32_MAX;
+        for (const auto [dx, dz] : {std::pair{0, 0}, {10, 0}, {-10, 0}, {0, 10}, {0, -10}})
+            g = std::min(g, world::reliefAt(tp, x + dx, z + dz).height);
+        return g - 3;
+    };
+    for (OakSpot& o : oaks) o.y = oakBase(o.x, o.z);
+    const auto buildOaks = [&] {
+        for (const OakMesh& m : oakMeshes) gpu->destroyMesh(m.mesh);
+        oakMeshes.clear();
+        static world::ColumnHeights air;
+        for (auto& row : air.h) for (int32_t& v : row) v = INT32_MIN / 4;
+        for (auto& row : air.water) for (int32_t& v : row) v = world::NO_WATER;
+        const auto fdiv = [](int32_t v) { return v >= 0 ? v / world::CHUNK : -((-v + world::CHUNK - 1) / world::CHUNK); };
+        for (const OakSpot& o : oaks) {
+            const auto t0 = clock_t_::now();
+            world::OakVoxels ov;
+            world::growOak(o.seed, ov);
+            const int32_t wx0 = o.x + ov.x0, wy0 = o.y + ov.y0, wz0 = o.z + ov.z0;
+            int quads = 0, hidden = 0;
+            auto c = std::make_unique<world::Chunk>();
+            world::ColumnHeights ground;
+            std::vector<uint32_t> verts;
+            for (int32_t cz = fdiv(wz0); cz <= fdiv(wz0 + ov.sz - 1); ++cz)
+                for (int32_t cx = fdiv(wx0); cx <= fdiv(wx0 + ov.sx - 1); ++cx) {
+                    if (hideRoots) world::columnHeights(tp, cx, cz, ground);
+                    for (int32_t cy = fdiv(wy0); cy <= fdiv(wy0 + ov.sy - 1); ++cy) {
+                        c->pos = {cx, cy, cz};
+                        c->edited = true;
+                        c->voxels.fill(world::AIR);
+                        bool any = false;
+                        for (int y = 0; y < world::CHUNK; ++y)
+                            for (int z = 0; z < world::CHUNK; ++z)
+                                for (int x = 0; x < world::CHUNK; ++x) {
+                                    const int lx = cx * world::CHUNK + x - wx0, ly = cy * world::CHUNK + y - wy0, lz = cz * world::CHUNK + z - wz0;
+                                    if (lx < 0 || ly < 0 || lz < 0 || lx >= ov.sx || ly >= ov.sy || lz >= ov.sz) continue;
+                                    const size_t k = (size_t(ly) * ov.sz + lz) * ov.sx + lx;
+                                    const world::Material m = ov.v[k];
+                                    if (m == world::AIR) continue;
+                                    // корень под землёй (в толще грунта) - не рисуем
+                                    if (hideRoots && ov.root[k] && cy * world::CHUNK + y <= ground.h[z + 1][x + 1]) { ++hidden; continue; }
+                                    c->at(x, y, z) = m;
+                                    any = true;
+                                }
+                        if (!any) continue;
+                        world::MeshStats ms;
+                        world::buildMesh(*c, air, verts, ms);
+                        if (verts.empty()) continue;
+                        quads += ms.quads;
+                        oakMeshes.push_back({gpu->uploadChunkMesh(verts, 0), glm::ivec3(cx, cy, cz) * world::CHUNK});
+                    }
+                }
+            journal::info("дуб", "семя {}: узлов {}, древесины {} вокселей (корней {}, спрятано под землёй {}), листвы {}; прямоугольников {}; {:.0f} мс",
+                          o.seed, ov.nodes, ov.wood, ov.roots, hidden, ov.leaves, quads, msSince(t0));
+        }
+    };
+    if (!oaks.empty()) buildOaks();
     if (!shot) SDL_SetWindowRelativeMouseMode(window, true);
     // в режиме снимка - без ожидания обновления экрана: замер времени кадра не упирается в 60 Гц
     if (shot) SDL_GL_SetSwapInterval(0);
@@ -256,6 +329,15 @@ int main(int argc, char** argv) {
             if (ev.type == SDL_EVENT_QUIT) running = false;
             if (ev.type == SDL_EVENT_KEY_DOWN && ev.key.key == SDLK_ESCAPE) running = false;
             if (ev.type == SDL_EVENT_KEY_DOWN && ev.key.key == SDLK_L) gpu->setDebug(debug ^= 1);
+            if (ev.type == SDL_EVENT_MOUSE_BUTTON_DOWN && ev.button.button == SDL_BUTTON_LEFT) {
+                const glm::vec2 f = glm::normalize(glm::vec2(std::cos(yaw), std::sin(yaw)));
+                const int32_t x = int32_t(std::floor((eye.x + f.x * 20.0f) * 16)), z = int32_t(std::floor((eye.z + f.y * 20.0f) * 16));
+                oakSeed = oakSeed * 1664525u + 1013904223u;
+                oaks.push_back({x, oakBase(x, z), z, oakSeed});
+                buildOaks();
+            }
+            if (ev.type == SDL_EVENT_MOUSE_BUTTON_DOWN && ev.button.button == SDL_BUTTON_RIGHT) { oaks.clear(); buildOaks(); }
+            if (ev.type == SDL_EVENT_KEY_DOWN && ev.key.key == SDLK_R) { hideRoots = !hideRoots; buildOaks(); }
             if (ev.type == SDL_EVENT_MOUSE_WHEEL) speedScale = std::clamp(speedScale * std::pow(1.25f, ev.wheel.y), 0.1f, 100.0f);
             if (ev.type == SDL_EVENT_MOUSE_MOTION) {
                 yaw += ev.motion.xrel * 0.0025f;
@@ -400,6 +482,7 @@ int main(int argc, char** argv) {
                       float(lod.drawDistance) * 0.85f, float(lod.drawDistance), 9000.0f, 0.6f, sky,
                       std::chrono::duration<float>(now - startAt).count(), flowArea, simArea});
         chunksDrawn = voxels.draw(fr, frame);
+        for (const OakMesh& m : oakMeshes) frame.drawChunk(m.mesh, m.origin);
         const auto tFar = clock_t_::now();
         farTerrain.frame(lod, eye, fr, voxels, frame, farStats);
         part[1] = std::max(part[1], msSince(tFar));

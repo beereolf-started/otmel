@@ -11,7 +11,9 @@ constexpr int CHUNK_LOG2 = 5;
 constexpr int VOXELS_PER_BLOCK = 16;      // Р13
 
 using Material = uint16_t;
-enum : Material { AIR = 0, STONE = 1, DIRT = 2, GRASS = 3, SAND = 4, SNOW = 5, WATER = 6, MATERIAL_COUNT };
+enum : Material { AIR = 0, STONE = 1, DIRT = 2, GRASS = 3, SAND = 4, SNOW = 5, WATER = 6,
+                    BARK = 7, WOOD = 8, LEAVES = 9,   // Р53: дерево - кора, древесина, листва
+                    MATERIAL_COUNT };
 
 struct ChunkPos { int32_t x, y, z; };
 
