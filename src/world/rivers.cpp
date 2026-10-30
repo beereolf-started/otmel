@@ -232,6 +232,13 @@ int32_t level(const TerrainParams& p, int32_t i, int32_t j) {
     int64_t ax, az;
     anchor(p, i, j, ax, az);
     int32_t lv = groundLine(p, ax, az);
+    // Р38: и вокруг узла - на две ширины русла (как поперёк русла в вершинах): у истока вода стояла кубиком над
+    // землёй, которая рядом с точкой узла ниже
+    if (!info(p, i, j).sea) {
+        const int64_t s = int64_t(isqrt(uint64_t(std::max(1, area(p, i, j))) << 16));
+        const int64_t r = 2 * 2 * (24 + s * 14 / 256) + 2 * VOXELS_PER_BLOCK;
+        lv = std::min({lv, groundLine(p, ax + r, az), groundLine(p, ax - r, az), groundLine(p, ax, az + r), groundLine(p, ax, az - r)});
+    }
     // притоки: соседи, стекающие сюда, и котловины в радиусе SPILL_R, чей выход - здесь (Р37)
     for (int32_t cj = j - SPILL_R; cj <= j + SPILL_R; ++cj)
         for (int32_t ci = i - SPILL_R; ci <= i + SPILL_R; ++ci) {
