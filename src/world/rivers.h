@@ -38,16 +38,33 @@ void riverNeighbor(int32_t i, int32_t j, int dir, int32_t& ni, int32_t& nj);
 
 // Звенья рек и озёра, задевающие прямоугольник, - собираются один раз на кусок или плитку
 struct RiverSet {
-    static constexpr int32_t RUN_STEP = 16 * VOXELS_PER_BLOCK;   // шаг точек уровня вдоль звена
+    static constexpr int32_t RUN_STEP = 32 * VOXELS_PER_BLOCK;   // шаг точек уровня вдоль звена (Р31: 32 блока)
     struct Seg {
         int64_t ax, az, bx, bz;     // от узла к соседу ниже по течению; у озера a = b - центр
         int64_t len;                // длина звена, воксели (у озера 0)
         int32_t half, depth, valley;   // полуширина русла (у озера - радиус), глубина, радиус долины; воксели
+        int32_t area;               // полноводность A
+        int32_t pool;               // Р31: шаг плёс-перекат, воксели
+        int32_t minLevel;           // нижний уровень воды на звене (для грубой отсечки)
         // уровень воды вдоль звена - через RUN_STEP от начала (минимум земли на пути выше, минус блок);
         // у озера - одно число
         std::vector<int32_t> run;
     };
     std::vector<Seg> segs;
+    // Р31: шумы рек (извилистость, ширина, глубина, пойма, берега, бугры, рукава) - в узлах глобальной сетки через
+    // 8 вокселей, между ними линейно (как медленные поля, Р22): на кусок 36 узлов вместо 1156 точек; узлы
+    // глобальные - значение в точке не зависит от того, кто спросил (шва нет); вершины плиток стоят на узлах
+    enum Noise { N_WARP, N_WX, N_WZ, N_WIDTH, N_DEPTH, N_PLAIN, N_BANK, N_EDGE, N_BANKL, N_BED, N_B1, N_B2,
+                 N_BRAID, N_WX2, N_WZ2, N_COUNT };
+    struct NoiseNode { fx::q16 v[N_COUNT]; };
+    std::vector<NoiseNode> grid;
+    int32_t gnx0 = 0, gnz0 = 0, gw = 0, gh = 0;
+    void noiseAt(const TerrainParams& p, int32_t x, int32_t z, fx::q16 out[N_COUNT]) const;
+    // Р31: уровень воды вдоль звена в точке u (воксели от начала): плёсы и перекаты; drop - падение на перекате
+    static int32_t levelAlong(const Seg& g, int64_t u, int32_t* drop = nullptr);
+    // Р31: течение в точке: направление вдоль русла (единичный вектор, Q16), скорость (блоки/с, Q16)
+    struct Current { fx::q16 dirX, dirZ, speed; bool inRiver; };
+    Current current(const TerrainParams& p, int32_t x, int32_t z) const;
     void build(const TerrainParams& p, int32_t x0, int32_t z0, int32_t x1, int32_t z1);
     // Рельеф и вода столбца с учётом рек: h - высота дна (меняется), water - уровень воды (поднимается),
     // shore - у воды (берег, дно русла)
