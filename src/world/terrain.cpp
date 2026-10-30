@@ -1,6 +1,7 @@
 #include "world/terrain.h"
 
 #include <algorithm>
+#include <cmath>
 
 #include "gen/hash.h"
 #include "gen/noise.h"
@@ -260,6 +261,74 @@ void columnHeights(const TerrainParams& p, int32_t chunkX, int32_t chunkZ, Colum
                 out.maxH = std::max(out.maxH, t);
                 out.nearWater[z][x] = true;
             }
+        // Р48: гладь без отвесов. Где соседние мокрые блоки на разной высоте (ступень русла, падение со
+        // уступа, ступени растекания), верх воды - билинейно по центрам мокрых блоков: ступень становится
+        // скатом длиной в блок, отвесной грани воды нет. Затем растекание по столбцам вокселей: сухой сосед
+        // мокрого столбца с дном ниже этой глади - тоже мокрый (у берега нет стенки воды над сухим дном).
+        // гладь в центре блока: у мокрого - верх воды; у сухого рядом с водой - вровень с самой низкой соседней
+        // водой или его дно, если оно ниже (гладь к нему опускается). Одно значение на центр - гладь без швов.
+        static thread_local std::vector<int32_t> vb;
+        vb.assign(size_t(n) * n, NO_WATER);
+        for (int j = 1; j + 1 < n; ++j)
+            for (int i = 1; i + 1 < n; ++i) {
+                const size_t k = size_t(j) * n + i;
+                if (tb[k] != NO_WATER) { vb[k] = tb[k]; continue; }
+                int32_t low = INT32_MAX;
+                for (int dj = -1; dj <= 1; ++dj)
+                    for (int di = -1; di <= 1; ++di) {
+                        const int32_t v = tb[size_t(j + dj) * n + size_t(i + di)];
+                        if (v != NO_WATER) low = std::min(low, v);
+                    }
+                if (low != INT32_MAX) vb[k] = std::min(low, gb[k]);
+            }
+        static thread_local int32_t sm[CHUNK + 2][CHUNK + 2];
+        for (int z = 0; z < CHUNK + 2; ++z)
+            for (int x = 0; x < CHUNK + 2; ++x) {
+                const int32_t qx = x0 + x - VOXELS_PER_BLOCK / 2, qz = z0 + z - VOXELS_PER_BLOCK / 2;
+                const int32_t bi = fdiv(qx), bj = fdiv(qz);
+                const float tx = (float(qx - bi * VOXELS_PER_BLOCK) + 0.5f) / VOXELS_PER_BLOCK;
+                const float tz = (float(qz - bj * VOXELS_PER_BLOCK) + 0.5f) / VOXELS_PER_BLOCK;
+                const size_t c = size_t(bj - bz0) * n + size_t(bi - bx0);
+                const int32_t t[4] = {vb[c], vb[c + 1], vb[c + n], vb[c + n + 1]};
+                const float w[4] = {(1 - tx) * (1 - tz), tx * (1 - tz), (1 - tx) * tz, tx * tz};
+                sm[z][x] = NO_WATER;
+                int32_t lo = INT32_MAX, hi = INT32_MIN;
+                float st = 0;
+                for (int k = 0; k < 4; ++k) {
+                    if (t[k] == NO_WATER) break;
+                    lo = std::min(lo, t[k]);
+                    hi = std::max(hi, t[k]);
+                    st += w[k] * float(t[k]);
+                }
+                if (lo == INT32_MAX || t[0] == NO_WATER || t[1] == NO_WATER || t[2] == NO_WATER || t[3] == NO_WATER) continue;
+                const int32_t s = int32_t(std::lround(st)), h = out.h[z][x];
+                sm[z][x] = s;
+                if (out.water[z][x] <= h) continue;
+                if (hi - lo < 2 && std::abs(out.water[z][x] - s) < 2) continue;   // ровная вода - как была
+                out.water[z][x] = s > h ? s : h;
+            }
+        static thread_local int16_t queue[(CHUNK + 2) * (CHUNK + 2)];
+        int qn = 0;
+        for (int z = 0; z < CHUNK + 2; ++z)
+            for (int x = 0; x < CHUNK + 2; ++x)
+                if (out.water[z][x] > out.h[z][x]) queue[qn++] = int16_t(z * (CHUNK + 2) + x);
+        for (int qi = 0; qi < qn; ++qi) {
+            const int z = queue[qi] / (CHUNK + 2), x = queue[qi] % (CHUNK + 2);
+            for (int d = 0; d < 4; ++d) {
+                const int x2 = x + (d == 0) - (d == 1), z2 = z + (d == 2) - (d == 3);
+                if (x2 < 0 || z2 < 0 || x2 >= CHUNK + 2 || z2 >= CHUNK + 2) continue;
+                const int32_t h2 = out.h[z2][x2], s2 = sm[z2][x2];
+                if (out.water[z2][x2] > h2 || s2 == NO_WATER || s2 <= h2 || h2 >= out.water[z][x] || s2 > out.water[z][x]) continue;
+                out.water[z2][x2] = s2;
+                queue[qn++] = int16_t(z2 * (CHUNK + 2) + x2);
+            }
+        }
+        for (int z = 0; z < CHUNK + 2; ++z)
+            for (int x = 0; x < CHUNK + 2; ++x)
+                if (out.water[z][x] > out.h[z][x]) {
+                    out.maxH = std::max(out.maxH, out.water[z][x]);
+                    out.nearWater[z][x] = true;
+                }
     }
     // климат и покров - только своим столбцам, не кайме; у воды рек и озёр - песок (Р29)
     for (int z = 0; z < CHUNK; ++z)
