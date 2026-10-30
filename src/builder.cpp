@@ -141,7 +141,7 @@ void Builder::worker() {
             world::MeshStats ms;
             world::buildMesh(pos, hm, verts, ms, caves ? air : nullptr);
             if (verts.empty()) continue;
-            r.chunks.push_back({{col.cx * world::CHUNK, cy * world::CHUNK, col.cz * world::CHUNK}, verts, ms.quads, underground});
+            r.chunks.push_back({{col.cx * world::CHUNK, cy * world::CHUNK, col.cz * world::CHUNK}, verts, ms.quads, ms.waterQuads, underground});
         }
         r.ms = msSince(t0);
         std::lock_guard lk(mu_);

@@ -16,6 +16,22 @@ inline uint32_t slope256(int32_t dh, int64_t stepVoxels) {
 }
 inline uint32_t h16(int32_t h) { return uint32_t(uint16_t(int16_t(std::clamp(h, -32768, 32767)))); }
 
+// Р34: поверхность воды в узлах [0..n) сетки с каймой в узел (n + 2 по стороне): у мокрого - его вода; у сухого
+// рядом с мокрым (8 соседей) - наибольшая соседняя вода, но не выше дна без вокселя; у сухого без воды рядом -
+// блок под дном (его треугольники целиком под землёй). Правило одно для обоих уровней: сползший узел = родитель.
+template <int N>
+void waterSurface(const int32_t (&h)[N][N], const int32_t (&w)[N][N], const bool (&wet)[N][N], int32_t (&out)[N][N]) {
+    for (int j = 1; j < N - 1; ++j)
+        for (int i = 1; i < N - 1; ++i) {
+            if (wet[j][i]) { out[j][i] = w[j][i]; continue; }
+            int32_t best = INT32_MIN;
+            for (int dj = -1; dj <= 1; ++dj)
+                for (int di = -1; di <= 1; ++di)
+                    if (wet[j + dj][i + di]) best = std::max(best, w[j + dj][i + di]);
+            out[j][i] = best == INT32_MIN ? h[j][i] - VOXELS_PER_BLOCK : std::min(best, h[j][i] - 1);
+        }
+}
+
 }  // namespace
 
 void buildTile(const TerrainParams& p, TileKey k, TileMesh& out) {
@@ -36,29 +52,31 @@ void buildTile(const TerrainParams& p, TileKey k, TileMesh& out) {
     static thread_local RiverSet rivers;
     rivers.build(p, int32_t(x0 - 2 * step), int32_t(z0 - 2 * step), int32_t(x0 + 34 * step), int32_t(z0 + 34 * step));
 
-    // высоты своего уровня с каймой в один узел (для наклона): [-1..33]. Р28: высота поверхности -
-    // max(дно, вода); где вода над дном - покров «вода», у воды рек и озёр - песок (Р29)
-    static thread_local int32_t hf[TILE_VERTS + 2][TILE_VERTS + 2];
+    // высоты своего уровня с каймой в один узел (для наклона): [-1..33]. Р34: высота - дно (вода - своим слоем,
+    // прозрачным); покров дна - как у вокселей: у воды рек и озёр - песок (Р29), иначе по климату
+    static thread_local int32_t hf[TILE_VERTS + 2][TILE_VERTS + 2], wf[TILE_VERTS + 2][TILE_VERTS + 2];
     static thread_local bool wetF[TILE_VERTS + 2][TILE_VERTS + 2], shoreF[TILE_VERTS + 2][TILE_VERTS + 2];
     for (int j = -1; j <= TILE_VERTS; ++j)
         for (int i = -1; i <= TILE_VERTS; ++i) {
             const int64_t x = x0 + i * step, z = z0 + j * step;
             const Relief r = reliefAt(p, int32_t(x), int32_t(z), slowFine(x, z), fineCut, &rivers);
             const int32_t w = waterLevelAt(p, r);
-            hf[j + 1][i + 1] = std::max(r.height, w);
+            hf[j + 1][i + 1] = r.height;
+            wf[j + 1][i + 1] = w;
             wetF[j + 1][i + 1] = w > r.height;
             shoreF[j + 1][i + 1] = r.shore;
         }
     // высоты уровня L+1 в чётных узлах (шаг вдвое крупнее) с каймой: [-1..17]
     constexpr int CV = TILE / 2 + 1;
-    static thread_local int32_t hc[CV + 2][CV + 2];
+    static thread_local int32_t hc[CV + 2][CV + 2], wc[CV + 2][CV + 2];
     static thread_local bool wetC[CV + 2][CV + 2], shoreC[CV + 2][CV + 2];
     for (int j = -1; j <= CV; ++j)
         for (int i = -1; i <= CV; ++i) {
             const int32_t cx = int32_t(x0 + i * 2 * step), cz = int32_t(z0 + j * 2 * step);
             const Relief r = reliefAt(p, cx, cz, slowAt(p, cx, cz, coarseCut), coarseCut, &rivers);
             const int32_t w = waterLevelAt(p, r);
-            hc[j + 1][i + 1] = std::max(r.height, w);
+            hc[j + 1][i + 1] = r.height;
+            wc[j + 1][i + 1] = w;
             wetC[j + 1][i + 1] = w > r.height;
             shoreC[j + 1][i + 1] = r.shore;
         }
@@ -69,15 +87,19 @@ void buildTile(const TerrainParams& p, TileKey k, TileMesh& out) {
             coarseGrad[j][i] = slope256(hc[j + 1][i + 2] - hc[j + 1][i], 2 * step) |
                                slope256(hc[j + 2][i + 1] - hc[j][i + 1], 2 * step) << 16;
             const int32_t wx = int32_t(x0 + i * 2 * step), wz = int32_t(z0 + j * 2 * step);
-            const Cover c = wetC[j + 1][i + 1]     ? Cover{WATER, WATER}
-                            : shoreC[j + 1][i + 1] ? Cover{SAND, SAND}
+            const Cover c = shoreC[j + 1][i + 1] ? Cover{SAND, SAND}
                                                    : coverAt(p, climateAt(p, wx, wz, slowFine(wx, wz)), hc[j + 1][i + 1]);   // климату отсечка октав не нужна
             coarseCover[j][i] = uint32_t(c.top) | uint32_t(c.under) << 4;
         }
 
+    static thread_local int32_t sf[TILE_VERTS + 2][TILE_VERTS + 2], sc[CV + 2][CV + 2];
+    waterSurface(hf, wf, wetF, sf);
+    waterSurface(hc, wc, wetC, sc);
+
     out.data.resize(size_t(TILE_VERTS) * TILE_VERTS * TILE_WORDS);
     out.minH = INT32_MAX;
     out.maxH = INT32_MIN;
+    out.water = false;
     for (int j = 0; j < TILE_VERTS; ++j)
         for (int i = 0; i < TILE_VERTS; ++i) {
             const int32_t h = hf[j + 1][i + 1];
@@ -85,8 +107,7 @@ void buildTile(const TerrainParams& p, TileKey k, TileMesh& out) {
             const int ci = i >> 1, cj = j >> 1;
             const int32_t hcT = hc[cj + 1][ci + 1];
 
-            const Cover c = wetF[j + 1][i + 1]     ? Cover{WATER, WATER}
-                            : shoreF[j + 1][i + 1] ? Cover{SAND, SAND}
+            const Cover c = shoreF[j + 1][i + 1] ? Cover{SAND, SAND}
                                                    : coverAt(p, climateAt(p, int32_t(x0 + i * step), int32_t(z0 + j * step),
                                                                       slowFine(x0 + i * step, z0 + j * step)), h);
             uint32_t* w = &out.data[(size_t(j) * TILE_VERTS + i) * TILE_WORDS];
@@ -94,8 +115,13 @@ void buildTile(const TerrainParams& p, TileKey k, TileMesh& out) {
             w[1] = slope256(hf[j + 1][i + 2] - hf[j + 1][i], step) | slope256(hf[j + 2][i + 1] - hf[j][i + 1], step) << 16;
             w[2] = coarseGrad[cj][ci];
             w[3] = uint32_t(c.top) | uint32_t(c.under) << 4 | coarseCover[cj][ci] << 8;
+            const int32_t s = sf[j + 1][i + 1], scT = sc[cj + 1][ci + 1];
+            w[4] = h16(s) | h16(scT) << 16;
+            const bool wet = wetF[j + 1][i + 1] || wetC[cj + 1][ci + 1];
+            out.water |= wet;
             out.minH = std::min({out.minH, h, hcT});
             out.maxH = std::max({out.maxH, h, hcT});
+            if (wet) out.maxH = std::max({out.maxH, s, scT});
         }
 }
 

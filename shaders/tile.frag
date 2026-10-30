@@ -1,5 +1,5 @@
 #version 460
-layout(location = 0) in vec3 vColor;
+layout(location = 0) in vec4 vColor;
 layout(location = 1) in vec3 vWorld;
 
 layout(std140, binding = 0) uniform Frame {
@@ -25,5 +25,5 @@ void main() {
     // у края видимости рельеф растворяется в небе целиком - конец мира не обрывается стеной
     float d = distance(eye.xyz, vWorld);
     float haze = fade.w * (1.0 - exp(-d / fade.z));
-    outColor = vec4(mix(vColor, sky.rgb, max(haze, smoothstep(fade.x, fade.y, d))), 1.0);
+    outColor = vec4(mix(vColor.rgb, sky.rgb, max(haze, smoothstep(fade.x, fade.y, d))), vColor.a);
 }

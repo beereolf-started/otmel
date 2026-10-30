@@ -232,10 +232,23 @@ int main() {
         world::MeshStats ms;
         bool same = true, sameEdited = true, sameNoFill = true;
         int chunks = 0;
+        int64_t waterQuads = 0;
         double fastMs = 0, refMs = 0;
         using clk = std::chrono::steady_clock;
+        // Р34: кроме кусков у старта - квадрат 8×8 кусков у берега первой найденной воды (вода - своим проходом)
+        int32_t wx = 0, wz = 0;
+        for (int k = 0; k < 4000 && !wx; ++k) {
+            world::columnHeights(tp, k * 3, 0, hm);
+            for (int x = 1; x <= world::CHUNK && !wx; ++x)
+                if (hm.water[1][x] > hm.h[1][x] && hm.water[1][x] - hm.h[1][x] < 4 * world::VOXELS_PER_BLOCK) wx = k * 3;
+        }
+        std::vector<std::pair<int32_t, int32_t>> cols;
         for (int cz = -5; cz < 5; ++cz)
-            for (int cx = -5; cx < 5; ++cx) {
+            for (int cx = -5; cx < 5; ++cx) cols.push_back({cx, cz});
+        for (int cz = -4; cz < 4; ++cz)
+            for (int cx = -4; cx < 4; ++cx) cols.push_back({wx + cx, wz + cz});
+        for (const auto& [cx, cz] : cols) {
+            {
                 world::columnHeights(tp, cx, cz, hm);
                 for (int cy = (hm.minH - 1) >> 5; cy <= (hm.maxH >> 5); ++cy) {
                     c.pos = {cx, cy, cz};
@@ -249,6 +262,7 @@ int main() {
                     refMs += std::chrono::duration<double, std::milli>(clk::now() - t1).count();
                     if (quadSet(fast) != quadSet(ref)) same = false;
                     world::buildMesh(c.pos, hm, fast, ms);   // без вокселей вовсе (Р22)
+                    waterQuads += ms.waterQuads;
                     if (quadSet(fast) != quadSet(ref)) sameNoFill = false;
                     c.edited = true;      // тот же кусок, но маски - из вокселей
                     world::buildMesh(c, hm, fast, ms);
@@ -259,6 +273,8 @@ int main() {
         CHECK(same, "сетка по формуле = прежняя сетка (те же прямоугольники)");
         CHECK(sameEdited, "сетка из вокселей = прежняя сетка");
         CHECK(sameNoFill, "сетка без заполнения вокселей (материал формулой) = прежняя сетка");
+        std::printf("сетка: у воды (кусок x %d) - %lld прямоугольников воды\n", wx, (long long)waterQuads);
+        CHECK(waterQuads > 0, "в проверке сетки есть вода (дно и гладь - отдельно, Р34)");
         std::printf("сетка: %d кусков; прежняя %.3f мс на кусок, новая %.3f мс на кусок (в %.1f раза быстрее)\n",
                     chunks, refMs / chunks, fastMs / chunks, refMs / std::max(fastMs, 1e-9));
     }
@@ -494,13 +510,14 @@ int main() {
                     const int pi = ((k.tx & 1) * world::TILE + (i & ~1)) / 2, pj = ((k.tz & 1) * world::TILE + (j & ~1)) / 2;
                     const uint32_t* c = &child.data[(j * world::TILE_VERTS + i) * world::TILE_WORDS];
                     const uint32_t* pv = &par.data[(pj * world::TILE_VERTS + pi) * world::TILE_WORDS];
-                    if ((c[0] >> 16) != (pv[0] & 0xFFFF) || c[2] != pv[1] || ((c[3] >> 8) & 0xFF) != (pv[3] & 0xFF))
+                    if ((c[0] >> 16) != (pv[0] & 0xFFFF) || c[2] != pv[1] || ((c[3] >> 8) & 0xFF) != (pv[3] & 0xFF) ||
+                        (c[4] >> 16) != (pv[4] & 0xFFFF))
                         morphOk = false;
                     ++checked;
                 }
         }
         std::printf("морфинг: проверено %d узлов на уровнях 0..5\n", checked);
-        CHECK(morphOk, "сползший узел = узел плитки уровня выше: высота, наклон, покров (без щелей)");
+        CHECK(morphOk, "сползший узел = узел плитки уровня выше: высота, наклон, покров, вода (без щелей)");
 
         world::TileMesh t1;
         world::buildTile(tp, {3, -1, -1}, t1);

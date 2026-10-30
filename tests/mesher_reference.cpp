@@ -7,11 +7,15 @@
 namespace world {
 namespace {
 
-// Твёрдый ли воксель (x, y, z) в координатах куска, с каймой [-1..32]. Внутри куска - по вокселям,
-// снаружи - по карте высот: у рельефа всё, что не выше поверхности, твёрдое.
-inline bool solidAt(const Chunk& c, const ColumnHeights& hm, int x, int y, int z) {
-    if (x >= 0 && x < CHUNK && y >= 0 && y < CHUNK && z >= 0 && z < CHUNK) return c.at(x, y, z) != AIR;
-    return c.pos.y * CHUNK + y <= hm.h[z + 1][x + 1];
+// Вид вокселя (x, y, z) в координатах куска, с каймой [-1..32]: 0 воздух, 1 грунт, 2 вода (Р34). Внутри куска -
+// по вокселям, снаружи - по карте высот: не выше дна - грунт, выше дна и не выше уровня воды - вода.
+inline int kindAt(const Chunk& c, const ColumnHeights& hm, int x, int y, int z) {
+    if (x >= 0 && x < CHUNK && y >= 0 && y < CHUNK && z >= 0 && z < CHUNK) {
+        const Material m = c.at(x, y, z);
+        return m == AIR ? 0 : m == WATER ? 2 : 1;
+    }
+    const int32_t wy = c.pos.y * CHUNK + y;
+    return wy <= hm.h[z + 1][x + 1] ? 1 : wy <= hm.water[z + 1][x + 1] ? 2 : 0;
 }
 
 // Оси граней. Для каждой оси d плоскость грани задаётся осями (u, v) так, что u × v = +d (правая тройка) -
@@ -30,24 +34,29 @@ void buildMeshReference(const Chunk& c, const ColumnHeights& hm, std::vector<uin
     out.clear();
     stats = {};
     // столбец вдоль оси d: 34 бита (кайма + 32 + кайма), бит i - воксель с координатой i-1 по оси d
-    static thread_local uint64_t col[CHUNK][CHUNK];
+    static thread_local uint64_t col[CHUNK][CHUNK], blk[CHUNK][CHUNK];
     static thread_local Material plane[CHUNK][CHUNK];
     static thread_local bool used[CHUNK][CHUNK];
 
+    // Р34: проход 0 - грунт (грань видна, где сосед не грунт: дно под водой видно), проход 1 - вода (сосед - воздух)
+    for (int pass = 0; pass < 2; ++pass)
     for (int ai = 0; ai < 3; ++ai) {
         const Axis ax = AXES[ai];
         // 1. Маски столбцов: для каждой точки плоскости (u, v) - 34 бита твёрдости вдоль d
         for (int u = 0; u < CHUNK; ++u) {
             for (int v = 0; v < CHUNK; ++v) {
-                uint64_t bits = 0;
+                uint64_t bits = 0, block = 0;
                 int p[3];
                 p[ax.u] = u;
                 p[ax.v] = v;
                 for (int i = 0; i < CHUNK + 2; ++i) {
                     p[ax.d] = i - 1;
-                    if (solidAt(c, hm, p[0], p[1], p[2])) bits |= uint64_t(1) << i;
+                    const int k = kindAt(c, hm, p[0], p[1], p[2]);
+                    if (k == pass + 1) bits |= uint64_t(1) << i;
+                    if (k != 0) block |= uint64_t(1) << i;
                 }
                 col[u][v] = bits;
+                blk[u][v] = pass == 0 ? bits : block;
             }
         }
         // 2. Два направления вдоль оси: грань видна, где воксель твёрдый, а сосед в сторону грани - воздух.
@@ -59,8 +68,8 @@ void buildMeshReference(const Chunk& c, const ColumnHeights& hm, std::vector<uin
                 bool any = false;
                 for (int u = 0; u < CHUNK; ++u) {
                     for (int v = 0; v < CHUNK; ++v) {
-                        const uint64_t b = col[u][v];
-                        const uint64_t faces = sign == 0 ? (b & ~(b >> 1)) : (b & ~(b << 1));
+                        const uint64_t b = col[u][v], o = blk[u][v];
+                        const uint64_t faces = sign == 0 ? (b & ~(o >> 1)) : (b & ~(o << 1));
                         Material m = AIR;
                         if (faces >> (layer + 1) & 1) {
                             int p[3];
@@ -110,6 +119,7 @@ void buildMeshReference(const Chunk& c, const ColumnHeights& hm, std::vector<uin
                             out.push_back(pack(p1[0], p1[1], p1[2], normal, m));
                         }
                         ++stats.quads;
+                        if (pass == 1) ++stats.waterQuads;
                     }
                 }
             }

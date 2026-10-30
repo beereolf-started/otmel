@@ -158,7 +158,7 @@ void VoxelZone::update(glm::vec3 eye, const Frustum& fr, double uploadBudgetMs) 
         c.builtMin = r.cyMin;
         c.caps = r.caps;
         for (const Builder::ChunkData& d : r.chunks) {
-            c.chunks.push_back({d.origin, gpu_.uploadChunkMesh(d.verts), d.quads, d.underground});
+            c.chunks.push_back({d.origin, gpu_.uploadChunkMesh(d.verts, d.waterQuads), d.quads, d.underground});
             ++stats_.chunks;
             stats_.quads += d.quads;
         }

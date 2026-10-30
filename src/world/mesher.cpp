@@ -35,67 +35,13 @@ struct MatRows { Material mat; uint32_t rows[CHUNK]; };
 
 namespace {
 
-// vox - воксели правленого куска; nullptr - нетронутый: маски и материалы формулой от высот и покрова
-void meshImpl(ChunkPos pos, const Chunk* vox, const ColumnHeights& hm, const uint64_t (*air)[CHUNK + 2],
-              std::vector<uint32_t>& out, MeshStats& stats) {
-    out.clear();
-    stats = {};
-    const int32_t y0 = pos.y * CHUNK;
-    // Твёрдость столбцов с каймой по x и z (34×34), 34 бита по y: по высоте - формулой, минус воздух пещер
-    // (Р26). Из них - и внутренние столбцы, и кайма горизонтальных масок. Р28: вода над дном - тоже «твёрдое»
-    // для граней (пока непрозрачна): поверхность столбца - max(дно, вода); пещеры - только в грунте, под дном.
-    static thread_local uint64_t solid[CHUNK + 2][CHUNK + 2];
-    for (int z = 0; z < CHUNK + 2; ++z)
-        for (int x = 0; x < CHUNK + 2; ++x)
-            solid[z][x] = columnFromHeight(std::max(hm.h[z][x], hm.water[z][x]), y0) & ~(air ? air[z][x] : 0);
-
-    // ─── 1. Маски столбцов вдоль трёх осей: 34 бита (кайма + 32 + кайма) ─────────
-    // col[axis][u][v] - столбец вдоль оси d в точке (u, v) её плоскости
-    static thread_local uint64_t col[3][CHUNK][CHUNK];
-    uint64_t (&colX)[CHUNK][CHUNK] = col[0];   // [u = y][v = z], биты по x
-    uint64_t (&colY)[CHUNK][CHUNK] = col[1];   // [u = z][v = x], биты по y
-    uint64_t (&colZ)[CHUNK][CHUNK] = col[2];   // [u = x][v = y], биты по z
-
-    // вертикаль: формулой от высоты; правленый кусок - из его вокселей (кайма по высоте - по карте высот)
-    for (int z = 0; z < CHUNK; ++z) {
-        for (int x = 0; x < CHUNK; ++x) {
-            const int32_t top = hm.h[z + 1][x + 1];
-            uint64_t b;
-            if (!vox) {
-                b = solid[z + 1][x + 1];
-            } else {
-                b = 0;
-                for (int y = 0; y < CHUNK; ++y) if (vox->at(x, y, z) != AIR) b |= uint64_t(1) << (y + 1);
-                if (y0 - 1 <= top) b |= 1;
-                if (y0 + CHUNK <= top) b |= uint64_t(1) << 33;
-            }
-            colY[z][x] = b;
-        }
-    }
-    // горизонтали - поворотом таблиц из вертикальных масок (внутренние 32 бита), кайма по x/z - по карте высот
+// Видимые грани одного вида вокселей (self) - битами по трём осям, слияние в прямоугольники.
+// Грань видна, где воксель self, а сосед в сторону грани не self и не block: у грунта block нет (дно под
+// водой видно), у воды block - грунт (у воды остаются только грани в воздух). mat(x, y, z) - материал грани.
+template <class MatFn>
+void emitFaces(const uint64_t (&self)[3][CHUNK][CHUNK], const uint64_t (*block)[3][CHUNK][CHUNK], MatFn mat,
+               std::vector<uint32_t>& out, int& quads) {
     uint32_t t[CHUNK];
-    for (int z = 0; z < CHUNK; ++z) {                       // ось X: для каждого z таблица [x][биты y] -> [y][биты x]
-        for (int x = 0; x < CHUNK; ++x) t[x] = uint32_t(colY[z][x] >> 1);
-        transpose32(t);
-        for (int y = 0; y < CHUNK; ++y) {
-            uint64_t b = uint64_t(t[y]) << 1;
-            b |= solid[z + 1][0] >> (y + 1) & 1;                               // x = -1
-            b |= (solid[z + 1][CHUNK + 1] >> (y + 1) & 1) << 33;              // x = 32
-            colX[y][z] = b;
-        }
-    }
-    for (int x = 0; x < CHUNK; ++x) {                       // ось Z: для каждого x таблица [z][биты y] -> [y][биты z]
-        for (int z = 0; z < CHUNK; ++z) t[z] = uint32_t(colY[z][x] >> 1);
-        transpose32(t);
-        for (int y = 0; y < CHUNK; ++y) {
-            uint64_t b = uint64_t(t[y]) << 1;
-            b |= solid[0][x + 1] >> (y + 1) & 1;                               // z = -1
-            b |= (solid[CHUNK + 1][x + 1] >> (y + 1) & 1) << 33;              // z = 32
-            colZ[x][y] = b;
-        }
-    }
-
-    // ─── 2-4. По направлениям: видимые грани, строки слоёв поворотом, слияние на битах ──
     static thread_local uint32_t layerRows[CHUNK][CHUNK];   // [слой d][строка v], бит u
     static thread_local MatRows mats[64];
     for (int ai = 0; ai < 3; ++ai) {
@@ -106,8 +52,8 @@ void meshImpl(ChunkPos pos, const Chunk* vox, const ColumnHeights& hm, const uin
             // [d][биты u] для каждой строки v: грани всех 32 слоёв сразу разложены по строкам
             for (int v = 0; v < CHUNK; ++v) {
                 for (int u = 0; u < CHUNK; ++u) {
-                    const uint64_t b = col[ai][u][v];
-                    const uint64_t f = sign == 0 ? (b & ~(b >> 1)) : (b & ~(b << 1));
+                    const uint64_t b = self[ai][u][v], o = b | (block ? (*block)[ai][u][v] : 0);
+                    const uint64_t f = sign == 0 ? (b & ~(o >> 1)) : (b & ~(o << 1));
                     t[u] = uint32_t(f >> 1);
                 }
                 transpose32(t);
@@ -127,9 +73,7 @@ void meshImpl(ChunkPos pos, const Chunk* vox, const ColumnHeights& hm, const uin
                         const int u = std::countr_zero(r);
                         int p[3];
                         p[ax.u] = u; p[ax.v] = v; p[ax.d] = layer;
-                        const Material m = vox ? vox->at(p[0], p[1], p[2])
-                                               : columnMaterial(hm.h[p[2] + 1][p[0] + 1], hm.cover[p[2]][p[0]], y0 + p[1],
-                                                                hm.water[p[2] + 1][p[0] + 1]);
+                        const Material m = mat(p[0], p[1], p[2]);
                         int k = 0;
                         while (k < nmats && mats[k].mat != m) ++k;
                         if (k == nmats) { mats[k].mat = m; std::memset(mats[k].rows, 0, sizeof(mats[k].rows)); ++nmats; }
@@ -168,13 +112,95 @@ void meshImpl(ChunkPos pos, const Chunk* vox, const ColumnHeights& hm, const uin
                                 out.push_back(pack(p2[0], p2[1], p2[2], normal, m));
                                 out.push_back(pack(p1[0], p1[1], p1[2], normal, m));
                             }
-                            ++stats.quads;
+                            ++quads;
                         }
                     }
                 }
             }
         }
     }
+}
+
+// Маски вдоль x и z - поворотом таблиц из вертикальных col[1] (внутренние 32 бита); кайма по x/z - из edge
+// (столбцы с каймой 34×34). col[axis][u][v] - столбец вдоль оси d в точке (u, v) её плоскости.
+void rotateMasks(uint64_t (&col)[3][CHUNK][CHUNK], const uint64_t (&edge)[CHUNK + 2][CHUNK + 2]) {
+    uint64_t (&colX)[CHUNK][CHUNK] = col[0];   // [u = y][v = z], биты по x
+    uint64_t (&colY)[CHUNK][CHUNK] = col[1];   // [u = z][v = x], биты по y
+    uint64_t (&colZ)[CHUNK][CHUNK] = col[2];   // [u = x][v = y], биты по z
+    uint32_t t[CHUNK];
+    for (int z = 0; z < CHUNK; ++z) {                       // ось X: для каждого z таблица [x][биты y] -> [y][биты x]
+        for (int x = 0; x < CHUNK; ++x) t[x] = uint32_t(colY[z][x] >> 1);
+        transpose32(t);
+        for (int y = 0; y < CHUNK; ++y) {
+            uint64_t b = uint64_t(t[y]) << 1;
+            b |= edge[z + 1][0] >> (y + 1) & 1;                                // x = -1
+            b |= (edge[z + 1][CHUNK + 1] >> (y + 1) & 1) << 33;               // x = 32
+            colX[y][z] = b;
+        }
+    }
+    for (int x = 0; x < CHUNK; ++x) {                       // ось Z: для каждого x таблица [z][биты y] -> [y][биты z]
+        for (int z = 0; z < CHUNK; ++z) t[z] = uint32_t(colY[z][x] >> 1);
+        transpose32(t);
+        for (int y = 0; y < CHUNK; ++y) {
+            uint64_t b = uint64_t(t[y]) << 1;
+            b |= edge[0][x + 1] >> (y + 1) & 1;                                // z = -1
+            b |= (edge[CHUNK + 1][x + 1] >> (y + 1) & 1) << 33;               // z = 32
+            colZ[x][y] = b;
+        }
+    }
+}
+
+// vox - воксели правленого куска; nullptr - нетронутый: маски и материалы формулой от высот и покрова
+void meshImpl(ChunkPos pos, const Chunk* vox, const ColumnHeights& hm, const uint64_t (*air)[CHUNK + 2],
+              std::vector<uint32_t>& out, MeshStats& stats) {
+    out.clear();
+    stats = {};
+    const int32_t y0 = pos.y * CHUNK;
+    // Столбцы с каймой по x и z (34×34), 34 бита по y, формулой: грунт - не выше дна, минус воздух пещер (Р26);
+    // вода - выше дна и не выше уровня воды (Р28). Пещеры - только в грунте, под дном.
+    // Р34: вода прозрачна - для граней она не «твёрдое»: грунт под водой даёт свои грани (видно дно), у воды
+    // свои грани - только в воздух (поверхность, края водопадов); вода рисуется отдельным проходом.
+    static thread_local uint64_t solid[CHUNK + 2][CHUNK + 2], wet[CHUNK + 2][CHUNK + 2];
+    bool anyWater = false;
+    for (int z = 0; z < CHUNK + 2; ++z)
+        for (int x = 0; x < CHUNK + 2; ++x) {
+            const uint64_t ground = columnFromHeight(hm.h[z][x], y0);
+            solid[z][x] = ground & ~(air ? air[z][x] : 0);
+            wet[z][x] = columnFromHeight(hm.water[z][x], y0) & ~ground;
+            anyWater |= wet[z][x] != 0;
+        }
+
+    // ─── 1. Маски столбцов вдоль трёх осей: 34 бита (кайма + 32 + кайма) ─────────
+    static thread_local uint64_t col[3][CHUNK][CHUNK], wcol[3][CHUNK][CHUNK];
+    // вертикаль: формулой от высоты; правленый кусок - из его вокселей (кайма по высоте - по карте высот)
+    constexpr uint64_t EDGE_Y = 1 | uint64_t(1) << 33;
+    for (int z = 0; z < CHUNK; ++z) {
+        for (int x = 0; x < CHUNK; ++x) {
+            uint64_t b = solid[z + 1][x + 1], w = wet[z + 1][x + 1];
+            if (vox) {
+                b &= EDGE_Y;
+                w &= EDGE_Y;
+                for (int y = 0; y < CHUNK; ++y) {
+                    const Material m = vox->at(x, y, z);
+                    if (m == WATER) w |= uint64_t(1) << (y + 1);
+                    else if (m != AIR) b |= uint64_t(1) << (y + 1);
+                }
+                anyWater |= w != 0;
+            }
+            col[1][z][x] = b;
+            wcol[1][z][x] = w;
+        }
+    }
+    rotateMasks(col, solid);
+
+    // ─── 2-4. Грани грунта, затем воды: вода - в конце сетки (stats.waterQuads) ──
+    emitFaces(col, nullptr, [&](int x, int y, int z) {
+        return vox ? vox->at(x, y, z) : columnMaterial(hm.h[z + 1][x + 1], hm.cover[z][x], y0 + y, hm.water[z + 1][x + 1]);
+    }, out, stats.quads);
+    if (!anyWater) return;
+    rotateMasks(wcol, wet);
+    emitFaces(wcol, &col, [](int, int, int) { return Material(WATER); }, out, stats.waterQuads);
+    stats.quads += stats.waterQuads;
 }
 
 }  // namespace

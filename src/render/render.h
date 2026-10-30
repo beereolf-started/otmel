@@ -58,10 +58,10 @@ struct FrameStats { int drawCalls = 0, tiles = 0; int64_t quads = 0, tileTriangl
 class Backend {
 public:
     virtual ~Backend() = default;
-    // сетка куска: вершины по 4 на прямоугольник (см. world/mesher.h)
-    virtual MeshId uploadChunkMesh(std::span<const uint32_t> vertices) = 0;
-    // плитка дальнего уровня: 33×33 узла по 3 числа (см. world/lod.h)
-    virtual MeshId uploadTile(std::span<const uint32_t> words) = 0;
+    // сетка куска: вершины по 4 на прямоугольник (см. world/mesher.h); последние waterQuads - вода (Р34)
+    virtual MeshId uploadChunkMesh(std::span<const uint32_t> vertices, int waterQuads) = 0;
+    // плитка дальнего уровня: 33×33 узла по 5 чисел (см. world/lod.h); water - есть ли в ней вода (Р34)
+    virtual MeshId uploadTile(std::span<const uint32_t> words, bool water) = 0;
     virtual void destroyMesh(MeshId id) = 0;
     // маска готовых столбцов вокселей (Р21): side×side байт, строка - по z; над единицами плитки не рисуются
     virtual void updateVoxelMask(int side, std::span<const uint8_t> mask) = 0;

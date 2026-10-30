@@ -112,11 +112,14 @@ public:
         glNamedBufferStorage(ibo_, static_cast<GLsizeiptr>(idx.size() * 4), idx.data(), 0);
         glVertexArrayElementBuffer(vao_, ibo_);
 
-        // Узел плитки - четыре целых (Р20, Р25)
+        // Узел плитки - пять целых (Р20, Р25, Р34): четыре - рельеф, пятое - поверхность воды
         glCreateVertexArrays(1, &tileVao_);
         glEnableVertexArrayAttrib(tileVao_, 0);
         glVertexArrayAttribIFormat(tileVao_, 0, 4, GL_UNSIGNED_INT, 0);
         glVertexArrayAttribBinding(tileVao_, 0, 0);
+        glEnableVertexArrayAttrib(tileVao_, 1);
+        glVertexArrayAttribIFormat(tileVao_, 1, 1, GL_UNSIGNED_INT, 16);
+        glVertexArrayAttribBinding(tileVao_, 1, 0);
         // Индексы плитки общие, по четвертям подряд: четверть q - отрезок [q·1536, (q+1)·1536). Диагональ
         // квадрата везде одна, (i, j)-(i+1, j+1): тогда сползшая плитка складывается в грубую с той же диагональю.
         // Обход - против часовой сверху: (i, j) -> (i, j+1) -> (i+1, j+1), как у верхних граней вокселей.
@@ -150,12 +153,12 @@ public:
         return true;
     }
 
-    MeshId uploadChunkMesh(std::span<const uint32_t> v) override {
+    MeshId uploadChunkMesh(std::span<const uint32_t> v, int waterQuads) override {
         if (v.empty()) return NO_MESH;
-        return store(v, static_cast<GLsizei>(v.size() / 4));
+        return store(v, static_cast<GLsizei>(v.size() / 4), waterQuads);
     }
 
-    MeshId uploadTile(std::span<const uint32_t> words) override { return store(words, 0); }
+    MeshId uploadTile(std::span<const uint32_t> words, bool water) override { return store(words, 0, water ? 1 : 0); }
 
     void destroyMesh(MeshId id) override {
         if (id == NO_MESH || id >= meshes_.size() || !meshes_[id].vbo) return;
@@ -180,6 +183,7 @@ public:
     void execute(const CommandList& list, FrameStats& stats) override {
         stats = {};
         GLuint current = 0;
+        water_.clear();
         for (const Command& cmd : list.commands) {
             if (auto* c = std::get_if<CmdClear>(&cmd)) {
                 glBindFramebuffer(GL_FRAMEBUFFER, fbo_);
@@ -204,11 +208,13 @@ public:
                 const Mesh& m = meshes_[d->mesh];
                 if (!m.vbo) continue;
                 if (current != program_) { glUseProgram(program_); glBindVertexArray(vao_); current = program_; }
+                if (m.water) water_.push_back(&cmd);
+                stats.quads += m.quads;
+                if (m.quads == m.water) continue;
                 glProgramUniform3i(program_, 0, d->originVoxels.x, d->originVoxels.y, d->originVoxels.z);
                 glVertexArrayVertexBuffer(vao_, 0, m.vbo, 0, 4);
-                glDrawElements(GL_TRIANGLES, m.quads * 6, GL_UNSIGNED_INT, nullptr);
+                glDrawElements(GL_TRIANGLES, (m.quads - m.water) * 6, GL_UNSIGNED_INT, nullptr);
                 ++stats.drawCalls;
-                stats.quads += m.quads;
             } else if (auto* t = std::get_if<CmdDrawTile>(&cmd)) {
                 const Mesh& m = meshes_[t->mesh];
                 if (!m.vbo) continue;
@@ -218,27 +224,12 @@ public:
                     glBindTextureUnit(0, maskTex_);
                     current = tileProgram_;
                 }
-                glProgramUniform2i(tileProgram_, 0, t->originBlocks.x, t->originBlocks.y);
-                glProgramUniform1i(tileProgram_, 1, t->spacing);
-                glProgramUniform2f(tileProgram_, 2, t->morphStart, t->morphEnd);
-                glProgramUniform1i(tileProgram_, 3, t->level);
-                glVertexArrayVertexBuffer(tileVao_, 0, m.vbo, 0, 16);
-                if (t->quadrants == 0xF) {
-                    glDrawElements(GL_TRIANGLES, 4 * QUAD_INDICES, GL_UNSIGNED_SHORT, nullptr);
-                    ++stats.drawCalls;
-                    stats.tileTriangles += 4 * QUAD_INDICES / 3;
-                } else {
-                    for (int q = 0; q < 4; ++q)
-                        if (t->quadrants >> q & 1) {
-                            glDrawElements(GL_TRIANGLES, QUAD_INDICES, GL_UNSIGNED_SHORT,
-                                           reinterpret_cast<const void*>(static_cast<uintptr_t>(q * QUAD_INDICES * 2)));
-                            ++stats.drawCalls;
-                            stats.tileTriangles += QUAD_INDICES / 3;
-                        }
-                }
+                if (m.water) water_.push_back(&cmd);
+                drawTile(*t, m, stats);
                 ++stats.tiles;
             }
         }
+        drawWater(stats);
     }
 
     void present() override {
@@ -258,13 +249,70 @@ public:
     }
 
 private:
-    struct Mesh { GLuint vbo = 0; GLsizei quads = 0; };
+    // water: у куска - сколько последних прямоугольников - вода; у плитки - 1, если в ней есть вода (Р34)
+    struct Mesh { GLuint vbo = 0; GLsizei quads = 0, water = 0; };
 
-    MeshId store(std::span<const uint32_t> v, GLsizei quads) {
+    void drawTile(const CmdDrawTile& t, const Mesh& m, FrameStats& stats) {
+        glProgramUniform2i(tileProgram_, 0, t.originBlocks.x, t.originBlocks.y);
+        glProgramUniform1i(tileProgram_, 1, t.spacing);
+        glProgramUniform2f(tileProgram_, 2, t.morphStart, t.morphEnd);
+        glProgramUniform1i(tileProgram_, 3, t.level);
+        glVertexArrayVertexBuffer(tileVao_, 0, m.vbo, 0, 20);
+        if (t.quadrants == 0xF) {
+            glDrawElements(GL_TRIANGLES, 4 * QUAD_INDICES, GL_UNSIGNED_SHORT, nullptr);
+            ++stats.drawCalls;
+            stats.tileTriangles += 4 * QUAD_INDICES / 3;
+        } else {
+            for (int q = 0; q < 4; ++q)
+                if (t.quadrants >> q & 1) {
+                    glDrawElements(GL_TRIANGLES, QUAD_INDICES, GL_UNSIGNED_SHORT,
+                                   reinterpret_cast<const void*>(static_cast<uintptr_t>(q * QUAD_INDICES * 2)));
+                    ++stats.drawCalls;
+                    stats.tileTriangles += QUAD_INDICES / 3;
+                }
+        }
+    }
+
+    // Р34: вода - после всего непрозрачного, смешением «поверх» (a·вода + (1 - a)·что за ней). Глубину проверяет,
+    // но не пишет: вода не заслоняет воду за собой. Порядок между кусками воды не сортируется - слоёв воды
+    // друг за другом почти не бывает (край водопада над гладью).
+    void drawWater(FrameStats& stats) {
+        if (water_.empty()) return;
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        glDepthMask(GL_FALSE);
+        glProgramUniform1i(tileProgram_, 5, 1);
+        GLuint current = 0;
+        for (const Command* cmd : water_) {
+            if (auto* d = std::get_if<CmdDrawChunk>(cmd)) {
+                const Mesh& m = meshes_[d->mesh];
+                if (current != program_) { glUseProgram(program_); glBindVertexArray(vao_); current = program_; }
+                glProgramUniform3i(program_, 0, d->originVoxels.x, d->originVoxels.y, d->originVoxels.z);
+                glVertexArrayVertexBuffer(vao_, 0, m.vbo, 0, 4);
+                glDrawElements(GL_TRIANGLES, m.water * 6, GL_UNSIGNED_INT,
+                               reinterpret_cast<const void*>(static_cast<uintptr_t>((m.quads - m.water) * 6 * 4)));
+                ++stats.drawCalls;
+            } else if (auto* t = std::get_if<CmdDrawTile>(cmd)) {
+                if (current != tileProgram_) {
+                    glUseProgram(tileProgram_);
+                    glBindVertexArray(tileVao_);
+                    glBindTextureUnit(0, maskTex_);
+                    current = tileProgram_;
+                }
+                drawTile(*t, meshes_[t->mesh], stats);
+            }
+        }
+        glProgramUniform1i(tileProgram_, 5, 0);
+        glDepthMask(GL_TRUE);
+        glDisable(GL_BLEND);
+    }
+
+    MeshId store(std::span<const uint32_t> v, GLsizei quads, GLsizei water) {
         Mesh m;
         glCreateBuffers(1, &m.vbo);
         glNamedBufferStorage(m.vbo, static_cast<GLsizeiptr>(v.size_bytes()), v.data(), 0);
         m.quads = quads;
+        m.water = water;
         if (!free_.empty()) {
             const MeshId id = free_.back();
             free_.pop_back();
@@ -308,6 +356,7 @@ private:
     int width_ = 1, height_ = 1;
     std::vector<Mesh> meshes_;
     std::vector<MeshId> free_;
+    std::vector<const Command*> water_;   // кадр: что рисовать вторым, прозрачным проходом (Р34)
 };
 
 }  // namespace

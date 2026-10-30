@@ -50,7 +50,7 @@ public:
         Builder::TileResult r;
         for (int n = 0; n < 512 && builder_.popTile(r); ++n) {
             Entry e;
-            e.mesh = gpu_.uploadTile(r.mesh.data);
+            e.mesh = gpu_.uploadTile(r.mesh.data, r.mesh.water);
             e.minY = float(r.mesh.minH) / world::VOXELS_PER_BLOCK;
             e.maxY = float(r.mesh.maxH + 1) / world::VOXELS_PER_BLOCK;
             e.used = frame_;
