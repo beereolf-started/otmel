@@ -233,6 +233,7 @@ int main(int argc, char** argv) {
     constexpr int SIM = 128, SIM_OFF = (FLOW_SIZE - SIM) / 2;
     world::WaterSim sim;
     sim.holdEdges = true;
+    sim.keepChannel = true;
     bool simOn = false;
     std::vector<float> fieldVel, shownVel, simVerts;
     int simFrame = 0;

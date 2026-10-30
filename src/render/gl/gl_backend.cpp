@@ -237,6 +237,7 @@ public:
                 for (int i = 0; i < 4; ++i) u.flow[i] = cam->flowArea[i];
                 u.time[0] = cam->time;
                 for (int i = 0; i < 4; ++i) u.simArea[i] = cam->simArea[i];
+                simArea_ = cam->simArea;
                 glNamedBufferSubData(ubo_, 0, sizeof(u), &u);
                 glBindBufferBase(GL_UNIFORM_BUFFER, 0, ubo_);
             } else if (auto* d = std::get_if<CmdDrawChunk>(&cmd)) {
@@ -327,6 +328,13 @@ private:
                     glBindTextureUnit(1, flowTex_);   // Р43: поле течений
                     current = program_;
                 }
+                // Р45: в зоне автомата воду кусков не рисуем - там вода автомата; граница зоны кратна 32 блокам,
+                // кусок (2 блока) её не пересекает
+                if (simArea_.w > 0) {
+                    const float bx = float(d->originVoxels.x) / 16.0f, bz = float(d->originVoxels.z) / 16.0f;
+                    if (bx >= simArea_.x && bz >= simArea_.y && bx + 2 <= simArea_.x + simArea_.z && bz + 2 <= simArea_.y + simArea_.z)
+                        continue;
+                }
                 glProgramUniform3i(program_, 0, d->originVoxels.x, d->originVoxels.y, d->originVoxels.z);
                 glVertexArrayVertexBuffer(vao_, 0, m.vbo, 0, 4);
                 glDrawElements(GL_TRIANGLES, m.water * 6, GL_UNSIGNED_INT,
@@ -405,6 +413,7 @@ private:
     GLuint fbo_ = 0, colorRb_ = 0, depthRb_ = 0, maskTex_ = 0, flowTex_ = 0;
     GLuint dynProgram_ = 0, dynVao_ = 0, dynVbo_ = 0;   // Р45: вода автомата
     GLsizei dynCount_ = 0;
+    glm::vec4 simArea_{0};
     int flowSide_ = 0;
     int maskSide_ = 0;
     int width_ = 1, height_ = 1;

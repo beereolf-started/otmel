@@ -55,6 +55,9 @@ void WaterSim::step(float dt) {
             }
             depth_[k] = std::max(0.0f, depth_[k] + dt * (in - out) / (CELL * CELL));
         }
+    if (keepChannel)
+        for (size_t k = 0; k < depth_.size(); ++k)
+            depth_[k] = depth0_[k] > 0 ? std::clamp(depth_[k], depth0_[k], depth0_[k] + riseMax) : 0.0f;
     if (holdEdges)
         for (int z = 0; z < h_; ++z)
             for (int x = 0; x < w_; ++x)

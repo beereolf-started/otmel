@@ -29,10 +29,6 @@ float ripples(vec2 q) { return valueNoise(q) * 0.6 + valueNoise(q * 2.3 + 7.1) *
 
 void main() {
     if (vWater == 0u) { outColor = vColor; return; }   // грунт - как был
-    // Р45: в зоне автомата сгенерированную воду не рисуем - там вода автомата (своя сетка, vWater = 2)
-    if (vWater == 1u && simArea.w > 0.0 && all(greaterThanEqual(vWorld.xz, simArea.xy + 1.0)) &&
-        all(lessThanEqual(vWorld.xz, simArea.xy + simArea.z - 1.0)))
-        discard;
     // Р43: скорость воды здесь - из поля течений (вне поля - стоячая)
     vec2 uv = (vWorld.xz - flowArea.xy) / max(flowArea.z, 1.0);
     vec2 v = all(greaterThanEqual(uv, vec2(0))) && all(lessThanEqual(uv, vec2(1))) ? texture(uFlow, uv).xy : vec2(0);
