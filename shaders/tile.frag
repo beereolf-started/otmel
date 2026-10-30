@@ -2,6 +2,7 @@
 layout(location = 0) in vec4 vColor;
 layout(location = 1) in vec3 vWorld;
 layout(location = 2) in float vAbove;   // Р51: вода над своей землёй, воксели
+layout(location = 3) in float vForest;  // Р67: густота леса 0..1
 
 layout(std140, binding = 0) uniform Frame {
     mat4 viewProj;
@@ -21,6 +22,19 @@ layout(binding = 0) uniform usampler2D uVoxelMask;   // 1 - столбец во�
 
 layout(location = 0) out vec4 outColor;
 
+// Р67: шум крон - целочисленный хеш (мировые координаты - сотни тысяч блоков)
+float chash(vec2 q) {
+    uvec2 u = uvec2(ivec2(floor(q)));
+    uint h = u.x * 0x8DA6B343u ^ u.y * 0xD8163841u;
+    h ^= h >> 13; h *= 0x5BD1E995u; h ^= h >> 15;
+    return float(h & 0xFFFFu) / 65535.0;
+}
+float cnoise(vec2 q) {
+    vec2 i = floor(q), f = q - i;
+    f = f * f * (3.0 - 2.0 * f);
+    return mix(mix(chash(i), chash(i + vec2(1, 0)), f.x), mix(chash(i + vec2(0, 1)), chash(i + vec2(1, 1)), f.x), f.y);
+}
+
 void main() {
     // над готовыми столбцами вокселей гладкой поверхности нет: там рисуют воксели (Р21). Где столбец ещё
     // не построен - остаётся гладкий рельеф той же формы. Четверти плиток целиком над вокселями отброшены раньше.
@@ -33,6 +47,21 @@ void main() {
     float haze = fade.w * (1.0 - exp(-d / fade.z));
     vec3 col = vColor.rgb;
     float a = vColor.a;
+    // Р67: лес вдали - пятна крон на земле, где по формуле густоты должен быть лес (как у дубов и спрайтов);
+    // начинается там, где кончаются спрайты (Р68: 3.6 км); где пятно меньше пикселя - средний тон
+    if (a >= 0.99 && vForest > 0.01) {
+        float k = smoothstep(215.0, 225.0, d);   // Р68: спрайты - до 3.6 км (225 прежних блоков)
+        if (k > 0.0) {
+            vec2 wb = vWorld.xz * 16.0;   // блоки
+            float n = cnoise(wb / 6.0) * 0.6 + cnoise(wb / 2.7 + 5.3) * 0.4;
+            float cover = min(1.0, vForest * 1.05);
+            float crown = smoothstep(1.0 - cover - 0.12, 1.0 - cover + 0.12, n);
+            float px = max(fwidth(wb.x), fwidth(wb.y)) / 6.0;   // крон на пиксель
+            crown = mix(crown, cover, clamp(px * 1.5 - 0.5, 0.0, 1.0));
+            vec3 canopy = mix(vec3(0.14, 0.27, 0.09), vec3(0.2, 0.36, 0.13), cnoise(wb / 3.1 + 11.0));
+            col = mix(col, canopy, crown * k);
+        }
+    }
     if (a < 0.99) {   // вода (0.55); у земли 1.0 после интерполяции бывает 0.99999994 - земля красилась крапинкой воды
         // Р51: вода ниже своей земли (сухие узлы держат её под дном) не рисуется: в щели у края вокселей она
         // просвечивала светлой линией

@@ -4,6 +4,7 @@
 #include <cmath>
 
 #include "world/caves.h"
+#include "world/forest.h"
 #include "world/rivers.h"
 
 namespace world {
@@ -111,9 +112,14 @@ void buildTile(const TerrainParams& p, TileKey k, TileMesh& out) {
             const int ci = i >> 1, cj = j >> 1;
             const int32_t hcT = hc[cj + 1][ci + 1];
 
-            Cover c = shoreF[j + 1][i + 1] ? Cover{SAND, SAND}
-                                             : coverAt(p, climateAt(p, int32_t(x0 + i * step), int32_t(z0 + j * step),
-                                                                slowFine(x0 + i * step, z0 + j * step)), h);
+            const Climate cl = climateAt(p, int32_t(x0 + i * step), int32_t(z0 + j * step), slowFine(x0 + i * step, z0 + j * step));
+            Cover c = shoreF[j + 1][i + 1] ? Cover{SAND, SAND} : coverAt(p, cl, h);
+            // Р67: густота леса в узле (как у дубов вблизи и спрайтов) - для шума крон вдали; у воды, на берегу и на
+            // кручах (больше блока на блок) - ноль
+            float forest = 0.0f;
+            if (!shoreF[j + 1][i + 1] && !wetF[j + 1][i + 1] &&
+                std::max(std::abs(hf[j + 1][i + 2] - hf[j + 1][i]), std::abs(hf[j + 2][i + 1] - hf[j][i + 1])) <= 2 * step)
+                forest = forestDensity(p, int32_t(x0 + i * step), int32_t(z0 + j * step), h, cl);
             if (!shoreF[j + 1][i + 1] && !wetF[j + 1][i + 1] &&
                 caveMouth(p, int32_t(x0 + i * step), int32_t(z0 + j * step), h, int32_t(step / VOXELS_PER_BLOCK)))
                 c = Cover{DIRT, DIRT};
@@ -121,7 +127,7 @@ void buildTile(const TerrainParams& p, TileKey k, TileMesh& out) {
             w[0] = h16(h) | h16(hcT) << 16;
             w[1] = slope256(hf[j + 1][i + 2] - hf[j + 1][i], step) | slope256(hf[j + 2][i + 1] - hf[j][i + 1], step) << 16;
             w[2] = coarseGrad[cj][ci];
-            w[3] = uint32_t(c.top) | uint32_t(c.under) << 4 | coarseCover[cj][ci] << 8;
+            w[3] = uint32_t(c.top) | uint32_t(c.under) << 4 | coarseCover[cj][ci] << 8 | uint32_t(std::lround(forest * 255.0f)) << 16;
             const int32_t s = sf[j + 1][i + 1], scT = sc[cj + 1][ci + 1];
             w[4] = h16(s) | h16(scT) << 16;
             const bool wet = wetF[j + 1][i + 1] || wetC[cj + 1][ci + 1];

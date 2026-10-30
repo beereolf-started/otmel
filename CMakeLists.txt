@@ -34,6 +34,7 @@ add_library(otmel_world STATIC
     src/world/water_sim.cpp
     src/world/spread.cpp
     src/world/oak.cpp
+    src/world/forest.cpp
 )
 target_include_directories(otmel_world PUBLIC src)
 
@@ -53,7 +54,7 @@ find_program(GLSLC glslc HINTS $ENV{VULKAN_SDK}/Bin ${GLSLC_CANDIDATES})
 if(NOT GLSLC)
     list(GET GLSLC_CANDIDATES 0 GLSLC)
 endif()
-set(SHADERS terrain.vert terrain.frag tile.vert tile.frag dynwater.vert finewater.vert spray.vert)
+set(SHADERS terrain.vert terrain.frag tile.vert tile.frag dynwater.vert finewater.vert spray.vert treesprite.vert treesprite.frag)
 set(SPV_FILES)
 foreach(S ${SHADERS})
     set(OUT ${CMAKE_CURRENT_BINARY_DIR}/shaders/${S}.spv)

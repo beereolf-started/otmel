@@ -100,7 +100,16 @@ public:
         dynProgram_ = loadProgram(shaderDir, "dynwater", "terrain");   // Р45: вода автомата
         fineProgram_ = loadProgram(shaderDir, "finewater", "terrain");   // Р58: мелкая вода у камеры
         sprayProgram_ = loadProgram(shaderDir, "spray", "terrain");      // Р59: брызги
-        if (!program_ || !tileProgram_ || !dynProgram_ || !fineProgram_ || !sprayProgram_) return false;
+        treeProgram_ = loadProgram(shaderDir, "treesprite");                // Р65: спрайты дубов
+        if (!program_ || !tileProgram_ || !dynProgram_ || !fineProgram_ || !sprayProgram_ || !treeProgram_) return false;
+        glCreateVertexArrays(1, &treeVao_);
+        for (GLuint a = 0; a < 2; ++a) {
+            glEnableVertexArrayAttrib(treeVao_, a);
+            glVertexArrayAttribFormat(treeVao_, a, 4, GL_FLOAT, GL_FALSE, a * 16);
+            glVertexArrayAttribBinding(treeVao_, a, 0);
+        }
+        glVertexArrayBindingDivisor(treeVao_, 0, 1);
+        glCreateBuffers(1, &treeVbo_);
         glCreateVertexArrays(1, &sprayVao_);
         for (GLuint a = 0; a < 2; ++a) {
             glEnableVertexArrayAttrib(sprayVao_, a);
@@ -244,6 +253,11 @@ public:
         fineOrigin_ = origin;
     }
 
+    void setTreeSprites(std::span<const float> v) override {
+        treeCount_ = static_cast<GLsizei>(v.size() / 8);
+        if (treeCount_ > 0) glNamedBufferData(treeVbo_, static_cast<GLsizeiptr>(v.size_bytes()), v.data(), GL_STATIC_DRAW);
+    }
+
     void setSpray(std::span<const float> v) override {
         sprayCount_ = static_cast<GLsizei>(v.size() / 8);
         if (sprayCount_ > 0) glNamedBufferData(sprayVbo_, static_cast<GLsizeiptr>(v.size_bytes()), v.data(), GL_STREAM_DRAW);
@@ -313,6 +327,16 @@ public:
                 drawTile(*t, m, stats);
                 ++stats.tiles;
             }
+        }
+        // Р65: спрайты дубов вдали - непрозрачные (вырез по рисунку), до воды
+        if (treeCount_ > 0) {
+            glUseProgram(treeProgram_);
+            glBindVertexArray(treeVao_);
+            glVertexArrayVertexBuffer(treeVao_, 0, treeVbo_, 0, 32);
+            glDisable(GL_CULL_FACE);
+            glDrawArraysInstanced(GL_TRIANGLES, 0, 6, treeCount_);
+            glEnable(GL_CULL_FACE);
+            ++stats.drawCalls;
         }
         drawWater(stats);
     }
@@ -502,6 +526,8 @@ private:
     GLuint fineProgram_ = 0, fineVao_ = 0, fineSsbo_ = 0, fineTex_ = 0, fineMask_ = 0;   // Р58: мелкая вода
     GLsizei fineCount_ = 0;
     GLuint sprayProgram_ = 0, sprayVao_ = 0, sprayVbo_ = 0;   // Р59: брызги
+    GLuint treeProgram_ = 0, treeVao_ = 0, treeVbo_ = 0;      // Р65: спрайты дубов
+    GLsizei treeCount_ = 0;
     GLsizei sprayCount_ = 0;
     int fineSide_ = 0;
     glm::ivec2 fineOrigin_{0};

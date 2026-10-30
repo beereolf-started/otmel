@@ -26,6 +26,7 @@
 #include "render/render.h"
 #include "gen/noise.h"
 #include "world/flow.h"
+#include "world/forest.h"
 #include "world/lod.h"
 #include "world/mesher.h"
 #include "world/oak.h"
@@ -470,6 +471,14 @@ int main(int argc, char** argv) {
     int forestGroundSide = 0;
     std::unordered_map<uint64_t, ForestTree> forest;
     std::vector<std::future<ForestBuilt>> forestRunning;
+    // Р65: спрайты дубов вдали - в фоне, при сдвиге камеры на 64 блока или смене поля течений и зоны леса
+    std::future<std::vector<float>> spriteJob;
+    glm::vec2 spriteAt(1e9f);
+    glm::ivec2 spriteFlowAt(INT32_MIN), spriteZoneAt(INT32_MIN);
+    size_t spriteCount = 0;
+    std::vector<float> spriteFar;      // спрайты кольца (фон)
+    bool spritesDirty = false;         // дубы зоны без сетки - тоже спрайтами (пока строятся)
+    bool firstFrame = true;            // Р66: первый кадр ждёт лес - видно сразу
     // Р64: замеры для журнала - долгие кадры и сводка раз в 10 с
     int forestUploads = 0, fineShown = 0;
     double statSum = 0, statWorst = 0;
@@ -551,6 +560,7 @@ int main(int argc, char** argv) {
                     return f;
                 });
             }
+            if (firstFrame && flowJob.valid()) flowJob.wait();   // Р66: лес с первого кадра - нужна земля поля
             if (flowJob.valid() && flowJob.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
                 FlowData f = flowJob.get();
                 fieldVel = std::move(f.vel);
@@ -846,17 +856,14 @@ int main(int argc, char** argv) {
                     z->ground = g;
                     const auto H = [&](int x, int y) { return (*g)[size_t(y - z->origin.y) * S + (x - z->origin.x)]; };
                     const auto wet = [&](int x, int y) { const size_t k = size_t(y - z->origin.y) * S + (x - z->origin.x); return w[k] > (*g)[k]; };
-                    constexpr int CELL = 10;
+                    // Р65: места, семена и густота - общие с дальними спрайтами и шумом крон (world/forest)
+                    constexpr int CELL = world::FOREST_CELL;
                     const auto fdc = [](int v) { return v >= 0 ? v / CELL : -((-v + CELL - 1) / CELL); };
                     for (int cj = fdc(want.y); cj <= fdc(want.y + 15 * 32 - 1); ++cj)
                         for (int ci = fdc(want.x); ci <= fdc(want.x + 15 * 32 - 1); ++ci) {
-                            uint32_t h = uint32_t(ci) * 0x8DA6B343u ^ uint32_t(cj) * 0xD8163841u ^ tp.seed * 0x9E3779B1u ^ 0x7F4A7C15u;
-                            const auto nx = [&h] { h ^= h >> 13; h *= 0x5BD1E995u; h ^= h >> 15; return h; };
-                            const int x = ci * CELL + int(nx() % CELL), y = cj * CELL + int(nx() % CELL);
+                            const world::TreeCandidate tc = world::forestCandidate(tp, ci, cj);
+                            const int x = tc.x, y = tc.z;
                             if (x < want.x || y < want.y || x >= want.x + 15 * 32 || y >= want.y + 15 * 32) continue;
-                            const float roll = float(nx() & 0xFFFF) / 65535.0f;
-                            const int fx = int(nx() % 16), fz = int(nx() % 16);
-                            const uint32_t seed = nx();
                             // вода и берег, крутизна
                             bool bad = false;
                             int32_t lo = INT32_MAX, hi = INT32_MIN;
@@ -868,23 +875,18 @@ int main(int argc, char** argv) {
                                 }
                             if (bad) { ++z->nWet; continue; }
                             if (hi - lo > 3) { ++z->nSteep; continue; }
-                            // климат: дожди, снег; рощи - крупным шумом
-                            const world::Climate cl = world::climateAt(tp, x, y);
-                            const float temp = float(world::temperatureAt(tp, cl, H(x, y))) / 65536.0f;
-                            if (temp < float(tp.snowBelow) / 65536.0f + 0.05f) { ++z->nSnow; continue; }
-                            const float rain = float(cl.rain) / float(2 * tp.rainMid);
-                            const auto sst = [](float a, float b, float v) { const float t = std::clamp((v - a) / (b - a), 0.0f, 1.0f); return t * t * (3 - 2 * t); };
-                            const float grove = float(gen::value2(x, y, 9, tp.seed ^ 0xF0E57u)) / 65536.0f;
-                            const float dens = sst(0.05f, 0.5f, rain) * sst(-0.5f, 0.2f, grove) * 0.85f;   // степь - редкие дубы, влажно - рощи
-                            z->rainSum += rain; z->groveSum += grove; ++z->nC;
-                            if (roll >= dens) { ++z->nSparse; continue; }
+                            const float dens = world::forestDensity(tp, x, y, H(x, y));
+                            if (dens <= 0.0f) { ++z->nSnow; continue; }
+                            ++z->nC;
+                            if (tc.roll >= dens) { ++z->nSparse; continue; }
                             int32_t g0 = INT32_MAX;
                             for (const auto [dx, dy] : {std::pair{0, 0}, {1, 0}, {0, 1}, {1, 1}}) g0 = std::min(g0, H(x + dx, y + dy));
-                            z->spots.push_back({(uint64_t(uint32_t(ci)) << 32) | uint32_t(cj), glm::ivec3(x, g0 + 1, y), glm::ivec3(fx, 0, fz), seed});
+                            z->spots.push_back({(uint64_t(uint32_t(ci)) << 32) | uint32_t(cj), glm::ivec3(x, g0 + 1, y), glm::ivec3(tc.fx, 0, tc.fz), tc.seed});
                         }
                     return z;
                 });
             }
+            if (firstFrame && forestJob.valid()) forestJob.wait();
             if (forestJob.valid() && forestJob.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
                 const std::unique_ptr<ForestZone> z = forestJob.get();
                 forestGround = z->ground;
@@ -899,9 +901,9 @@ int main(int argc, char** argv) {
                 }
                 for (const ForestSpot& sp : z->spots)
                     if (!forest.count(sp.key)) forest[sp.key].spot = sp;
-                journal::info("лес", "зона ({}, {}): мест {}; отказ: вода {}, круто {}, снег {}, редко {} (дожди {:.2f}, рощи {:.2f})",
-                              want.x, want.y, z->spots.size(), z->nWet, z->nSteep, z->nSnow, z->nSparse,
-                              z->nC ? z->rainSum / z->nC : 0.0f, z->nC ? z->groveSum / z->nC : 0.0f);
+                spritesDirty = true;
+                journal::info("лес", "зона ({}, {}): мест {}; отказ: вода {}, круто {}, снег и сушь {}, редко {} (из {})",
+                              want.x, want.y, z->spots.size(), z->nWet, z->nSteep, z->nSnow, z->nSparse, z->nC);
             }
             // Р63: уровень дерева - по расстоянию: до 12 блоков - 0 (мелкий воксель), 32 - 1, 64 - 2, 128 - 3, дальше - 4
             // (воксель - блок). Сначала - деревья без сетки (грубым уровнем, сразу видно весь лес), затем ближние.
@@ -948,6 +950,7 @@ int main(int argc, char** argv) {
                 t.meshes.clear();
                 for (const OakChunk& oc : fb.chunks) t.meshes.push_back({gpu->uploadChunkMesh(oc.verts, 0), fb.base, oc.fineOff, 1 << fb.level});
                 forestUploads += int(fb.chunks.size());
+                if (t.level < 0) spritesDirty = true;   // был спрайтом - теперь сетка
                 t.level = fb.level;
                 t.building = -1;
             }
@@ -963,6 +966,84 @@ int main(int argc, char** argv) {
                     journal::info("лес", "весь лес зоны с сеткой: {} дубов за {:.0f} мс; по уровням 0-4: {} {} {} {} {}", ready, msSince(since),
                                   byLevel[0], byLevel[1], byLevel[2], byLevel[3], byLevel[4]);
                 }
+            }
+        }
+        // Р65: спрайты дубов - кольцо от зоны леса вблизи (480 блоков) до 1.6 км: те же ячейки, семена и густота
+        // (world/forest), земля - по полю рельефа (клетка 16 блоков, между клетками - плавно), без воды и круч
+        if (!flowGround.empty()) {
+            const glm::vec2 ebf(eye.x * 16.0f, eye.z * 16.0f);
+            if (!spriteJob.valid() && (glm::distance(ebf, spriteAt) > 64.0f || spriteFlowAt != flowAt || spriteZoneAt != forestAt)) {
+                spriteAt = ebf;
+                spriteFlowAt = flowAt;
+                spriteZoneAt = forestAt;
+                spriteJob = std::async(std::launch::async, [&tp, g = flowGround, sfc = flowSurface, fa = flowAt, za = forestAt, ebf] {
+                    const auto t0 = clock_t_::now();
+                    std::vector<float> inst;
+                    // Р68: ближнее кольцо - до 1.6 км, каждая ячейка, земля - поле рельефа; дальнее - до 3.6 км, каждая
+                    // вторая ячейка по осям (четверть деревьев), спрайт шире ×1.6 (лес так же сплошной), земля - крупный
+                    // рельеф без рек
+                    constexpr int R = 1600, RF = 3600, CELL = world::FOREST_CELL;
+                    const auto fdc = [](int v) { return v >= 0 ? v / CELL : -((-v + CELL - 1) / CELL); };
+                    const auto cellAt = [&](int ox, int oz) { return size_t(std::clamp(oz, 0, FLOW_SIZE - 1)) * FLOW_SIZE + size_t(std::clamp(ox, 0, FLOW_SIZE - 1)); };
+                    const int ex = int(ebf.x), ez = int(ebf.y);
+                    for (int cj = fdc(ez - RF); cj <= fdc(ez + RF); ++cj)
+                        for (int ci = fdc(ex - RF); ci <= fdc(ex + RF); ++ci) {
+                            const int cdx = ci * CELL - ex, cdz = cj * CELL - ez, cd2 = cdx * cdx + cdz * cdz;
+                            if (cd2 > R * R) {   // дальнее кольцо
+                                if (cd2 > RF * RF || (ci & 1) || (cj & 1)) continue;
+                                const world::TreeCandidate tc = world::forestCandidate(tp, ci, cj);
+                                const world::SlowFields sl = world::slowAt(tp, tc.x, tc.z, 10);
+                                const world::Relief br = world::baseReliefAt(tp, tc.x, tc.z, sl, 10);
+                                if (br.land < fx::ONE || br.height < tp.seaLevel) continue;
+                                const float dens = world::forestDensity(tp, tc.x, tc.z, br.height, world::climateAt(tp, tc.x, tc.z, sl));
+                                if (tc.roll >= dens) continue;
+                                const float fr = float(tc.seed & 0xFFFF) / 65535.0f;
+                                inst.insert(inst.end(), {(float(tc.x) + 0.5f) / 16.0f, (float(br.height) - 0.5f) / 16.0f, (float(tc.z) + 0.5f) / 16.0f,
+                                                         (10.0f + 3.0f * fr) / 16.0f, (8.0f + 3.0f * fr) * 1.6f / 16.0f, float(tc.seed & 0x7FFF), 0.0f, 0.0f});
+                                continue;
+                            }
+                            const world::TreeCandidate tc = world::forestCandidate(tp, ci, cj);
+                            if (tc.x >= za.x && tc.z >= za.y && tc.x < za.x + 15 * 32 && tc.z < za.y + 15 * 32) continue;   // там - дубы вблизи
+                            // земля - между центрами клеток поля плавно (прежние меры)
+                            const float qx = float(tc.x) / 16.0f - fa.x - 0.5f, qz = float(tc.z) / 16.0f - fa.y - 0.5f;
+                            const int ox = int(std::floor(qx)), oz = int(std::floor(qz));
+                            if (ox < 0 || oz < 0 || ox >= FLOW_SIZE - 1 || oz >= FLOW_SIZE - 1) continue;
+                            const float tx = qx - ox, tz = qz - oz;
+                            const size_t k00 = cellAt(ox, oz), k10 = cellAt(ox + 1, oz), k01 = cellAt(ox, oz + 1), k11 = cellAt(ox + 1, oz + 1);
+                            bool wetNear = false;
+                            for (const size_t k : {k00, k10, k01, k11}) wetNear |= sfc[k] > g[k] + 0.01f;
+                            if (wetNear) continue;
+                            if (std::max({g[k00], g[k10], g[k01], g[k11]}) - std::min({g[k00], g[k10], g[k01], g[k11]}) > 1.0f) continue;   // круто
+                            const float gy = (g[k00] * (1 - tx) + g[k10] * tx) * (1 - tz) + (g[k01] * (1 - tx) + g[k11] * tx) * tz;
+                            const float dens = world::forestDensity(tp, tc.x, tc.z, int32_t(gy * 16.0f));
+                            if (tc.roll >= dens) continue;
+                            const float fr = float(tc.seed & 0xFFFF) / 65535.0f;
+                            inst.insert(inst.end(), {(float(tc.x) + (tc.fx + 0.5f) / 16.0f) / 16.0f, gy - 1.0f / 16.0f, (float(tc.z) + (tc.fz + 0.5f) / 16.0f) / 16.0f,
+                                                     (10.0f + 3.0f * fr) / 16.0f, (8.0f + 3.0f * fr) / 16.0f, float(tc.seed & 0x7FFF), 0.0f, 0.0f});
+                        }
+                    journal::info("лес", "спрайты: {} за {:.0f} мс", inst.size() / 8, msSince(t0));
+                    return inst;
+                });
+            }
+            if (firstFrame && spriteJob.valid()) spriteJob.wait();
+            if (spriteJob.valid() && spriteJob.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+                spriteFar = spriteJob.get();
+                spritesDirty = true;
+            }
+            // кольцо + дубы зоны, у которых ещё нет сетки (строятся) - спрайтами: лес виден сразу и целиком
+            if (spritesDirty) {
+                spritesDirty = false;
+                std::vector<float> inst = spriteFar;
+                for (const auto& [key, t] : forest) {
+                    if (t.level >= 0) continue;
+                    const ForestSpot& sp = t.spot;
+                    const float fr = float(sp.seed & 0xFFFF) / 65535.0f;
+                    inst.insert(inst.end(), {(float(sp.base.x) + (sp.shift.x + 0.5f) / 16.0f) / 16.0f, (float(sp.base.y) - 0.2f) / 16.0f,
+                                             (float(sp.base.z) + (sp.shift.z + 0.5f) / 16.0f) / 16.0f, (10.0f + 3.0f * fr) / 16.0f,
+                                             (8.0f + 3.0f * fr) / 16.0f, float(sp.seed & 0x7FFF), 0.0f, 0.0f});
+                }
+                gpu->setTreeSprites(inst);
+                spriteCount = inst.size() / 8;
             }
         }
         frame.reset();
@@ -1030,6 +1111,7 @@ int main(int argc, char** argv) {
             }
         }
         gpu->present();
+        firstFrame = false;
         // Р64: долгий кадр (больше 50 мс) - в журнал, не чаще раза в секунду; раз в 10 с - сводка
         {
             const double frameMs = double(dt) * 1000.0;
@@ -1039,9 +1121,9 @@ int main(int argc, char** argv) {
             int trees = 0, lv[5] = {};
             for (const auto& [key, t] : forest) if (t.level >= 0) { ++trees; ++lv[t.level]; }
             const auto counts = [&] {
-                return std::format("мелкая вода {} блоков, брызг {}, дубов {} (по уровням 0-4: {} {} {} {} {}), строится {}, выгружено сеток леса {}; "
+                return std::format("мелкая вода {} блоков, брызг {}, дубов {} (по уровням 0-4: {} {} {} {} {}), строится {}, выгружено сеток леса {}, спрайтов {}; "
                                    "прямоугольников {}, вызовов {}", fineShown, drops.size(), trees, lv[0], lv[1], lv[2], lv[3], lv[4],
-                                   forestRunning.size(), forestUploads, fs.quads, fs.drawCalls);
+                                   forestRunning.size(), forestUploads, spriteCount, fs.quads, fs.drawCalls);
             };
             if (frameMs > 50.0 && msSince(spikeAt) > 1000.0) {
                 spikeAt = clock_t_::now();

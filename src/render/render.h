@@ -78,6 +78,8 @@ public:
     virtual void setSimWater(std::span<const float> vertices) = 0;
     // Р59: брызги и водяная пыль - по 8 чисел на каплю: x, y, z (прежние меры), размер, непрозрачность, вид, 0, 0
     virtual void setSpray(std::span<const float> instances) = 0;
+    // Р65: спрайты дубов вдали - по 8 чисел: x, y, z основания (прежние меры), высота, ширина, семя, 0, 0
+    virtual void setTreeSprites(std::span<const float> instances) = 0;
     // Р58: мелкая вода у камеры: зона side×side блоков с углом origin (блоки мира); data - (side+2)² пар (vb, верх
     // земли) с каймой в блок; mask - side² байт (1 - блок рисуется мелкой водой, его вода кусков прячется);
     // blocks - пары координат таких блоков (мир)
