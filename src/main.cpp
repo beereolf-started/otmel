@@ -10,6 +10,7 @@
 #include <cmath>
 #include <cstring>
 #include <format>
+#include <future>
 #include <memory>
 #include <string>
 #include <thread>
@@ -23,7 +24,9 @@
 #include "frustum.h"
 #include "journal.h"
 #include "render/render.h"
+#include "world/flow.h"
 #include "world/lod.h"
+#include "world/water_sim.h"
 #include "world/terrain.h"
 #include "builder.h"
 #include "voxel_zone.h"
@@ -218,6 +221,21 @@ int main(int argc, char** argv) {
     render::FrameStats fs;
     FarTerrain::Stats farStats;
     auto last = clock_t_::now(), titleAt = last;
+    const auto startAt = last;
+    // Р43: поле течений вокруг камеры - в фоне; пересчёт, когда камера ушла от центра поля на четверть
+    constexpr int FLOW_SIZE = 256;
+    struct FlowData { std::vector<float> vel, ground, surface; };
+    std::future<FlowData> flowJob;
+    glm::ivec2 flowAt(INT32_MIN / 2), flowPending(0);
+    glm::vec4 flowArea(0.0f);
+    // Р43, шаг 3: автомат воды в середине поля (128×128 блоков у камеры): течёт сам, на ступенях и обрывах
+    // разгоняется (водопады); его скорости раз в 4 кадра заменяют поле течений в своей зоне
+    constexpr int SIM = 128, SIM_OFF = (FLOW_SIZE - SIM) / 2;
+    world::WaterSim sim;
+    sim.holdEdges = true;
+    bool simOn = false;
+    std::vector<float> fieldVel, shownVel;
+    int simFrame = 0;
     double sumMs = 0;
     int frames = 0, chunksDrawn = 0;
     bool running = true;
@@ -264,10 +282,55 @@ int main(int argc, char** argv) {
         voxels.update(eye, fr, 4.0);   // выгрузка готовых столбцов - не дольше 4 мс за кадр
         part[0] = std::max(part[0], msSince(tUpd));
 
+        {
+            const glm::ivec2 want((int(std::floor(eye.x)) - FLOW_SIZE / 2) & ~31, (int(std::floor(eye.z)) - FLOW_SIZE / 2) & ~31);
+            if (!flowJob.valid() && (std::abs(want.x - flowAt.x) > FLOW_SIZE / 4 || std::abs(want.y - flowAt.y) > FLOW_SIZE / 4)) {
+                flowPending = want;
+                flowJob = std::async(std::launch::async, [&tp, want] {
+                    FlowData f;
+                    world::flowField(tp, want.x, want.y, FLOW_SIZE, f.vel, &f.ground, &f.surface);
+                    return f;
+                });
+            }
+            if (flowJob.valid() && flowJob.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+                FlowData f = flowJob.get();
+                fieldVel = std::move(f.vel);
+                gpu->updateFlowField(FLOW_SIZE, fieldVel);
+                flowAt = flowPending;
+                flowArea = glm::vec4(float(flowAt.x), float(flowAt.y), float(FLOW_SIZE), 0.0f);
+                std::vector<float> g(SIM * SIM), s(SIM * SIM);
+                for (int z = 0; z < SIM; ++z)
+                    for (int x = 0; x < SIM; ++x) {
+                        g[size_t(z) * SIM + x] = f.ground[size_t(z + SIM_OFF) * FLOW_SIZE + x + SIM_OFF];
+                        s[size_t(z) * SIM + x] = f.surface[size_t(z + SIM_OFF) * FLOW_SIZE + x + SIM_OFF];
+                    }
+                sim.init(SIM, SIM, g, s);
+                simOn = true;
+            }
+            if (simOn) {
+                const float h = std::min(dt, 1.0f / 30.0f) * 0.5f;
+                sim.step(h);
+                sim.step(h);
+                if (++simFrame % 4 == 0) {
+                    shownVel = fieldVel;
+                    for (int z = 0; z < SIM; ++z)
+                        for (int x = 0; x < SIM; ++x) {
+                            if (sim.depth(x, z) < 0.05f) continue;
+                            float vx, vz;
+                            sim.velocity(x, z, vx, vz);
+                            const size_t k = (size_t(z + SIM_OFF) * FLOW_SIZE + x + SIM_OFF) * 2;
+                            shownVel[k] = vx;
+                            shownVel[k + 1] = vz;
+                        }
+                    gpu->updateFlowField(FLOW_SIZE, shownVel);
+                }
+            }
+        }
         frame.reset();
         frame.clear(sky);
         frame.camera({viewProj, glm::vec3(0.4f, 1.0f, 0.25f), eye, voxels.window(),
-                      float(lod.drawDistance) * 0.85f, float(lod.drawDistance), 9000.0f, 0.6f, sky});
+                      float(lod.drawDistance) * 0.85f, float(lod.drawDistance), 9000.0f, 0.6f, sky,
+                      std::chrono::duration<float>(now - startAt).count(), flowArea});
         chunksDrawn = voxels.draw(fr, frame);
         const auto tFar = clock_t_::now();
         farTerrain.frame(lod, eye, fr, voxels, frame, farStats);

@@ -32,6 +32,8 @@ struct CmdCamera {
     float hazeDistance;       // воздушная дымка: на этом расстоянии - 63% от hazeMax (1 - e^-1)
     float hazeMax;            // сколько неба примешивается вдали при полной дымке
     Color sky;
+    float time = 0;           // Р43: секунды с начала - рябь, пена, падающая вода
+    glm::vec4 flowArea{0};    // Р43: поле течений: угол x, z (блоки), сторона (блоки)
 };
 struct CmdDrawChunk { MeshId mesh; glm::ivec3 originVoxels; };
 // Плитка дальнего уровня (Р20): начало в блоках, шаг узлов в блоках, где идёт морфинг, какие четверти
@@ -65,6 +67,8 @@ public:
     virtual void destroyMesh(MeshId id) = 0;
     // маска готовых столбцов вокселей (Р21): side×side байт, строка - по z; над единицами плитки не рисуются
     virtual void updateVoxelMask(int side, std::span<const uint8_t> mask) = 0;
+    // Р43: поле течений side×side блоков, 2 числа на блок (скорость x, z, блоки/с)
+    virtual void updateFlowField(int side, std::span<const float> velocity) = 0;
     // параметр отладки шейдеров: 1 - раскрасить плитки по уровням
     virtual void setDebug(int mode) = 0;
     virtual void execute(const CommandList& list, FrameStats& stats) = 0;

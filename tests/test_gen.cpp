@@ -9,6 +9,7 @@
 #include "world/bits.h"
 #include "world/caves.h"
 #include "world/rivers.h"
+#include "world/water_sim.h"
 #include "world/lod.h"
 #include "world/mesher.h"
 #include "world/terrain.h"
@@ -492,6 +493,42 @@ int main() {
         CHECK(above == 0, "вода рек не выше исходной земли больше чем на 2 блока");
         CHECK(raised == 0, "река не поднимает землю под себя");
         CHECK(columns == 0, "у воды нет сухого соседа ниже её больше чем на 2 блока (столбов воды)");
+    }
+
+    // ─── Р43: автомат воды (потревоженная вода, водопады) ─────────────────────────────────────
+    {
+        // уступ: слева полка на высоте 10 с водой до 12, справа котловина на высоте 0 - вода падает вниз
+        constexpr int W = 40, H = 10;
+        std::vector<float> g(W * H), sf(W * H);
+        for (int z = 0; z < H; ++z)
+            for (int x = 0; x < W; ++x) {
+                const bool shelf = x < 15;
+                g[z * W + x] = shelf ? 10.0f : 0.0f;
+                sf[z * W + x] = shelf ? 12.0f : -1.0f;
+            }
+        world::WaterSim sim;
+        sim.init(W, H, g, sf);
+        const float v0 = sim.volume();
+        float fastest = 0;
+        for (int k = 0; k < 2000; ++k) {
+            sim.step(0.02f);
+            float vx, vz;
+            sim.velocity(15, 5, vx, vz);
+            fastest = std::max(fastest, vx);
+        }
+        const float v1 = sim.volume();
+        float shelfWater = 0, lowWater = 0, lo = 1e9f, hi = -1e9f;
+        for (int z = 0; z < H; ++z)
+            for (int x = 0; x < W; ++x) {
+                (x < 15 ? shelfWater : lowWater) += sim.depth(x, z);
+                if (x >= 15) { lo = std::min(lo, sim.surface(x, z)); hi = std::max(hi, sim.surface(x, z)); }
+            }
+        std::printf("автомат воды: объём %.2f -> %.2f; на полке осталось %.2f, внизу %.2f; гладь внизу %.3f..%.3f; скорость на уступе до %.1f блок/с\n",
+                    v0, v1, shelfWater, lowWater, lo, hi, fastest);
+        CHECK(std::abs(v1 - v0) < v0 * 1e-3f, "автомат воды: объём сохраняется");
+        CHECK(shelfWater < v0 * 0.02f && lowWater > v0 * 0.97f, "автомат воды: вода с уступа стекает вниз (водопад)");
+        CHECK(hi - lo < 0.1f, "автомат воды: в закрытой котловине вода успокаивается в ровную гладь");
+        CHECK(fastest > 3.0f, "автомат воды: на уступе вода разгоняется");
     }
 
     // ─── Р20: дальние уровни ──────────────────────────────────────────────────────────────

@@ -71,6 +71,8 @@ struct FrameUbo {
     float voxelZone[4];
     float fade[4];   // начало, конец растворения вдали; дымка: расстояние, доля неба
     float sky[4];
+    float flow[4];   // Р43: поле течений - угол x, z, сторона (блоки)
+    float time[4];   // Р43: секунды
 };
 
 class GLBackend final : public Backend {
@@ -150,6 +152,8 @@ public:
         createTargets(w, h);
         const uint8_t none = 0;
         updateVoxelMask(1, {&none, 1});   // пока вокселей нет - маска 1×1 из нуля
+        const float still[2] = {0, 0};
+        updateFlowField(1, {still, 2});    // пока поля нет - вода стоит
         return true;
     }
 
@@ -180,6 +184,21 @@ public:
         glTextureSubImage2D(maskTex_, 0, 0, 0, side, side, GL_RED_INTEGER, GL_UNSIGNED_BYTE, mask.data());
     }
 
+    void updateFlowField(int side, std::span<const float> v) override {
+        if (side != flowSide_) {
+            if (flowTex_) glDeleteTextures(1, &flowTex_);
+            glCreateTextures(GL_TEXTURE_2D, 1, &flowTex_);
+            glTextureStorage2D(flowTex_, 1, GL_RG32F, side, side);
+            glTextureParameteri(flowTex_, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            glTextureParameteri(flowTex_, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            glTextureParameteri(flowTex_, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            glTextureParameteri(flowTex_, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+            flowSide_ = side;
+        }
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+        glTextureSubImage2D(flowTex_, 0, 0, 0, side, side, GL_RG, GL_FLOAT, v.data());
+    }
+
     void execute(const CommandList& list, FrameStats& stats) override {
         stats = {};
         GLuint current = 0;
@@ -202,6 +221,8 @@ public:
                 u.fade[0] = cam->fadeStart; u.fade[1] = cam->fadeEnd;
                 u.fade[2] = cam->hazeDistance; u.fade[3] = cam->hazeMax;
                 u.sky[0] = cam->sky.r; u.sky[1] = cam->sky.g; u.sky[2] = cam->sky.b; u.sky[3] = cam->sky.a;
+                for (int i = 0; i < 4; ++i) u.flow[i] = cam->flowArea[i];
+                u.time[0] = cam->time;
                 glNamedBufferSubData(ubo_, 0, sizeof(u), &u);
                 glBindBufferBase(GL_UNIFORM_BUFFER, 0, ubo_);
             } else if (auto* d = std::get_if<CmdDrawChunk>(&cmd)) {
@@ -286,7 +307,12 @@ private:
         for (const Command* cmd : water_) {
             if (auto* d = std::get_if<CmdDrawChunk>(cmd)) {
                 const Mesh& m = meshes_[d->mesh];
-                if (current != program_) { glUseProgram(program_); glBindVertexArray(vao_); current = program_; }
+                if (current != program_) {
+                    glUseProgram(program_);
+                    glBindVertexArray(vao_);
+                    glBindTextureUnit(1, flowTex_);   // Р43: поле течений
+                    current = program_;
+                }
                 glProgramUniform3i(program_, 0, d->originVoxels.x, d->originVoxels.y, d->originVoxels.z);
                 glVertexArrayVertexBuffer(vao_, 0, m.vbo, 0, 4);
                 glDrawElements(GL_TRIANGLES, m.water * 6, GL_UNSIGNED_INT,
@@ -351,7 +377,8 @@ private:
     SDL_Window* window_;
     SDL_GLContext context_;
     GLuint program_ = 0, tileProgram_ = 0, vao_ = 0, tileVao_ = 0, ibo_ = 0, tileIbo_ = 0, ubo_ = 0;
-    GLuint fbo_ = 0, colorRb_ = 0, depthRb_ = 0, maskTex_ = 0;
+    GLuint fbo_ = 0, colorRb_ = 0, depthRb_ = 0, maskTex_ = 0, flowTex_ = 0;
+    int flowSide_ = 0;
     int maskSide_ = 0;
     int width_ = 1, height_ = 1;
     std::vector<Mesh> meshes_;

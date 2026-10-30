@@ -9,10 +9,15 @@ layout(std140, binding = 0) uniform Frame {
     vec4 voxelZone;
     vec4 fade;
     vec4 sky;
+    vec4 flowArea;     // Р43: поле течений - угол x, z, сторона (блоки)
+    vec4 timeV;        // Р43: x - секунды
 };
 layout(location = 0) uniform ivec3 uChunk;   // начало куска в вокселях
 
 layout(location = 0) out vec4 vColor;
+layout(location = 1) out vec3 vWorld;          // Р43: точка в мире, блоки
+layout(location = 2) flat out uint vNormal;    // Р43: 0 +X, 1 -X, 2 +Y, 3 -Y, 4 +Z, 5 -Z
+layout(location = 3) flat out uint vWater;     // Р43: 1 - вода
 
 // цвета материалов, пока без текстур: 0 воздух, 1 камень, 2 земля, 3 трава, 4 песок, 5 снег, 6 вода (Р28)
 const vec3 COLORS[7] = vec3[](vec3(1, 0, 1), vec3(0.47, 0.47, 0.5), vec3(0.45, 0.32, 0.2), vec3(0.36, 0.58, 0.25), vec3(0.85, 0.8, 0.55), vec3(0.93, 0.95, 0.98), vec3(0.3, 0.62, 0.92));
@@ -30,4 +35,7 @@ void main() {
     // свет: рассеянный по нормали плюс постоянная подсветка неба
     float light = 0.35 + 0.65 * max(dot(NORMALS[normal], normalize(sunDir.xyz)), 0.0);
     vColor = vec4(COLORS[min(material, 6u)] * light, material == 6u ? WATER_ALPHA : 1.0);
+    vWorld = world;
+    vNormal = normal;
+    vWater = material == 6u ? 1u : 0u;
 }
