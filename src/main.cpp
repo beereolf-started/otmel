@@ -157,6 +157,7 @@ int main(int argc, char** argv) {
     //   --at X Z     точка старта, блоки;  --eye x y z yaw pitch - камера;  --shot - снимок и выход
     //   --fly V      (со --shot) облёт: камера летит вперёд со скоростью V блоков/с 10 секунд, замер отставания
     bool shot = false;
+    float recordSec = 0;   // со --shot: запись кадров rec_NNN.bmp 15 раз в секунду столько секунд
     int voxelBlocks = 128;
     float atX = 0, atZ = 0, flySpeed = 0;
     world::LodSettings lod;
@@ -168,6 +169,7 @@ int main(int argc, char** argv) {
         if (a == "--detail" && i + 1 < argc) lod.detail = std::max(65, std::stoi(argv[i + 1]));
         if (a == "--at" && i + 2 < argc) { atX = std::stof(argv[i + 1]); atZ = std::stof(argv[i + 2]); }
         if (a == "--fly" && i + 1 < argc) flySpeed = std::stof(argv[i + 1]);
+        if (a == "--record" && i + 1 < argc) recordSec = std::stof(argv[i + 1]);
     }
     if (!SDL_Init(SDL_INIT_VIDEO)) { journal::error("окно", "SDL не запустился: {}", SDL_GetError()); return 1; }
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 4);
@@ -417,6 +419,15 @@ int main(int argc, char** argv) {
                     part[0] = part[1] = part[2] = 0;
                     voxels.resetWorst();
                 }
+            } else if (recordSec > 0) {
+                // запись: кадр каждые 1/15 с по часам (анимация идёт своим временем), затем выход
+                static int recNo = 0;
+                if (msSince(shotStart) >= recNo * 1000.0 / 15.0) {
+                    char name[32];
+                    std::snprintf(name, sizeof(name), "rec_%03d.bmp", recNo++);
+                    saveShot(*gpu, width, height, name);
+                }
+                if (msSince(shotStart) > recordSec * 1000.0) running = false;
             } else {
                 ++frameNo;
                 const bool flying = flySpeed > 0;
