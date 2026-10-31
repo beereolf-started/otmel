@@ -119,14 +119,14 @@ struct Grower {
         // ствол: низкий, с лёгким наклоном; комель - узел 0
         const int base = add({0, 0, 0}, -1, 0, false, false);
         const float bole = rng.r(104, 124);   // 6.5-7.8 блока до развилки (Р57: ствол выше на 3-4 блока)
-        V3 d = norm(UP + V3{rng.r(-0.15f, 0.15f), 0, rng.r(-0.15f, 0.15f)});
+        V3 d = norm(UP + V3{rng.r(-0.07f, 0.07f), 0, rng.r(-0.07f, 0.07f)});   // Р71: стройнее
         const int n = int(bole / 6);
         int at = base;
         V3 p{0, 0, 0};
         V3 w = norm(cross(d, rng.unit()));
         for (int i = 0; i < n; ++i) {
             w = norm(w * 0.7f + rng.unit() * 0.5f);
-            d = norm(d + w * 0.1f + UP * 0.45f);   // ствол - ясный столб (удобно рубить)
+            d = norm(d + w * 0.035f + UP * 0.45f);   // ствол - прямой столб (удобно рубить), Р71: почти без блуждания
             p = p + d * 6;
             at = add(p, at, 0, false, false);
             if (i > 1 && i < n - 1 && rng.f() < 0.1f) branch(at, aside(d, 1.2f), rng.r(4, 8), 1, false, true);
@@ -215,11 +215,25 @@ void growOak(uint32_t seed, OakVoxels& out, int scale) {
                     float rr = pa.r + (nd.r - pa.r) * t;
                     if (rr > 2.0f) rr *= 1.0f + 0.22f * noise3(q * (S / 7.0f), ns);
                     const float dd = len(q - f);
+                    // Р71: кора дуба - продольные пластины и глубокие трещины: шум по окружности (cos, sin угла - без
+                    // шва) и вдоль ствола (вытянут в 10 раз), трещина - у нуля шума (узкая), режет до 2 мелких вокселей; вдоль ствола вытянута в ~40 раз
+                    float furrow = 0.0f;
+                    const float rWood = rr;   // древесина - от радиуса без трещин: трещина её не вскрывает
+                    if (nd.order <= 1 && rr * S > 2.5f && scale <= 2) {
+                        const V3 v = q - f;
+                        const float th = std::atan2(v.z, v.x), k = rr * S / 3.5f;
+                        const float n = noise3(V3{std::cos(th) * k, std::sin(th) * k, q.y * S * 0.018f}, ns ^ 0xB4C2u);
+                        // трещина - узкая, где шум проходит через ноль; пластины между ними - широкие
+                        const float c = 1.0f - std::min(1.0f, std::fabs(n) * 4.0f);
+                        furrow = c * c;
+                        rr -= 2.0f * iS * furrow;
+                    }
                     if (dd >= std::max(rr, 0.75f)) continue;   // тоньше вокселя - линия без разрывов
                     const size_t k = idx(x, y, z);
-                    const bool inner = dd < rr - 1.6f && rr > 2.2f;
+                    const bool inner = dd < rWood - 1.6f - 2.0f * iS && rWood > 2.2f;
                     if (inner) out.v[k] = WOOD;
-                    else if (out.v[k] == AIR || out.v[k] == LEAVES || out.v[k] == LEAVES2) out.v[k] = BARK;
+                    else if (out.v[k] == AIR || out.v[k] == LEAVES || out.v[k] == LEAVES2 || out.v[k] == BARK2)
+                        out.v[k] = furrow > 0.2f ? BARK2 : BARK;
                     if (nd.root) out.root[k] = 1;
                 }
     }
@@ -240,7 +254,7 @@ void growOak(uint32_t seed, OakVoxels& out, int scale) {
     }
     for (size_t k = 0; k < out.v.size(); ++k) {
         if (out.v[k] != AIR) out.top = std::max(out.top, (out.y0 + int(k / (size_t(out.sx) * out.sz)) + 1) * scale);
-        if (out.v[k] == LEAVES || out.v[k] == LEAVES2) ++out.leaves;
+        if (out.v[k] == LEAVES || out.v[k] == LEAVES2) ++out.leaves;   // кора в трещине (BARK2) - древесина
         else if (out.v[k] != AIR) { ++out.wood; if (out.root[k]) ++out.roots; }
     }
 }
