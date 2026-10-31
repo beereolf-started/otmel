@@ -29,6 +29,10 @@ VoxelZone::~VoxelZone() {
     for (auto& [k, c] : ready_) release(c);
 }
 
+void VoxelZone::releaseAll() {
+    for (auto& [k, c] : ready_) release(c);
+}
+
 bool VoxelZone::inWindow(int32_t cx, int32_t cz, int margin) const {
     return cx >= ccx_ - radius_ - margin && cx < ccx_ + radius_ + margin && cz >= ccz_ - radius_ - margin &&
            cz < ccz_ + radius_ + margin;

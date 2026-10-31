@@ -8,10 +8,14 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <cstring>
+#include <deque>
 #include <format>
+#include <functional>
 #include <future>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -94,6 +98,64 @@ int buildOakChunks(uint32_t seed, glm::ivec3 base, glm::ivec3 fineShift, Ground 
 }
 double msSince(clock_t_::time_point t) { return std::chrono::duration<double, std::milli>(clock_t_::now() - t).count(); }
 
+// Р73: фоновые задания кадра (поле течений, мелкая вода, зона леса, спрайты, сетки дубов) - свои постоянные потоки
+// с очередью. std::async у MSVC отдаёт задание пулу потоков Windows, и сам запуск занимал главный поток до 150 мс
+// (рывки в полёте над лесом, в OpenGL и Vulkan одинаково); здесь запуск - положить в очередь.
+class Jobs {
+public:
+    explicit Jobs(unsigned n) { for (unsigned i = 0; i < n; ++i) threads_.emplace_back([this] { run(); }); }
+    ~Jobs() {
+        {
+            std::lock_guard l(mu_);
+            stop_ = true;
+            queue_.clear();   // не начатые - не нужны: программа закрывается
+        }
+        cv_.notify_all();
+        for (auto& t : threads_) t.join();
+    }
+    template <class F>
+    auto submit(F&& f) -> std::future<std::invoke_result_t<F>> {
+        using R = std::invoke_result_t<F>;
+        auto task = std::make_shared<std::packaged_task<R()>>(std::forward<F>(f));
+        auto fut = task->get_future();
+        {
+            std::lock_guard l(mu_);
+            queue_.emplace_back([task] { (*task)(); });
+        }
+        cv_.notify_one();
+        return fut;
+    }
+
+private:
+    void run() {
+        for (;;) {
+            std::function<void()> job;
+            {
+                std::unique_lock l(mu_);
+                cv_.wait(l, [&] { return stop_ || !queue_.empty(); });
+                if (stop_) return;
+                job = std::move(queue_.front());
+                queue_.pop_front();
+            }
+            job();
+        }
+    }
+    std::mutex mu_;
+    std::condition_variable cv_;
+    std::deque<std::function<void()>> queue_;
+    std::vector<std::thread> threads_;
+    bool stop_ = false;
+};
+
+// Р73: забрать готовое у фоновой задачи; если get() ждал дольше 5 мс - в журнал
+template <class T>
+T take(std::future<T>& f, const char* what) {
+    const auto t0 = clock_t_::now();
+    T v = f.get();
+    if (const double ms = msSince(t0); ms > 5.0) journal::warn("кадр", "{}: get() ждал {:.0f} мс", what, ms);
+    return v;
+}
+
 // Дальний рельеф (Р20): плитки CDLOD. Каждый кадр - выбор по расстоянию, отсечение по пирамиде видимости.
 // Недостающие плитки заказываются общему пулу (Р21); пока плитки нет, её место закрывает та же четверть
 // плитки-родителя - грубее, но без дыры. Лишние плитки вытесняются.
@@ -102,7 +164,9 @@ public:
     struct Stats { int built = 0; double workMs = 0; size_t cached = 0; int substituted = 0; };
 
     FarTerrain(render::Backend& gpu, Builder& builder) : gpu_(gpu), builder_(builder) {}
-    ~FarTerrain() { for (auto& [k, e] : cache_) gpu_.destroyMesh(e.mesh); }
+    ~FarTerrain() { release(); }
+    // сетки - из видеопамяти до того, как закроется путь отрисовки
+    void release() { for (auto& [k, e] : cache_) gpu_.destroyMesh(e.mesh); cache_.clear(); }
 
     void frame(const world::LodSettings& s, glm::vec3 eye, const Frustum& fr, const VoxelZone& voxels,
                render::CommandList& out, Stats& st) {
@@ -215,7 +279,8 @@ int main(int argc, char** argv) {
     //   --detail K   детальность дальних уровней: дальность уровня 0, блоков (128; не меньше 65 - иначе щели)
     //   --at X Z     точка старта, блоки;  --eye x y z yaw pitch - камера;  --shot - снимок и выход
     //   --fly V      (со --shot) облёт: камера летит вперёд со скоростью V блоков/с 10 секунд, замер отставания
-    bool shot = false;
+    //   --gl         путь отрисовки OpenGL (запасной; по умолчанию - Vulkan, Р73)
+    bool shot = false, vulkan = true;
     float recordSec = 0;   // со --shot: запись кадров rec_NNN.bmp 15 раз в секунду столько секунд
     int voxelBlocks = 128;
     float atX = 0, atZ = 0, flySpeed = 0;
@@ -223,6 +288,7 @@ int main(int argc, char** argv) {
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         if (a == "--shot") shot = true;
+        if (a == "--gl") vulkan = false;
         if (a == "--voxels" && i + 1 < argc) voxelBlocks = std::max(2, std::stoi(argv[i + 1]));
         if (a == "--draw" && i + 1 < argc) lod.drawDistance = std::max(256, std::stoi(argv[i + 1]));
         if (a == "--detail" && i + 1 < argc) lod.detail = std::max(65, std::stoi(argv[i + 1]));
@@ -239,11 +305,23 @@ int main(int argc, char** argv) {
     SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 0);
 
     int width = 1280, height = 720;
-    SDL_Window* window = SDL_CreateWindow("Отмель", width, height, SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE);
-    if (!window) { journal::error("окно", "окно не создано: {}", SDL_GetError()); return 1; }
-
     const std::string shaderDir = std::string(SDL_GetBasePath()) + "shaders";
-    auto gpu = render::createGL(window, shaderDir.c_str());
+    SDL_Window* window = nullptr;
+    std::unique_ptr<render::Backend> gpu;
+    if (vulkan) {   // Р73: Vulkan; не поднялся (нет драйвера 1.3) - окно заново, под OpenGL
+        window = SDL_CreateWindow("Отмель", width, height, SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE);
+        if (window) gpu = render::createVulkan(window, shaderDir.c_str());
+        if (!gpu) {
+            journal::warn("окно", "Vulkan не поднялся ({}) - запасной путь OpenGL", window ? "см. выше" : SDL_GetError());
+            if (window) SDL_DestroyWindow(window);
+            window = nullptr;
+        }
+    }
+    if (!gpu) {
+        window = SDL_CreateWindow("Отмель", width, height, SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE);
+        if (!window) { journal::error("окно", "окно не создано: {}", SDL_GetError()); return 1; }
+        gpu = render::createGL(window, shaderDir.c_str());
+    }
     if (!gpu) return 1;
 
     // Зона вокселей едет за камерой (Р21): ±R столбцов кусков (столбец - 2×2 блока); строят фоновые потоки
@@ -419,7 +497,7 @@ int main(int argc, char** argv) {
     }
     if (!shot) SDL_SetWindowRelativeMouseMode(window, true);
     // в режиме снимка - без ожидания обновления экрана: замер времени кадра не упирается в 60 Гц
-    if (shot) SDL_GL_SetSwapInterval(0);
+    if (shot) gpu->setVsync(false);
     int frameNo = 0;
     double shotMs = 0, shotMaxMs = 0;
     int maxPending = 0;
@@ -436,6 +514,8 @@ int main(int argc, char** argv) {
     // Р43: поле течений вокруг камеры - в фоне; пересчёт, когда камера ушла от центра поля на четверть
     constexpr int FLOW_SIZE = 256;
     struct FlowData { std::vector<float> vel, ground, surface; };
+    // Р73: задания зон (поле, мелкая вода, зона леса, спрайты) - своя очередь: не стоят за сотнями сеток дубов
+    Jobs zoneJobs(2), treeJobs(std::max(2u, std::thread::hardware_concurrency() / 2));
     std::future<FlowData> flowJob;
     glm::ivec2 flowAt(INT32_MIN / 2), flowPending(0);
     glm::vec4 flowArea(0.0f);
@@ -494,10 +574,22 @@ int main(int argc, char** argv) {
     double sumMs = 0;
     int frames = 0, chunksDrawn = 0;
     bool running = true;
+    // Р73: разбивка кадра по частям главного цикла - в журнал долгого кадра (где ушло время)
+    static const char* const SECT[] = {"события", "зона вокселей", "поле течений", "брызги", "мелкая вода", "лес",
+                                       "спрайты", "список кадра", "отрисовка", "снимок", "показ"};
+    constexpr int NSECT = int(std::size(SECT));
+    double sect[NSECT] = {};
+    auto lapAt = clock_t_::now();
+    const auto lap = [&](int i) { const auto t = clock_t_::now(); sect[i] += std::chrono::duration<double, std::milli>(t - lapAt).count(); lapAt = t; };
     while (running) {
+        for (double& v : sect) v = 0;
+        const auto iterAt = clock_t_::now();
+        lapAt = iterAt;
         SDL_Event ev;
         while (SDL_PollEvent(&ev)) {
             if (ev.type == SDL_EVENT_QUIT) running = false;
+            // Р73: в режиме снимка мышь и клавиши не трогают камеру - курсор над окном поворачивал её, замеры плавали
+            if (shot && ev.type != SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED) continue;
             if (ev.type == SDL_EVENT_KEY_DOWN && ev.key.key == SDLK_ESCAPE) running = false;
             if (ev.type == SDL_EVENT_KEY_DOWN && ev.key.key == SDLK_L) gpu->setDebug(debug ^= 1);
             if (ev.type == SDL_EVENT_MOUSE_BUTTON_DOWN && ev.button.button == SDL_BUTTON_LEFT) {
@@ -533,7 +625,8 @@ int main(int argc, char** argv) {
 
         const glm::vec3 fwd(std::cos(pitch) * std::cos(yaw), std::sin(pitch), std::cos(pitch) * std::sin(yaw));
         const glm::vec3 right = glm::normalize(glm::cross(fwd, glm::vec3(0, 1, 0)));
-        const bool* keys = SDL_GetKeyboardState(nullptr);
+        static const bool noKeys[SDL_SCANCODE_COUNT] = {};
+        const bool* keys = shot ? noKeys : SDL_GetKeyboardState(nullptr);
         // Р56: камера - в прежних мерах (16 блоков мира): шаг ~5 блоков/с, с Shift ~48 - чтобы разглядеть мелочь
         const float speed = (keys[SDL_SCANCODE_LSHIFT] ? 3.0f : 0.3f) * speedScale * dt;
         if (keys[SDL_SCANCODE_W]) eye += fwd * speed;
@@ -553,15 +646,17 @@ int main(int argc, char** argv) {
         const glm::ivec3 originV(int(std::floor(eye.x * 0.5f)) * 32, int(std::floor(eye.y * 0.5f)) * 32, int(std::floor(eye.z * 0.5f)) * 32);
         const glm::vec3 originOld = glm::vec3(originV) / 16.0f;
         const glm::mat4 viewProjGpu = proj * glm::lookAt(eye - originOld, eye - originOld + fwd, glm::vec3(0, 1, 0));
+        lap(0);
         const auto tUpd = clock_t_::now();
         voxels.update(eye, fr, 4.0);   // выгрузка готовых столбцов - не дольше 4 мс за кадр
         part[0] = std::max(part[0], msSince(tUpd));
+        lap(1);
 
         {
             const glm::ivec2 want((int(std::floor(eye.x)) - FLOW_SIZE / 2) & ~31, (int(std::floor(eye.z)) - FLOW_SIZE / 2) & ~31);
             if (!flowJob.valid() && (std::abs(want.x - flowAt.x) > FLOW_SIZE / 4 || std::abs(want.y - flowAt.y) > FLOW_SIZE / 4)) {
                 flowPending = want;
-                flowJob = std::async(std::launch::async, [&tp, want] {
+                flowJob = zoneJobs.submit([&tp, want] {
                     FlowData f;
                     world::flowField(tp, want.x, want.y, FLOW_SIZE, f.vel, &f.ground, &f.surface);
                     return f;
@@ -569,7 +664,7 @@ int main(int argc, char** argv) {
             }
             if (firstFrame && flowJob.valid()) flowJob.wait();   // Р66: лес с первого кадра - нужна земля поля
             if (flowJob.valid() && flowJob.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
-                FlowData f = flowJob.get();
+                FlowData f = take(flowJob, "поле течений");
                 fieldVel = std::move(f.vel);
                 flowGround = f.ground;
                 flowSurface = f.surface;
@@ -604,6 +699,7 @@ int main(int argc, char** argv) {
                 }
             }
         }
+        lap(2);
         // Р59/Р61: брызги, пыль и падающая масса у водопадов и порогов.
         //   Вблизи (зона мелкой воды, 128 блоков) - по блокам с перепадом: место падения (сосед выше на dUp) -
         //   всплеск со скоростью ~ √(2g·dUp) (вверх до 9 м/с) и облака пыли (6-12 текселей, поднимаются, 2-4 с);
@@ -723,6 +819,7 @@ int main(int argc, char** argv) {
             }
             gpu->setSpray(dropVerts);
         }
+        lap(3);
         // Р58: мелкая вода. Зона - от куска камеры (32 блока) на 2 куска в стороны; данные (+2 блока каймы для
         // соседей): vb - верх глади в центре блока (у мокрого - верх воды; у сухого рядом с водой - вровень с самой
         // низкой соседней водой или его земля, если ниже), верх земли. Блок рисуется мелкой водой, если он мокрый и
@@ -733,7 +830,7 @@ int main(int argc, char** argv) {
             const glm::ivec2 want((fd(eb.x) - 2) * 32, (fd(eb.y) - 2) * 32);
             if (!fineJob.valid() && want != fineAt) {
                 fineAt = want;
-                fineJob = std::async(std::launch::async, [&tp, want, NONE] {
+                fineJob = zoneJobs.submit([&tp, want, NONE] {
                     auto f = std::make_unique<FineData>();
                     f->origin = want;
                     constexpr int R = FINE + 4;   // кайма 2 блока: vb каймы смотрит на соседей
@@ -793,7 +890,7 @@ int main(int argc, char** argv) {
                 });
             }
             if (fineJob.valid() && fineJob.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
-                fineData = fineJob.get();
+                fineData = take(fineJob, "мелкая вода");
                 const FineData& f = *fineData;
                 constexpr int T = FINE + 2;
                 std::vector<float> tex(size_t(T) * T * 2);
@@ -833,6 +930,7 @@ int main(int argc, char** argv) {
                 journal::info("вода", "мелкая вода: зона ({}, {}), блоков {}", f.origin.x, f.origin.y, blocks.size() / 2);
             }
         }
+        lap(4);
         // Р62: лес. Места - ячейки по 10 блоков: хеш ячейки даёт кандидата в произвольном мелком вокселе (не центр
         // блока); густота - по дождям (климат) и крупному шуму рощ (ячейка 512 блоков: рощи, перелески, поляны); не
         // на воде и не у воды (2 блока), не на крутом (перепад больше 3 блоков на 2), не в снегу. Дуб - по семени
@@ -843,7 +941,7 @@ int main(int argc, char** argv) {
             const glm::ivec2 want((fd(eb.x) - 7) * 32, (fd(eb.y) - 7) * 32);
             if (!forestJob.valid() && want != forestAt) {
                 forestAt = want;
-                forestJob = std::async(std::launch::async, [&tp, want] {
+                forestJob = zoneJobs.submit([&tp, want] {
                     auto z = std::make_unique<ForestZone>();
                     z->origin = want - glm::ivec2(32);   // кайма в кусок - для корней и проверок у края
                     z->side = 17 * 32;
@@ -897,7 +995,7 @@ int main(int argc, char** argv) {
             }
             if (firstFrame && forestJob.valid()) forestJob.wait();
             if (forestJob.valid() && forestJob.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
-                const std::unique_ptr<ForestZone> z = forestJob.get();
+                const std::unique_ptr<ForestZone> z = take(forestJob, "зона леса");
                 forestGround = z->ground;
                 forestGroundOrigin = z->origin;
                 forestGroundSide = z->side;
@@ -950,7 +1048,7 @@ int main(int argc, char** argv) {
                     const int lvl = t.level < 0 ? 4 : levelOf(t);
                     t.building = lvl;
                     const ForestSpot sp = t.spot;
-                    forestRunning.push_back(std::async(std::launch::async, [sp, lvl, gr, go, gs] {
+                    forestRunning.push_back(treeJobs.submit([sp, lvl, gr, go, gs] {
                         ForestBuilt fb{sp.key, lvl, sp.base, {}};
                         buildOakChunks(sp.seed, sp.base, sp.shift, [&](int32_t bx, int32_t bz) {
                             const int i = bx - go.x, j = bz - go.y;
@@ -964,7 +1062,7 @@ int main(int argc, char** argv) {
             for (auto it = forestRunning.begin(); it != forestRunning.end();) {
                 if (uploadBytes > (4u << 20)) break;
                 if (it->wait_for(std::chrono::seconds(0)) != std::future_status::ready) { ++it; continue; }
-                ForestBuilt fb = it->get();
+                ForestBuilt fb = take(*it, "сетка дуба");
                 for (const OakChunk& oc : fb.chunks) uploadBytes += oc.verts.size() * 4;
                 it = forestRunning.erase(it);
                 auto ft = forest.find(fb.key);
@@ -992,6 +1090,7 @@ int main(int argc, char** argv) {
                 }
             }
         }
+        lap(5);
         // Р65: спрайты дубов - кольцо от зоны леса вблизи (480 блоков) до 1.6 км: те же ячейки, семена и густота
         // (world/forest), земля - по полю рельефа (клетка 16 блоков, между клетками - плавно), без воды и круч
         if (!flowGround.empty()) {
@@ -1000,7 +1099,7 @@ int main(int argc, char** argv) {
                 spriteAt = ebf;
                 spriteFlowAt = flowAt;
                 spriteZoneAt = forestAt;
-                spriteJob = std::async(std::launch::async, [&tp, g = flowGround, sfc = flowSurface, fa = flowAt, za = forestAt, ebf] {
+                spriteJob = zoneJobs.submit([&tp, g = flowGround, sfc = flowSurface, fa = flowAt, za = forestAt, ebf] {
                     const auto t0 = clock_t_::now();
                     std::vector<float> inst;
                     // Р68: ближнее кольцо - до 1.6 км, каждая ячейка, земля - поле рельефа; дальнее - до 3.6 км, каждая
@@ -1055,7 +1154,7 @@ int main(int argc, char** argv) {
             }
             if (firstFrame && spriteJob.valid()) spriteJob.wait();
             if (spriteJob.valid() && spriteJob.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
-                spriteFar = spriteJob.get();
+                spriteFar = take(spriteJob, "спрайты");
                 spritesDirty = true;
             }
             // кольцо + дубы зоны, у которых ещё нет сетки (строятся) - спрайтами: лес виден сразу и целиком
@@ -1075,6 +1174,7 @@ int main(int argc, char** argv) {
                 spriteCount = inst.size() / 8;
             }
         }
+        lap(6);
         frame.reset();
         frame.clear(sky);
         frame.camera({viewProjGpu, glm::vec3(0.4f, 1.0f, 0.25f), eye, voxels.window(),
@@ -1088,9 +1188,11 @@ int main(int argc, char** argv) {
         const auto tFar = clock_t_::now();
         farTerrain.frame(lod, eye, fr, voxels, frame, farStats);
         part[1] = std::max(part[1], msSince(tFar));
+        lap(7);
         const auto tExe = clock_t_::now();
         gpu->execute(frame, fs);
         part[2] = std::max(part[2], msSince(tExe));
+        lap(8);
         // снимок: ждём, пока зона вокселей достроится (не дольше 2 минут), затем 5 кадров - снимок; с --fly -
         // 10 секунд облёта с замером отставания и времени кадра, снимок в конце; без --fly - замер 60 кадров
         if (shot) {
@@ -1139,7 +1241,9 @@ int main(int argc, char** argv) {
                 }
             }
         }
+        lap(9);
         gpu->present();
+        lap(10);
         firstFrame = false;
         // Р64: долгий кадр (больше 50 мс) - в журнал, не чаще раза в секунду; раз в 10 с - сводка
         {
@@ -1154,9 +1258,14 @@ int main(int argc, char** argv) {
                                    "прямоугольников {}, вызовов {}", fineShown, drops.size(), trees, lv[0], lv[1], lv[2], lv[3], lv[4],
                                    forestRunning.size(), forestUploads, spriteCount, fs.quads, fs.drawCalls);
             };
-            if (frameMs > 50.0 && msSince(spikeAt) > 1000.0) {
+            const double iterMs = msSince(iterAt);   // Р73: свой проход цикла - его части известны
+            // не чаще раза в секунду, кроме совсем долгих (больше 150 мс) - те всегда
+            if (std::max(iterMs, frameMs) > 50.0 && (msSince(spikeAt) > 1000.0 || std::max(iterMs, frameMs) > 150.0)) {
                 spikeAt = clock_t_::now();
-                journal::warn("кадр", "долгий кадр {:.0f} мс: {}", frameMs, counts());
+                std::string parts;
+                for (int i = 0; i < NSECT; ++i)
+                    if (sect[i] >= 1.0) parts += std::format("{}{} {:.0f}", parts.empty() ? "" : ", ", SECT[i], sect[i]);
+                journal::warn("кадр", "долгий кадр {:.0f} мс, от прошлого {:.0f} мс ({}): {}", iterMs, frameMs, parts, counts());
             }
             if (msSince(statAt) > 10000.0) {
                 journal::info("кадр", "за 10 с: кадров {}, средний {:.1f} мс, худший {:.0f} мс; {}", statFrames, statSum / std::max(1, statFrames), statWorst, counts());
@@ -1181,6 +1290,9 @@ int main(int argc, char** argv) {
         }
     }
 
+    // Р73: сетки - до gpu.reset(): иначе деструкторы плиток и зоны зовут уже удалённый путь отрисовки
+    farTerrain.release();
+    voxels.releaseAll();
     gpu.reset();
     SDL_DestroyWindow(window);
     SDL_Quit();

@@ -203,6 +203,7 @@ public:
     }
 
     void setDebug(int mode) override { glProgramUniform1i(tileProgram_, 4, mode); }
+    void setVsync(bool on) override { SDL_GL_SetSwapInterval(on ? 1 : 0); }
 
     void updateVoxelMask(int side, std::span<const uint8_t> mask) override {
         if (side != maskSide_) {

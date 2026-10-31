@@ -44,9 +44,20 @@ add_executable(otmel
     src/voxel_zone.cpp
     src/builder.cpp
     src/render/gl/gl_backend.cpp
+    src/render/vk/vk_backend.cpp
 )
 target_include_directories(otmel PRIVATE src)
-target_link_libraries(otmel PRIVATE otmel_world SDL3::SDL3-static glm::glm glad dbghelp)
+# Р73: Vulkan - из SDK (C:/VulkanSDK/<версия>, если VULKAN_SDK не задан)
+if(NOT DEFINED ENV{VULKAN_SDK})
+    file(GLOB VK_SDKS "C:/VulkanSDK/*")
+    if(VK_SDKS)
+        list(SORT VK_SDKS)
+        list(GET VK_SDKS -1 VK_SDK_DIR)
+        set(ENV{VULKAN_SDK} ${VK_SDK_DIR})
+    endif()
+endif()
+find_package(Vulkan REQUIRED)
+target_link_libraries(otmel PRIVATE otmel_world SDL3::SDL3-static glm::glm glad Vulkan::Vulkan dbghelp)
 
 # Шейдеры: GLSL -> SPIR-V при сборке (Р8), рядом с программой в папке shaders
 file(GLOB GLSLC_CANDIDATES "C:/VulkanSDK/*/Bin/glslc.exe")

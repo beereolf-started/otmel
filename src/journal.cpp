@@ -1,10 +1,14 @@
 #include "journal.h"
 
+#include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstdio>
 #include <ctime>
+#include <deque>
 #include <mutex>
 #include <string>
+#include <thread>
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -13,7 +17,14 @@
 namespace journal {
 
 namespace {
-std::mutex g_lock;
+// Р73: строки пишет свой поток - игра только кладёт их в очередь. Раньше вывод в консоль был синхронным: под нагрузкой
+// (все ядра строят мир) conhost отвечал с опозданием, и главный поток стоял до 400 мс (рывки в полёте).
+std::mutex g_lock;              // очередь
+std::timed_mutex g_out;         // вывод в консоль и файл
+std::condition_variable g_cv;
+std::deque<std::string> g_queue;
+bool g_stop = false;
+std::atomic<bool> g_sync{false};   // после падения - сразу, без очереди
 FILE* g_file = nullptr;
 const auto g_start = std::chrono::steady_clock::now();
 
@@ -51,7 +62,50 @@ void open() {
 }
 
 // Р64: падение - код, адрес, цепочка вызовов с файлами и строками (по PDB рядом), дамп памяти otmel.dmp
+// всё из очереди - в консоль и файл (под g_out)
+void drain() {
+    std::deque<std::string> q;
+    {
+        std::lock_guard l(g_lock);
+        q.swap(g_queue);
+    }
+    for (const std::string& line : q) {
+        fputs(line.c_str(), stdout);
+        if (g_file) fputs(line.c_str(), g_file);
+    }
+    fflush(stdout);
+    if (g_file) fflush(g_file);
+}
+
+struct WriterThread {
+    std::thread t;
+    WriterThread() : t([] {
+        for (;;) {
+            {
+                std::unique_lock l(g_lock);
+                g_cv.wait(l, [] { return g_stop || !g_queue.empty(); });
+                if (g_stop && g_queue.empty()) return;
+            }
+            std::lock_guard o(g_out);
+            open();
+            drain();
+        }
+    }) {}
+    ~WriterThread() {   // при выходе - дописать остаток
+        {
+            std::lock_guard l(g_lock);
+            g_stop = true;
+        }
+        g_cv.notify_one();
+        t.join();
+        std::lock_guard o(g_out);
+        open();
+        drain();
+    }
+};
+
 LONG WINAPI onCrash(EXCEPTION_POINTERS* e) {
+    g_sync = true;
     const HANDLE proc = GetCurrentProcess();
     SymSetOptions(SYMOPT_LOAD_LINES | SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS);
     SymInitialize(proc, nullptr, TRUE);
@@ -95,11 +149,20 @@ LONG WINAPI onCrash(EXCEPTION_POINTERS* e) {
 void write(Level level, std::string_view subsystem, std::string_view text) {
     // время от запуска в миллисекундах: по нему видно, что сколько заняло
     const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - g_start).count();
-    std::lock_guard guard(g_lock);
-    open();
-    const std::string line = std::format("[{:>8} мс] [{}] [{}] {}\n", ms, levelName(level), subsystem, text);
-    fputs(line.c_str(), stdout);
-    if (g_file) { fputs(line.c_str(), g_file); fflush(g_file); }
+    std::string line = std::format("[{:>8} мс] [{}] [{}] {}\n", ms, levelName(level), subsystem, text);
+    static WriterThread writer;   // первый вызов запускает поток записи
+    {
+        std::lock_guard l(g_lock);
+        g_queue.push_back(std::move(line));
+    }
+    if (g_sync) {   // падение: дописать сейчас (если поток записи сам упал с выводом в руках - без замка)
+        const bool locked = g_out.try_lock_for(std::chrono::milliseconds(500));
+        open();
+        drain();
+        if (locked) g_out.unlock();
+        return;
+    }
+    g_cv.notify_one();
 }
 
 void installCrashHandler() { SetUnhandledExceptionFilter(onCrash); }

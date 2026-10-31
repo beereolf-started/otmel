@@ -1,7 +1,7 @@
 #pragma once
 // Отрисовка глазами движка (Р8). Здесь нет ни одного типа OpenGL: движок записывает кадр в список
 // команд, а путь отрисовки (сейчас - OpenGL, src/render/gl) его исполняет. Сетки в видеопамяти движок
-// знает только по своему номеру (MeshId) - непрозрачный дескриптор.
+// знает только по своему номеру (MeshId) - непрозрачный дескриптор. Р73: второй путь - Vulkan (src/render/vk).
 #include <cstdint>
 #include <memory>
 #include <span>
@@ -93,9 +93,13 @@ public:
     virtual void resize(int width, int height) = 0;
     // снимок кадра (RGB, строки снизу вверх, как отдаёт видеокарта) - для проверки без человека у экрана
     virtual void readPixels(int width, int height, std::vector<uint8_t>& rgb) = 0;
+    // ждать ли обновления экрана (в режиме снимка - нет: замер времени кадра не упирается в 60 Гц)
+    virtual void setVsync(bool on) = 0;
 };
 
 // Путь отрисовки OpenGL 4.6. shaderDir - папка с собранными шейдерами (SPIR-V). nullptr - не удалось.
 std::unique_ptr<Backend> createGL(SDL_Window* window, const char* shaderDir);
+// Р73: путь отрисовки Vulkan 1.3 (окно - с SDL_WINDOW_VULKAN); шейдеры - имя.vk.spv. nullptr - не удалось.
+std::unique_ptr<Backend> createVulkan(SDL_Window* window, const char* shaderDir);
 
 }  // namespace render

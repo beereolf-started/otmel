@@ -27,6 +27,8 @@ public:
 
     VoxelZone(render::Backend& gpu, Builder& builder, int radiusColumns);
     ~VoxelZone();
+    // Р73: все сетки - из видеопамяти (до закрытия пути отрисовки)
+    void releaseAll();
 
     // кадр: сдвиг окна за камерой, очередь, выгрузка готового (не дольше uploadBudgetMs), маска для шейдера
     void update(glm::vec3 eye, const Frustum& fr, double uploadBudgetMs);
