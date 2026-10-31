@@ -159,8 +159,13 @@ struct Grower {
             nd.r = nd.children == 0 ? tip : std::max(tip, std::pow(acc[i], 1.0f / E));
             if (nd.parent >= 0) acc[size_t(nd.parent)] += std::pow(nd.r, E);
         }
+        // Р72: сбег ствола - от комля к развилке сужается (у комля на четверть толще), плюс корневой наплыв у земли
+        float bole = 1.0f;
+        for (const Node& nd : nodes) if (!nd.root && nd.order == 0) bole = std::max(bole, nd.p.y);
         for (Node& nd : nodes)
-            if (!nd.root && nd.order == 0) nd.r *= 1.0f + 0.3f * std::exp(-std::max(0.0f, nd.p.y) / 5.0f);
+            if (!nd.root && nd.order == 0)
+                nd.r *= (1.0f + 0.25f * (1.0f - std::clamp(nd.p.y / bole, 0.0f, 1.0f))) *
+                        (1.0f + 0.3f * std::exp(-std::max(0.0f, nd.p.y) / 5.0f));
     }
 };
 
@@ -213,27 +218,15 @@ void growOak(uint32_t seed, OakVoxels& out, int scale) {
                     const float t = std::clamp(dot(q - a, ab) / l2, 0.0f, 1.0f);
                     const V3 f = a + ab * t;
                     float rr = pa.r + (nd.r - pa.r) * t;
-                    if (rr > 2.0f) rr *= 1.0f + 0.22f * noise3(q * (S / 7.0f), ns);
+                    // Р72: наплывы - пологие и редкие (±6%, ~30 мелких вокселей): частые ±22% делали ствол свитым
+                    // канатом. Рисунок коры - потом текстурой, не объёмом.
+                    if (rr > 2.0f) rr *= 1.0f + 0.06f * noise3(q * (S / 30.0f), ns);
                     const float dd = len(q - f);
-                    // Р71: кора дуба - продольные пластины и глубокие трещины: шум по окружности (cos, sin угла - без
-                    // шва) и вдоль ствола (вытянут в 10 раз), трещина - у нуля шума (узкая), режет до 2 мелких вокселей; вдоль ствола вытянута в ~40 раз
-                    float furrow = 0.0f;
-                    const float rWood = rr;   // древесина - от радиуса без трещин: трещина её не вскрывает
-                    if (nd.order <= 1 && rr * S > 2.5f && scale <= 2) {
-                        const V3 v = q - f;
-                        const float th = std::atan2(v.z, v.x), k = rr * S / 3.5f;
-                        const float n = noise3(V3{std::cos(th) * k, std::sin(th) * k, q.y * S * 0.018f}, ns ^ 0xB4C2u);
-                        // трещина - узкая, где шум проходит через ноль; пластины между ними - широкие
-                        const float c = 1.0f - std::min(1.0f, std::fabs(n) * 4.0f);
-                        furrow = c * c;
-                        rr -= 2.0f * iS * furrow;
-                    }
                     if (dd >= std::max(rr, 0.75f)) continue;   // тоньше вокселя - линия без разрывов
                     const size_t k = idx(x, y, z);
-                    const bool inner = dd < rWood - 1.6f - 2.0f * iS && rWood > 2.2f;
+                    const bool inner = dd < rr - 1.6f && rr > 2.2f;
                     if (inner) out.v[k] = WOOD;
-                    else if (out.v[k] == AIR || out.v[k] == LEAVES || out.v[k] == LEAVES2 || out.v[k] == BARK2)
-                        out.v[k] = furrow > 0.2f ? BARK2 : BARK;
+                    else if (out.v[k] == AIR || out.v[k] == LEAVES || out.v[k] == LEAVES2) out.v[k] = BARK;
                     if (nd.root) out.root[k] = 1;
                 }
     }
