@@ -1,4 +1,7 @@
 #version 460
+#ifdef VULKAN   // Р73
+#define gl_VertexID gl_VertexIndex
+#endif
 // Р65: спрайт дуба вдали - прямоугольник стоймя, повёрнут к камере вокруг вертикали. Экземпляр: a0 = основание
 // (x, y, z - в прежних мерах, 16 блоков), высота; a1 = ширина, семя, 0, 0.
 layout(location = 0) in vec4 aBase;

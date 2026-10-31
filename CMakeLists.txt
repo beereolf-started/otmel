@@ -63,6 +63,14 @@ foreach(S ${SHADERS})
         COMMAND ${GLSLC} --target-env=opengl -O -o ${OUT} ${CMAKE_CURRENT_SOURCE_DIR}/shaders/${S}
         DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/shaders/${S}
         COMMENT "SPIR-V: ${S}")
+    # Р73: та же копия под Vulkan (push-константы, gl_VertexIndex, ось Y) - имя.vk.spv
+    set(OUTVK ${CMAKE_CURRENT_BINARY_DIR}/shaders/${S}.vk.spv)
+    add_custom_command(OUTPUT ${OUTVK}
+        COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_CURRENT_BINARY_DIR}/shaders
+        COMMAND ${GLSLC} --target-env=vulkan1.3 -O -o ${OUTVK} ${CMAKE_CURRENT_SOURCE_DIR}/shaders/${S}
+        DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/shaders/${S}
+        COMMENT "SPIR-V Vulkan: ${S}")
+    list(APPEND SPV_FILES ${OUTVK})
     list(APPEND SPV_FILES ${OUT})
 endforeach()
 add_custom_target(otmel_shaders ALL DEPENDS ${SPV_FILES})

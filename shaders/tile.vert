@@ -18,12 +18,23 @@ layout(std140, binding = 0) uniform Frame {
     ivec4 originV;     // Р69: начало координат видеокарты - воксели (блоки мира), кратно куску
     vec4 originOld;    // Р69: оно же в прежних мерах (originV / 16)
 };
+#ifdef VULKAN   // Р73: в Vulkan параметры вызова - push-константы
+layout(push_constant) uniform Push { ivec4 i0; vec4 f0; ivec4 i1; } pc;
+#define uOrigin pc.i0.xy
+#define uSpacing pc.i0.z
+#define uLevel pc.i0.w
+#define uMorph pc.f0.xy
+#define uDebug pc.i1.x
+#define uWater pc.i1.y
+#define gl_VertexID gl_VertexIndex
+#else
 layout(location = 0) uniform ivec2 uOrigin;   // начало плитки, блоки
 layout(location = 1) uniform int uSpacing;    // шаг узлов, блоки
 layout(location = 2) uniform vec2 uMorph;     // морфинг: начало и конец (дальность уровня)
 layout(location = 3) uniform int uLevel;
 layout(location = 4) uniform int uDebug;      // 1 - раскраска по уровням
 layout(location = 5) uniform int uWater;      // Р34: 0 - рельеф (дно), 1 - прозрачный слой воды
+#endif
 
 layout(location = 0) out vec4 vColor;
 layout(location = 1) out vec3 vWorld;

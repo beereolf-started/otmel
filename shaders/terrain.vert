@@ -16,10 +16,19 @@ layout(std140, binding = 0) uniform Frame {
     ivec4 originV;     // Р69: начало координат видеокарты - воксели (блоки мира), кратно куску
     vec4 originOld;    // Р69: оно же в прежних мерах (originV / 16)
 };
+#ifdef VULKAN   // Р73: в Vulkan параметры вызова - push-константы
+layout(push_constant) uniform Push { ivec4 chunk; ivec4 fineOff; ivec4 flags; } pc;
+#define uChunk pc.chunk.xyz
+#define uFineOff pc.fineOff.xyz
+#define uFine pc.flags.x
+#define uFineScale pc.flags.y
+#define gl_VertexID gl_VertexIndex
+#else
 layout(location = 0) uniform ivec3 uChunk;   // начало куска в вокселях; у мелкого куска - блок-основа
 layout(location = 1) uniform ivec3 uFineOff; // Р56: мелкий кусок - сдвиг от основы в мелких вокселях (1/16 блока)
 layout(location = 2) uniform int uFine;      // Р56: 1 - мелкий кусок (дерево и прочее мельче блока)
 layout(location = 3) uniform int uFineScale; // Р63: размер вокселя мелкого куска в мелких вокселях
+#endif
 
 layout(location = 0) out vec4 vColor;
 layout(location = 1) out vec3 vWorld;          // Р43: точка в мире, блоки

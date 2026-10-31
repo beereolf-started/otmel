@@ -1,4 +1,9 @@
 #version 460
+#ifdef VULKAN   // Р73: в Vulkan ось Y экрана - вниз (окно перевёрнуто отрицательной высотой)
+#define NDC(s) vec2((s).x * 2.0 - 1.0, 1.0 - (s).y * 2.0)
+#else
+#define NDC(s) ((s) * 2.0 - 1.0)
+#endif
 layout(location = 0) in vec4 vColor;
 layout(location = 1) in vec3 vWorld;
 layout(location = 2) flat in uint vNormal;
@@ -72,7 +77,7 @@ void main() {
     float sceneZ = texture(uSceneDepth, suv).r;
     float thick = 64.0;
     if (sceneZ > 0.0) {
-        vec4 p = invViewProj * vec4(suv * 2.0 - 1.0, sceneZ, 1.0);
+        vec4 p = invViewProj * vec4(NDC(suv), sceneZ, 1.0);
         thick = max(0.0, distance(p.xyz / p.w, eye.xyz - originOld.xyz) - distance(vWorld, eye.xyz));   // Р69
     }
     float absorb = 1.0 - exp(-thick * ABSORB);

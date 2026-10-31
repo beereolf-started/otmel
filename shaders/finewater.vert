@@ -22,7 +22,14 @@ layout(std140, binding = 0) uniform Frame {
 layout(binding = 1) uniform sampler2D uFlow;   // скорость воды, блоки/с (по прежним блокам поля)
 layout(binding = 4) uniform sampler2D uFine;   // r - vb (верх глади в центре блока, блоки; < -1e8 - нет), g - верх земли
 layout(std430, binding = 3) readonly buffer Blocks { ivec2 blocks[]; };   // блоки с мелкой водой (мировые)
+#ifdef VULKAN   // Р73
+layout(push_constant) uniform Push { ivec4 origin; } pc;
+#define uOrigin pc.origin.xy
+#define gl_VertexID gl_VertexIndex
+#define gl_InstanceID gl_InstanceIndex
+#else
 layout(location = 0) uniform ivec2 uOrigin;    // угол зоны в блоках (у текстуры - кайма в блок: индекс = b - origin + 1)
+#endif
 
 layout(location = 0) out vec4 vColor;
 layout(location = 1) out vec3 vWorld;

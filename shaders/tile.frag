@@ -1,4 +1,9 @@
 #version 460
+#ifdef VULKAN   // Р73: в Vulkan ось Y экрана - вниз (окно перевёрнуто отрицательной высотой)
+#define NDC(s) vec2((s).x * 2.0 - 1.0, 1.0 - (s).y * 2.0)
+#else
+#define NDC(s) ((s) * 2.0 - 1.0)
+#endif
 layout(location = 0) in vec4 vColor;
 layout(location = 1) in vec3 vWorld;
 layout(location = 2) in float vAbove;   // Р51: вода над своей землёй, воксели
@@ -20,7 +25,12 @@ layout(std140, binding = 0) uniform Frame {
 };
 layout(binding = 2) uniform sampler2D uSceneDepth;   // Р51: глубина сцены без воды (только в проходе воды)
 
-layout(binding = 0) uniform usampler2D uVoxelMask;   // 1 - столбец вокселей готов
+#ifdef VULKAN   // Р73: привязка 0 - буфер кадра
+layout(binding = 6) uniform usampler2D uVoxelMask;
+#else
+layout(binding = 0) uniform usampler2D uVoxelMask;
+#endif
+//   // 1 - столбец вокселей готов
 
 layout(location = 0) out vec4 outColor;
 
@@ -73,7 +83,7 @@ void main() {
         float sceneZ = texture(uSceneDepth, suv).r;
         float thick = 64.0;
         if (sceneZ > 0.0) {
-            vec4 p = invViewProj * vec4(suv * 2.0 - 1.0, sceneZ, 1.0);
+            vec4 p = invViewProj * vec4(NDC(suv), sceneZ, 1.0);
             thick = max(0.0, distance(p.xyz / p.w, eye.xyz - originOld.xyz) - d);   // Р69
         }
         float absorb = 1.0 - exp(-thick * 0.32);
