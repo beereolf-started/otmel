@@ -177,6 +177,7 @@ public:
         for (int n = 0; n < 512 && builder_.popTile(r); ++n) {
             Entry e;
             e.mesh = gpu_.uploadTile(r.mesh.data, r.mesh.water);
+            e.falls = std::move(r.mesh.falls);   // Р75: места падения воды - брызги вдали
             e.minY = float(r.mesh.minH) / world::VOXELS_PER_BLOCK;
             e.maxY = float(r.mesh.maxH + 1) / world::VOXELS_PER_BLOCK;
             e.used = frame_;
@@ -221,7 +222,7 @@ public:
     }
 
 private:
-    struct Entry { render::MeshId mesh = render::NO_MESH; float minY = 0, maxY = 0; uint64_t used = 0; };
+    struct Entry { render::MeshId mesh = render::NO_MESH; float minY = 0, maxY = 0; uint64_t used = 0; std::vector<float> falls; };
 
     Entry* find(world::TileKey k) {
         auto it = cache_.find(world::tileHash(k));
@@ -254,6 +255,18 @@ private:
     Builder& builder_;
     std::unordered_map<uint64_t, Entry> cache_;
     std::vector<world::TileDraw> sel_;
+
+public:
+    // Р75: места падения воды у плиток, что рисуются (выбор прошлого кадра): по 6 чисел, см. world::TileMesh::falls
+    template <class F>
+    void forEachFall(F&& f) const {
+        for (const world::TileDraw& d : sel_) {
+            const auto it = cache_.find(world::tileHash(d.key));
+            if (it == cache_.end()) continue;
+            const std::vector<float>& v = it->second.falls;
+            for (size_t k = 0; k + 6 <= v.size(); k += 6) f(&v[k]);
+        }
+    }
     std::vector<world::TileKey> missing_;
     uint64_t frame_ = 0;
 };
@@ -517,6 +530,7 @@ int main(int argc, char** argv) {
     struct FlowData { std::vector<float> vel, ground, surface; };
     // Р73: задания зон (поле, мелкая вода, зона леса, спрайты) - своя очередь: не стоят за сотнями сеток дубов
     Jobs zoneJobs(2), treeJobs(std::max(2u, std::thread::hardware_concurrency() / 2));
+    Jobs effectJobs(1);   // Р75: кромки воды - своя очередь: первый кадр ждёт поле, лес и спрайты, но не их
     std::future<FlowData> flowJob;
     glm::ivec2 flowAt(INT32_MIN / 2), flowPending(0);
     glm::vec4 flowArea(0.0f);
@@ -530,8 +544,10 @@ int main(int argc, char** argv) {
     std::vector<float> fieldVel, shownVel, simVerts;
     // Р52: брызги и капли - воксели у камеры: рождаются на быстрой воде (скаты, пороги, водопады), летят по
     // течению и вверх, падают и пропадают
-    struct Drop { glm::vec3 p, v; float life; int kind; float size; };   // kind: 0 капля, 1 пыль, 2 падающая масса; size - тексели
+    struct Drop { glm::vec3 p, v; float life; int kind; float size; float y0 = 0; };   // kind: 0 капля, 1 пыль, 2 падающая масса, 3 клочья пены (Р75); size - тексели; y0 - откуда упала
     std::vector<Drop> drops;
+    bool sprayWarmed = false;   // Р75: брызги прогреты по кромкам
+    float dropRate = 1.0f, dropDemand = 0.0f;   // Р75: общий множитель частоты; ожидаемое число капель при полной частоте
     std::vector<float> flowGround, flowSurface, dropVerts;
     // Р58: мелкая вода у камеры - зона 128×128 блоков (4×4 куска); уровни по блокам - в фоне при смене куска камеры
     constexpr int FINE = 128;
@@ -540,6 +556,13 @@ int main(int argc, char** argv) {
     std::future<std::unique_ptr<FineData>> fineJob;
     glm::ivec2 fineAt(INT32_MIN / 2);
     std::unique_ptr<FineData> fineData;
+    // Р75: кромки падения воды поблочно в 1024×1024 блоков у камеры (фон, сдвиг - при уходе на 256 блоков): брызги
+    // и падающая вода - по точным кромкам; там же верх глади (или земли) - куда падают блоки воды
+    constexpr int LIPS = 1024, LIPG = LIPS + 64;   // сетка - с каймой в кусок (соседи у края); ±512 блоков
+    struct LipData { glm::ivec2 origin; std::vector<float> top; std::vector<uint8_t> wet; std::vector<float> lips; };   // lips: x, z, верх, перепад, dx, dz
+    std::future<std::unique_ptr<LipData>> lipJob;
+    std::unique_ptr<LipData> lipData;
+    glm::ivec2 lipAt(INT32_MIN / 2);
     // Р62: лес в генерации - зона 7×7 кусков (224 блока) вокруг куска камеры; места - в фоне, деревья - в фоне по 6
     struct ForestSpot { uint64_t key; glm::ivec3 base; glm::ivec3 shift; uint32_t seed; };
     struct ForestZone { glm::ivec2 origin; int side; std::shared_ptr<std::vector<int32_t>> ground; std::vector<ForestSpot> spots; int nWet = 0, nSteep = 0, nSnow = 0, nSparse = 0, nCave = 0; float rainSum = 0, groveSum = 0; int nC = 0; };
@@ -702,102 +725,178 @@ int main(int argc, char** argv) {
             }
         }
         lap(2);
-        // Р59/Р61: брызги, пыль и падающая масса у водопадов и порогов.
-        //   Вблизи (зона мелкой воды, 128 блоков) - по блокам с перепадом: место падения (сосед выше на dUp) -
-        //   всплеск со скоростью ~ √(2g·dUp) (вверх до 9 м/с) и облака пыли (6-12 текселей, поднимаются, 2-4 с);
-        //   кромка (сосед ниже на dDown) - падающая масса: синие водяные блоки (8-16 текселей) срываются по течению и
-        //   падают, капли вдоль всей высоты завесы.
-        //   Вдали (до ~1 км, по полю течений, клетка - 16 блоков): над перепадом клетки к соседу ниже по течению -
-        //   крупные клубы пыли (1.5-4 блока) и брызги, без мелочи. Всего - до 60 тыс.
+        // Р75 (вместо Р59/Р61): брызги, пыль и падающая вода - по физике и на всю дальность видимости.
+        //   Вблизи (зона мелкой воды, 128 блоков) - кромки: мокрый блок, у которого МОКРЫЙ сосед ниже по глади (вода
+        //   падает в воду; к сухому берегу не падает - раньше масса срывалась вдоль берегов лентой). С кромки по всей
+        //   её длине срываются блоки воды со скоростью течения поперёк кромки (поле рек: автомат воды блуждал и
+        //   менялся с положением камеры - менялось и направление), летят по параболе; где блок уходит под гладь -
+        //   всплеск: капли вверх ~0.35·√(2g·h) (h - высота падения), облако пыли, сносимое течением.
+        //   Дальше (поле течений, до 2 км) - по клеткам 16 блоков у перепада или быстрой воды: клубы пыли на кромке
+        //   (ниже по течению), до 800 блоков - и падающие блоки; размер растёт с расстоянием (не меньше ~3 пикселей),
+        //   число - падает. Ещё дальше (плитки, вся дальность) - места падения из плиток: клубы пыли.
         if (!flowGround.empty()) {
             constexpr int T = FINE + 2;
             constexpr float U = 1.0f / 16.0f;
-            const float hdt = std::min(dt, 0.05f);
-            const std::vector<float>& vel = shownVel.empty() ? fieldVel : shownVel;
-            const FineData* fp = fineData.get();
-            const auto vbAt = [&](int bx, int bz) {
-                if (!fp) return NONE;
-                const int i = bx - fp->origin.x + 1, j = bz - fp->origin.y + 1;
-                return i < 0 || j < 0 || i >= T || j >= T ? NONE : fp->vb[size_t(j) * T + i];
+            const std::vector<float>& vel = fieldVel;
+            {   // задание кромок: квадрат 32×32 куска вокруг куска камеры
+                const auto fd32 = [](int v) { return v >= 0 ? v / 32 : -((-v + 31) / 32); };
+                const glm::ivec2 eb(int(std::floor(eye.x * 16.0f)), int(std::floor(eye.z * 16.0f)));
+                const glm::ivec2 want((fd32(eb.x) - 16) * 32, (fd32(eb.y) - 16) * 32);
+                // после первого кадра: на всех ядрах кромки отнимали их у зоны леса, которую ждёт первый кадр
+                if (!firstFrame && !lipJob.valid() && (std::abs(want.x - lipAt.x) >= 256 || std::abs(want.y - lipAt.y) >= 256)) {
+                    lipAt = want;
+                    lipJob = effectJobs.submit([&tp, want] {
+                        const auto t0 = clock_t_::now();
+                        auto L = std::make_unique<LipData>();
+                        L->origin = want - glm::ivec2(32);
+                        L->top.assign(size_t(LIPG) * LIPG, 0.0f);
+                        L->wet.assign(size_t(LIPG) * LIPG, 0);
+                        // 34×34 столбца кусков - на все ядра (в один поток кромки приходили через ~20 с)
+                        std::atomic<int> nextRow{0};
+                        const auto rows = [&] {
+                            world::ColumnHeights hm;
+                            for (int cz; (cz = nextRow++) < LIPG / 32;)
+                                for (int cx = 0; cx < LIPG / 32; ++cx) {
+                                    world::columnHeights(tp, L->origin.x / 32 + cx, L->origin.y / 32 + cz, hm);
+                                    for (int j = 0; j < 32; ++j)
+                                        for (int i = 0; i < 32; ++i) {
+                                            const size_t k = size_t(cz * 32 + j) * LIPG + cx * 32 + i;
+                                            const int32_t h = hm.h[j + 1][i + 1], w = hm.water[j + 1][i + 1];
+                                            L->wet[k] = w > h;
+                                            L->top[k] = float((w > h ? w : h) + 1);
+                                        }
+                                }
+                        };
+                        std::vector<std::thread> th;
+                        for (unsigned t = 0; t < std::max(2u, std::thread::hardware_concurrency()); ++t) th.emplace_back(rows);
+                        for (auto& t : th) t.join();
+                        for (int j = 32; j < LIPG - 32; ++j)
+                            for (int i = 32; i < LIPG - 32; ++i) {
+                                const size_t k = size_t(j) * LIPG + i;
+                                if (!L->wet[k]) continue;
+                                for (const auto [dx, dz] : {std::pair{1, 0}, {-1, 0}, {0, 1}, {0, -1}}) {
+                                    const size_t kn = size_t(j + dz) * LIPG + i + dx;
+                                    if (!L->wet[kn]) continue;   // к сухому берегу вода не падает
+                                    const float h = L->top[k] - L->top[kn];
+                                    if (h >= 0.1f)
+                                        L->lips.insert(L->lips.end(), {float(L->origin.x + i), float(L->origin.y + j), L->top[k], h, float(dx), float(dz)});
+                                }
+                            }
+                        journal::info("вода", "кромки: {} за {:.0f} мс", L->lips.size() / 6, msSince(t0));
+                        return L;
+                    });
+                }
+                if (lipJob.valid() && lipJob.wait_for(std::chrono::seconds(0)) == std::future_status::ready) lipData = take(lipJob, "кромки");
+            }
+            const LipData* lp = lipData.get();
+            // верх глади (у сухого - земли) в блоке, блоки; вне зоны кромок - нет
+            const auto topAt = [&](int bx, int bz) {
+                if (!lp) return NONE;
+                const int i = bx - lp->origin.x, j = bz - lp->origin.y;
+                return i < 0 || j < 0 || i >= LIPG || j >= LIPG ? NONE : lp->top[size_t(j) * LIPG + i];
             };
             const auto flowOf = [&](int bx, int bz) {
                 const int fx = (bx >> 4) - flowAt.x, fz = (bz >> 4) - flowAt.y;
                 if (vel.empty() || fx < 0 || fz < 0 || fx >= FLOW_SIZE || fz >= FLOW_SIZE) return glm::vec2(0);
                 return glm::vec2(vel[(size_t(fz) * FLOW_SIZE + fx) * 2], vel[(size_t(fz) * FLOW_SIZE + fx) * 2 + 1]);
             };
-            const auto spawn = [&](float rate, auto make) {
-                for (float k = rate * hdt; k > 0 && drops.size() < 60000; k -= 1.0f) {
+            constexpr size_t NEAR_CAP = 60000, ALL_CAP = 100000;
+            const auto sprayStep = [&](const float hdt) {   // Р75: шаг брызг (кадр или прогрев)
+            float demand = 0.0f;
+            const auto spawnUpTo = [&](size_t cap, float rate, float life, auto make) {
+                demand += rate * life;
+                for (float k = rate * dropRate * hdt; k > 0 && drops.size() < cap; k -= 1.0f) {
                     if (k < 1.0f && rnd() >= k) break;
                     drops.push_back(make());
                 }
             };
-            if (fp)
-                for (size_t q = 0; q + 1 < fp->sources.size(); q += 2) {
-                    const int bx = fp->sources[q], bz = fp->sources[q + 1];
-                    const float v0 = vbAt(bx, bz);
-                    float dUp = 0, dDown = 0;
-                    for (const auto [dx, dz] : {std::pair{1, 0}, {-1, 0}, {0, 1}, {0, -1}}) {
-                        const float vn = vbAt(bx + dx, bz + dz);
-                        if (vn <= NONE) continue;
-                        dUp = std::max(dUp, vn - v0);
-                        dDown = std::max(dDown, v0 - vn);
-                    }
+            const auto spawn = [&](float rate, float life, auto make) { spawnUpTo(NEAR_CAP, rate, life, make); };
+            if (lp)
+                for (size_t q = 0; q + 6 <= lp->lips.size(); q += 6) {
+                    const float* L = &lp->lips[q];
+                    const int bx = int(L[0]), bz = int(L[1]);
+                    const float v0 = L[2], h = L[3];   // верх глади на кромке и высота падения, блоки
+                    const glm::vec2 n{L[4], L[5]}, side{-L[5], L[4]};
+                    // кромка - чуть за краем блока, над нижним соседом
+                    const glm::vec3 edge(float(bx) + 0.5f + 0.55f * n.x, v0 + 0.02f, float(bz) + 0.5f + 0.55f * n.y);
+                    const glm::vec3 eo = edge * U;
+                    if (!fr.visible(eo - glm::vec3(U, h * U + U, U), eo + glm::vec3(U))) continue;
+                    // вдали блок воды меньше пикселя: крупнее и реже (на 120 блоках - вдвое)
+                    const float dist = glm::distance(eo, eye) * 16.0f, scale = std::max(1.0f, dist / 120.0f);
                     const glm::vec2 fv = flowOf(bx, bz);
-                    const float sp = glm::length(fv);
-                    const glm::vec2 dir = sp > 0.01f ? fv / sp : glm::vec2(0);
-                    const glm::vec3 base(float(bx) * U, v0 * U, float(bz) * U);
-                    if (dUp > 0.05f) {   // место падения: всплеск по энергии падения и облака пыли
-                        const float vUp = std::min(9.0f, std::sqrt(2.0f * 9.8f * dUp) * 0.8f + 1.0f);
-                        spawn(90.0f * dUp * (1.0f + sp / 4.0f), [&] {
-                            const float a = rnd() * 6.2832f, r = rnd() * (1.0f + vUp * 0.4f);
-                            return Drop{base + glm::vec3(rnd(), 0.02f, rnd()) * U,
-                                        glm::vec3(std::cos(a) * r, vUp * (0.4f + 0.6f * rnd()), std::sin(a) * r) * U, 0.6f + 1.0f * rnd(), 0, 1.0f + rnd()};
+                    const float sp = glm::length(fv), discharge = (0.6f + sp) / scale;
+                    // вылет: поперёк кромки - со скоростью течения (не меньше 0.6 м/с), вдоль - половина его доли
+                    const glm::vec2 hv = n * std::max(glm::dot(fv, n), 0.6f) + side * (glm::dot(fv, side) * 0.5f);
+                    // блоки воды по всей длине кромки: с водопада (от 3 блоков) - синие, с порога и ступеньки - белые
+                    // клочья пены (на малом перепаде вода взбивается, сплошной синей массой не падает)
+                    if (h >= 0.5f)
+                        spawn((h >= 3.0f ? 4.0f : 3.0f) * discharge, std::sqrt(2.0f * h / 9.8f) + 0.3f, [&] {
+                            const float a = rnd() - 0.5f;
+                            const glm::vec3 p0 = edge + glm::vec3(side.x * a, -0.1f * rnd(), side.y * a);
+                            return Drop{p0 * U, glm::vec3(hv.x * (0.85f + 0.3f * rnd()), 0.15f * rnd(), hv.y * (0.85f + 0.3f * rnd())) * U,
+                                        4.0f, h >= 3.0f ? 2 : 3, (h >= 3.0f ? 6.0f + 6.0f * rnd() : 3.0f + 4.0f * rnd()) * scale, p0.y * U};
                         });
-                        spawn(10.0f * dUp, [&] {
-                            return Drop{base + glm::vec3(rnd(), 0.3f + rnd() * 1.5f, rnd()) * U,
-                                        glm::vec3((rnd() - 0.5f) * 1.5f + dir.x * 0.6f, 0.6f + 1.4f * rnd(), (rnd() - 0.5f) * 1.5f + dir.y * 0.6f) * U,
-                                        2.0f + 2.0f * rnd(), 1, 6.0f + 6.0f * rnd()};
+                    if (scale < 3.0f)
+                        spawn(std::min(h, 3.0f) * 5.0f * discharge, 1.1f, [&] {   // мелкие капли с кромки
+                            const float a = rnd() - 0.5f;
+                            const glm::vec3 p0 = edge + glm::vec3(side.x * a, 0.05f, side.y * a);
+                            return Drop{p0 * U, glm::vec3(hv.x + rnd() - 0.5f, 0.3f + 0.8f * rnd(), hv.y + rnd() - 0.5f) * U,
+                                        0.8f + 0.6f * rnd(), 0, (1.0f + rnd()) * scale, p0.y * U};
                         });
-                    }
-                    if (dDown > 0.05f) {   // кромка: падающая масса и капли вдоль завесы
-                        spawn(6.0f * dDown * (1.0f + sp / 3.0f), [&] {
-                            return Drop{base + glm::vec3(rnd(), 0.0f, rnd()) * U,
-                                        glm::vec3(dir.x * (1.0f + sp * 0.5f), 0.2f, dir.y * (1.0f + sp * 0.5f)) * U,
-                                        0.8f + 0.8f * rnd(), 2, 8.0f + 8.0f * rnd()};
-                        });
-                        spawn(40.0f * dDown, [&] {
-                            const float y = -dDown * rnd();   // по всей высоте завесы
-                            return Drop{base + glm::vec3(rnd() + dir.x * 0.6f, y, rnd() + dir.y * 0.6f) * U,
-                                        glm::vec3(dir.x * (1.0f + rnd()) + (rnd() - 0.5f) * 1.2f, (rnd() - 0.3f) * 1.5f, dir.y * (1.0f + rnd()) + (rnd() - 0.5f) * 1.2f) * U,
-                                        0.4f + 0.6f * rnd(), 0, 1.0f + rnd()};
-                        });
-                    }
                 }
-            // вдали: по клеткам поля течений, вне зоны мелкой воды
-            const int ex = int(std::floor(eye.x)) - flowAt.x, ez = int(std::floor(eye.z)) - flowAt.y;
-            constexpr int RF = 64;   // клеток (по 16 блоков) - ~1 км
-            for (int z = std::max(0, ez - RF); z < std::min(FLOW_SIZE - 1, ez + RF); ++z)
-                for (int x = std::max(0, ex - RF); x < std::min(FLOW_SIZE - 1, ex + RF); ++x) {
+            // дальше: клетки поля течений (16 блоков) вне зоны мелкой воды - на всём поле (~2 км)
+            for (int z = 0; z < FLOW_SIZE - 1; ++z)
+                for (int x = 0; x < FLOW_SIZE - 1; ++x) {
                     const size_t k = size_t(z) * FLOW_SIZE + x;
                     const float sf = flowSurface[k];
                     if (sf <= flowGround[k] + 0.01f) continue;
                     const int bx = (flowAt.x + x) * 16, bz = (flowAt.y + z) * 16;
-                    if (fp && bx + 16 > fp->origin.x && bz + 16 > fp->origin.y && bx < fp->origin.x + FINE && bz < fp->origin.y + FINE) continue;
+                    if (lp && bx + 16 > lp->origin.x + 32 && bz + 16 > lp->origin.y + 32 && bx < lp->origin.x + 32 + LIPS && bz < lp->origin.y + 32 + LIPS) continue;
+                    if (vel.empty()) continue;
                     const float vx = vel[k * 2], vz = vel[k * 2 + 1], sp = std::sqrt(vx * vx + vz * vz);
                     float drop = 0;   // перепад к соседу ниже по течению, блоки
+                    glm::vec2 dir(0);
                     if (sp > 0.01f) {
-                        const int nx = x + int(std::round(vx / sp)), nz = z + int(std::round(vz / sp));
-                        const size_t kn = size_t(nz) * FLOW_SIZE + nx;
-                        if (flowSurface[kn] > flowGround[kn]) drop = std::max(0.0f, (sf - flowSurface[kn]) * 16.0f);
+                        dir = glm::vec2(vx, vz) / sp;
+                        const int nx = x + int(std::round(dir.x)), nz = z + int(std::round(dir.y));
+                        if (nx >= 0 && nz >= 0 && nx < FLOW_SIZE && nz < FLOW_SIZE) {
+                            const size_t kn = size_t(nz) * FLOW_SIZE + nx;
+                            if (flowSurface[kn] > flowGround[kn]) drop = std::max(0.0f, (sf - flowSurface[kn]) * 16.0f);
+                        }
                     }
-                    if (drop < 1.0f && sp < 3.0f) continue;
-                    const glm::vec3 base(float(flowAt.x + x), sf, float(flowAt.y + z));
-                    spawn(0.8f * drop + 0.3f * std::max(0.0f, sp - 3.0f), [&] {
-                        return Drop{base + glm::vec3(rnd(), (0.2f + rnd() * 1.5f) * U, rnd()),
-                                    glm::vec3((rnd() - 0.5f) * 1.5f, 0.8f + 1.5f * rnd(), (rnd() - 0.5f) * 1.5f) * U,
-                                    2.5f + 2.0f * rnd(), 1, 24.0f + 40.0f * rnd()};
+                    if (drop < 3.0f && sp < 3.5f) continue;
+                    // вода клетки взята в её центре: русло идёт через центр по течению. Пыль - в любом месте этой линии
+                    // в пределах клетки (±1.5 блока поперёк), а не у одной точки кромки - иначе ряды через 16 блоков
+                    const glm::vec2 side(-dir.y, dir.x);
+                    const glm::vec3 c(float(flowAt.x + x) + 0.5f, sf, float(flowAt.y + z) + 0.5f);
+                    if (!fr.visible(c - glm::vec3(1.0f, 0.5f, 1.0f), c + glm::vec3(1.0f, 1.0f, 1.0f))) continue;
+                    const float dist = glm::distance(glm::vec2(c.x, c.z), glm::vec2(eye.x, eye.z)) * 16.0f;   // блоки
+                    const float scale = std::max(1.0f, dist / 600.0f);   // не меньше ~3 пикселей
+                    spawn((0.5f * drop + 0.3f * std::max(0.0f, sp - 3.0f)) / scale, 3.5f, [&] {
+                        const float a = rnd() - 0.5f, b = (rnd() - 0.5f) * 3.0f * U;
+                        return Drop{c + glm::vec3(dir.x * a + side.x * b, (0.2f + rnd() * 1.5f) * U * scale, dir.y * a + side.y * b),
+                                    glm::vec3((rnd() - 0.5f) * 1.5f + vx * 0.4f, 0.8f + 1.5f * rnd(), (rnd() - 0.5f) * 1.5f + vz * 0.4f) * U,
+                                    2.5f + 2.0f * rnd(), 1, (24.0f + 40.0f * rnd()) * scale, c.y};
                     });
                 }
+            // ещё дальше - места падения из дальних плиток, вся дальность видимости
+            {
+                const float cx = float(flowAt.x) + FLOW_SIZE * 0.5f, cz = float(flowAt.y) + FLOW_SIZE * 0.5f, half = FLOW_SIZE * 0.5f - 1.0f;
+                farTerrain.forEachFall([&](const float* f) {
+                    const glm::vec3 c(f[0] * U, f[1] * U, f[2] * U);
+                    if (std::abs(c.x - cx) < half && std::abs(c.z - cz) < half) return;   // в поле течений - клетками
+                    const float dist = glm::distance(glm::vec2(c.x, c.z), glm::vec2(eye.x, eye.z)) * 16.0f;
+                    if (dist > float(lod.drawDistance) * 16.0f) return;
+                    const float scale = std::max(1.0f, dist / 600.0f), big = std::clamp(f[3] / 6.0f, 1.0f, 4.0f);
+                    if (!fr.visible(c - glm::vec3(0.5f), c + glm::vec3(0.5f, 0.5f + scale * 0.2f, 0.5f))) return;
+                    spawnUpTo(ALL_CAP, 0.4f * big / std::sqrt(scale), 7.0f, [&] {   // выше падение - больше клубов (не крупнее)
+                        return Drop{c + glm::vec3((rnd() - 0.5f) * 0.5f, 0.0f, (rnd() - 0.5f) * 0.5f) * (scale * 0.25f),
+                                    glm::vec3((rnd() - 0.5f) * 1.5f + f[4] * 1.5f, 1.0f + 1.5f * rnd(), (rnd() - 0.5f) * 1.5f + f[5] * 1.5f) * U * std::sqrt(scale),
+                                    5.0f + 4.0f * rnd(), 1, (24.0f + 40.0f * rnd()) * scale, c.y};
+                    });
+                });
+            }
+            std::vector<Drop> born;   // всплески - после прохода (вектор капель не растёт под ногами)
             for (Drop& d : drops) {
                 if (d.kind != 1) d.v.y -= 9.8f * U * hdt;
                 else d.v *= 1.0f - 0.5f * hdt;   // пыль тормозит воздухом
@@ -805,18 +904,50 @@ int main(int argc, char** argv) {
                 d.life -= hdt;
                 if (d.kind != 1 && d.v.y < 0) {
                     const int bx = int(std::floor(d.p.x * 16.0f)), bz = int(std::floor(d.p.z * 16.0f));
-                    float sv = vbAt(bx, bz);
+                    float sv = topAt(bx, bz);
                     if (sv <= NONE) {
                         const int fx = (bx >> 4) - flowAt.x, fz = (bz >> 4) - flowAt.y;
                         if (fx >= 0 && fz >= 0 && fx < FLOW_SIZE && fz < FLOW_SIZE) sv = flowSurface[size_t(fz) * FLOW_SIZE + fx] * 16.0f;
                     }
-                    if (sv > NONE && d.p.y * 16.0f < sv) d.life = 0;
+                    if (sv > NONE && d.p.y * 16.0f < sv) {
+                        d.life = 0;
+                        if (d.kind >= 2 && born.size() < 4000) {   // всплеск: блок воды (или клочок пены) ушёл под гладь
+                            const float h = std::max(0.0f, (d.y0 - d.p.y) * 16.0f);   // высота падения, блоки
+                            const float vUp = std::min(8.0f, 0.35f * std::sqrt(2.0f * 9.8f * h) + 0.8f);
+                            const float k = std::max(1.0f, d.size / 8.0f);   // вдали блоки крупнее - и всплеск
+                            const glm::vec2 fv = flowOf(bx, bz);
+                            const glm::vec3 at(d.p.x, sv * U, d.p.z);
+                            const int n = 1 + int(std::min(h, 6.0f));
+                            for (int q = 0; q < n; ++q) {
+                                const float a = rnd() * 6.2832f, r = rnd() * (0.6f + vUp * 0.3f);
+                                born.push_back(Drop{at, glm::vec3(std::cos(a) * r, vUp * (0.4f + 0.6f * rnd()), std::sin(a) * r) * U,
+                                                    0.5f + 0.8f * rnd(), 0, (1.0f + rnd()) * k, at.y});
+                            }
+                            if (d.kind == 2 && rnd() < 0.2f * std::min(h, 5.0f))
+                                born.push_back(Drop{at + glm::vec3(0.0f, 0.3f * U, 0.0f),
+                                                    glm::vec3(fv.x * 0.5f + rnd() - 0.5f, 0.5f + rnd(), fv.y * 0.5f + rnd() - 0.5f) * U,
+                                                    2.5f + 2.0f * rnd(), 1, (8.0f + 8.0f * rnd()) * k, at.y});
+                        }
+                    }
                 }
             }
+            for (const Drop& b : born) if (drops.size() < ALL_CAP) drops.push_back(b);
+            // ожидаемое число капель при полной частоте известно наперёд (частота × время жизни по всем кромкам):
+            // множитель - чтобы влезть в 85% лимита; меняется плавно, только когда меняются кромки в поле зрения
+            dropDemand = demand;
+            dropRate += (std::min(1.0f, 0.85f * float(NEAR_CAP) / std::max(1.0f, dropDemand)) - dropRate) * std::min(1.0f, hdt * 2.0f);
             std::erase_if(drops, [](const Drop& d) { return d.life <= 0; });
+            };
+            // Р75: брызги и пыль живут секунды - картина собиралась на глазах (эффект «копился»). Когда кромки пришли
+            // впервые (и на первом кадре), шаги прогоняются вперёд на 3 с без отрисовки - сразу видно установившееся
+            if (firstFrame || (lp && !sprayWarmed)) {
+                for (int k = 0; k < 30; ++k) sprayStep(0.1f);
+                if (lp) sprayWarmed = true;
+            }
+            sprayStep(std::min(dt, 0.05f));
             dropVerts.clear();
             for (const Drop& d : drops) {
-                const float alpha = d.kind == 0 ? 0.9f : d.kind == 2 ? 0.6f : 0.28f * std::min(1.0f, d.life);
+                const float alpha = d.kind == 0 ? 0.9f : d.kind == 2 ? 0.6f : d.kind == 3 ? 0.85f : 0.28f * std::min(1.0f, d.life);
                 dropVerts.insert(dropVerts.end(), {d.p.x, d.p.y, d.p.z, d.size / 256.0f, alpha, float(d.kind), 0.0f, 0.0f});
             }
             gpu->setSpray(dropVerts);
@@ -1297,6 +1428,9 @@ int main(int argc, char** argv) {
                 for (int i = 0; i < NSECT; ++i)
                     if (sect[i] >= 1.0) parts += std::format("{}{} {:.0f}", parts.empty() ? "" : ", ", SECT[i], sect[i]);
                 journal::warn("кадр", "долгий кадр {:.0f} мс, от прошлого {:.0f} мс ({}): {}", iterMs, frameMs, parts, counts());
+                if (sect[1] > 30.0)   // Р75: зона вокселей - худшее по её частям с прошлого сброса
+                    journal::warn("кадр", "  зона вокселей, худшее: сдвиг окна {:.0f}, очередь {:.0f}, выгрузка {:.0f}, маска {:.0f} мс",
+                                  voxels.stats().worstMs[0], voxels.stats().worstMs[1], voxels.stats().worstMs[2], voxels.stats().worstMs[3]);
             }
             if (msSince(statAt) > 10000.0) {
                 journal::info("кадр", "за 10 с: кадров {}, средний {:.1f} мс, худший {:.0f} мс; {}", statFrames, statSum / std::max(1, statFrames), statWorst, counts());

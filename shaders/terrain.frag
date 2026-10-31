@@ -45,6 +45,32 @@ float valueNoise(vec2 q) {
 }
 float ripples(vec2 q) { return valueNoise(q) * 0.6 + valueNoise(q * 2.3 + 7.1) * 0.4; }
 
+// Р75: течение, видимое с любого расстояния. Рисунок ряби и пены - в масштабе λ (степень двойки, не мельче
+// ~6 пикселей): вблизи мелкий, вдали крупный; две соседние октавы смешиваются по дробной части log2 - без скачков.
+// Рисунок сносится течением v (блоков/с) двумя фазами с периодом T = 0.75·λ с: за период уезжает на v·T (река
+// 2 м/с - 1.5λ, растяжение не заметно), фазы сменяются треугольным весом. Сдвиг - ступенями в λ/8: рисунок
+// перескакивает клетками, как блики вблизи. p - точка (блоки), ps - пиксель (блоки), t - секунды.
+// Ответ: x - рябь 0..1, y - пена 0..1 (быстрее вода - гуще пена).
+vec2 flowOctave(vec2 p, vec2 v, float lam, float t, float sp) {
+    float T = 0.75 * lam;
+    float ph0 = fract(t / T), ph1 = fract(t / T + 0.5);
+    float w0 = 1.0 - abs(2.0 * ph0 - 1.0);
+    vec2 o = vec2(log2(lam) * 17.31, log2(lam) * 9.77);
+    vec2 q0 = floor((p - v * (ph0 * T)) / lam * 8.0) / 8.0 + o;
+    vec2 q1 = floor((p - v * (ph1 * T)) / lam * 8.0) / 8.0 + o + 0.37;
+    float n = mix(valueNoise(q1), valueNoise(q0), w0) * 0.65 + mix(valueNoise(q1 * 2.3 + 4.1), valueNoise(q0 * 2.3 + 4.1), w0) * 0.35;
+    // смесь двух фаз тусклее каждой (разброс падает в √(w0² + w1²) раз) - пена пропадала каждые полпериода; вернуть разброс
+    n = 0.5 + (n - 0.5) * inversesqrt(w0 * w0 + (1.0 - w0) * (1.0 - w0));
+    float thr = mix(0.86, 0.6, smoothstep(0.3, 5.0, sp));
+    return vec2(n, smoothstep(thr, thr + 0.04, n));
+}
+vec2 flowLook(vec2 p, vec2 v, float ps, float t) {
+    float o = log2(max(1.0, ps * 6.0));
+    float o0 = floor(o), f = o - o0, l0 = exp2(o0);
+    float sp = length(v);
+    return mix(flowOctave(p, v, l0, t, sp), flowOctave(p, v, 2.0 * l0, t, sp), f);
+}
+
 // Р51: вода поглощает свет по толщине (закон Бугера): мелко - почти прозрачно и светло, глубоко - темно и мутно
 const vec3 DEEP = vec3(0.015, 0.07, 0.10);
 const float ABSORB = 0.32;   // на блок толщины по лучу
@@ -91,7 +117,7 @@ void main() {
         vec2 q = px.xz * 0.7;
         float n0 = ripples(q - v * ph0 * 2.0);
         float n1 = ripples(q - v * ph1 * 2.0 + 0.37);
-        float n = mix(n1, n0, w0);
+        float n = 0.5 + (mix(n1, n0, w0) - 0.5) * inversesqrt(w0 * w0 + (1.0 - w0) * (1.0 - w0));   // Р75: без пульсации
         // в стоячей воде - медленный дрейф ряби (ветер)
         n = mix(n, ripples(q * 0.8 + vec2(t * 0.3, t * 0.2)), clamp(1.0 - speed * 2.0, 0.0, 1.0));
         n = mix(0.5, n, detail);
@@ -99,7 +125,13 @@ void main() {
         // блик неба - на гребнях ряби, ступенькой (тексель горит или нет)
         c += vec3(0.16, 0.2, 0.22) * step(0.78, n) * detail;
         // пена - на быстрых местах (перекаты, пороги): скорость от 2 до 6 блоков/с
-        float foam = smoothstep(2.0, 6.0, speed) * mix(0.3, step(0.62, n), detail);
+        float foam = smoothstep(2.0, 6.0, speed) * step(0.62, n) * detail;
+        // Р75: вдали тексель меньше пикселя - рисунок течения крупнеет с расстоянием: река видно течёт издалека
+        float ps = max(fwidth(wb.x), fwidth(wb.z));
+        vec2 fl = flowLook(wb.xz, v, ps, t);
+        float far = 1.0 - detail;
+        c *= mix(1.0, 0.88 + 0.24 * fl.x, far);
+        foam = max(foam, fl.y * smoothstep(0.2, 0.7, speed) * far);
         // Р59: у водопадов (кромка, место падения) - бурлящая пена: крупные клочья поверх мелких, бегут и
         // перемешиваются по кадрам
         if (vWater == 4u && vFoam > 0.0) {
@@ -111,7 +143,10 @@ void main() {
     } else if (vNormal != 3u) {
         // боковые грани воды - ступени перекатов и обрывы: падающая вода, полосы бегут вниз
         float s = valueNoise(vec2((px.x + px.z) * 2.0, px.y * 1.0 + t * 8.0));
-        c = mix(c * 1.15, vec3(0.88, 0.94, 1.0), mix(0.25, step(0.68, s), detail) * 0.8);
+        // Р75: вдали - те же полосы крупнее (λ по расстоянию), бегут вниз со скоростью ~8 блоков/с
+        float lam = exp2(ceil(log2(max(1.0, max(fwidth(wb.x + wb.z), fwidth(wb.y)) * 6.0))));
+        float s2 = valueNoise(vec2(floor((wb.x + wb.z) / lam * 4.0) / 4.0, floor((wb.y + t * 8.0) / lam * 4.0) / 4.0));
+        c = mix(c * 1.15, vec3(0.88, 0.94, 1.0), mix(step(0.6, s2), step(0.68, s), detail) * 0.8);
         a = max(a, 0.7);
     }
     outColor = vec4(c, a);

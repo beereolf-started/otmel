@@ -102,6 +102,7 @@ void buildTile(const TerrainParams& p, TileKey k, TileMesh& out) {
     waterSurface(hc, wc, wetC, sc);
 
     out.data.resize(size_t(TILE_VERTS) * TILE_VERTS * TILE_WORDS);
+    out.falls.clear();
     out.minH = INT32_MAX;
     out.maxH = INT32_MIN;
     out.water = false;
@@ -129,6 +130,36 @@ void buildTile(const TerrainParams& p, TileKey k, TileMesh& out) {
             w[2] = coarseGrad[cj][ci];
             w[3] = uint32_t(c.top) | uint32_t(c.under) << 4 | coarseCover[cj][ci] << 8 | uint32_t(std::lround(forest * 255.0f)) << 16;
             const int32_t s = sf[j + 1][i + 1], scT = sc[cj + 1][ci + 1];
+            // Р75: течение у мокрого узла - чтобы и вдали было видно, куда и как быстро течёт река; перепад глади к
+            // самому низкому мокрому соседу - пена у падения и места брызг вдали
+            if (wetF[j + 1][i + 1]) {
+                const int64_t wx = x0 + i * step, wz = z0 + j * step;
+                const RiverSet::Current cur = rivers.current(p, int32_t(wx), int32_t(wz));
+                uint32_t flow = 0;
+                if (cur.inRiver) {
+                    const float sp = float(cur.speed) / float(fx::ONE);
+                    const float ang = std::atan2(float(cur.dirZ), float(cur.dirX));
+                    flow = uint32_t(std::lround(ang / 6.2831853f * 16.0f)) & 15u;
+                    flow |= uint32_t(sp < 0.5f ? 0 : sp < 1.6f ? 1 : sp < 3.0f ? 2 : 3) << 4;
+                }
+                int32_t drop = 0, bi = 0, bj = 0;
+                for (int dj = -1; dj <= 1; ++dj)
+                    for (int di = -1; di <= 1; ++di) {
+                        if ((di == 0 && dj == 0) || !wetF[j + 1 + dj][i + 1 + di]) continue;
+                        // по уровню воды wf: у мокрых узлов он равен глади, а у каймы (за краем плитки) гладь sf не
+                        // считается - там лежал мусор прошлой плитки, и края плиток в океане становились «водопадами»
+                        const int32_t d = wf[j + 1][i + 1] - wf[j + 1 + dj][i + 1 + di];
+                        if (d > drop) { drop = d; bi = di; bj = dj; }
+                    }
+                flow |= uint32_t(drop < 2 ? 0 : drop < 5 ? 1 : drop < 12 ? 2 : 3) << 6;
+                w[3] |= flow << 24;
+                // своя кромка - только у узлов плитки без общего края с соседней плиткой (там - её узлы)
+                if (i < TILE && j < TILE && drop >= std::max<int64_t>(2, step / 8)) {
+                    const float len = std::sqrt(float(bi * bi + bj * bj));
+                    out.falls.insert(out.falls.end(), {float(wx + bi * step / 2), float(s + 1), float(wz + bj * step / 2),
+                                                       float(drop), float(bi) / len, float(bj) / len});
+                }
+            }
             w[4] = h16(s) | h16(scT) << 16;
             const bool wet = wetF[j + 1][i + 1] || wetC[cj + 1][ci + 1];
             out.water |= wet;

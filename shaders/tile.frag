@@ -8,6 +8,8 @@ layout(location = 0) in vec4 vColor;
 layout(location = 1) in vec3 vWorld;
 layout(location = 2) in float vAbove;   // Р51: вода над своей землёй, воксели
 layout(location = 3) in float vForest;  // Р67: густота леса 0..1
+layout(location = 4) in vec2 vFlow;     // Р75: течение, блоков/с
+layout(location = 5) in float vFall;    // Р75: перепад к соседу ниже 0..1
 
 layout(std140, binding = 0) uniform Frame {
     mat4 viewProj;     // камера - относительно originOld (Р69)
@@ -45,6 +47,32 @@ float cnoise(vec2 q) {
     vec2 i = floor(q), f = q - i;
     f = f * f * (3.0 - 2.0 * f);
     return mix(mix(chash(i), chash(i + vec2(1, 0)), f.x), mix(chash(i + vec2(0, 1)), chash(i + vec2(1, 1)), f.x), f.y);
+}
+
+// Р75: течение, видимое с любого расстояния. Рисунок ряби и пены - в масштабе λ (степень двойки, не мельче
+// ~6 пикселей): вблизи мелкий, вдали крупный; две соседние октавы смешиваются по дробной части log2 - без скачков.
+// Рисунок сносится течением v (блоков/с) двумя фазами с периодом T = 0.75·λ с: за период уезжает на v·T (река
+// 2 м/с - 1.5λ, растяжение не заметно), фазы сменяются треугольным весом. Сдвиг - ступенями в λ/8: рисунок
+// перескакивает клетками, как блики вблизи. p - точка (блоки), ps - пиксель (блоки), t - секунды.
+// Ответ: x - рябь 0..1, y - пена 0..1 (быстрее вода - гуще пена).
+vec2 flowOctave(vec2 p, vec2 v, float lam, float t, float sp) {
+    float T = 0.75 * lam;
+    float ph0 = fract(t / T), ph1 = fract(t / T + 0.5);
+    float w0 = 1.0 - abs(2.0 * ph0 - 1.0);
+    vec2 o = vec2(log2(lam) * 17.31, log2(lam) * 9.77);
+    vec2 q0 = floor((p - v * (ph0 * T)) / lam * 8.0) / 8.0 + o;
+    vec2 q1 = floor((p - v * (ph1 * T)) / lam * 8.0) / 8.0 + o + 0.37;
+    float n = mix(cnoise(q1), cnoise(q0), w0) * 0.65 + mix(cnoise(q1 * 2.3 + 4.1), cnoise(q0 * 2.3 + 4.1), w0) * 0.35;
+    // смесь двух фаз тусклее каждой (разброс падает в √(w0² + w1²) раз) - пена пропадала каждые полпериода; вернуть разброс
+    n = 0.5 + (n - 0.5) * inversesqrt(w0 * w0 + (1.0 - w0) * (1.0 - w0));
+    float thr = mix(0.86, 0.6, smoothstep(0.3, 5.0, sp));
+    return vec2(n, smoothstep(thr, thr + 0.04, n));
+}
+vec2 flowLook(vec2 p, vec2 v, float ps, float t) {
+    float o = log2(max(1.0, ps * 6.0));
+    float o0 = floor(o), f = o - o0, l0 = exp2(o0);
+    float sp = length(v);
+    return mix(flowOctave(p, v, l0, t, sp), flowOctave(p, v, 2.0 * l0, t, sp), f);
 }
 
 void main() {
@@ -89,6 +117,15 @@ void main() {
         float absorb = 1.0 - exp(-thick * 0.32);
         col = mix(col * vec3(0.55, 0.72, 0.8), vec3(0.015, 0.07, 0.10), absorb);
         a = mix(0.18, 0.96, absorb);
+        // Р75: течение и пена на всю дальность - тот же рисунок, что у воды вокселей вдали; у падения - бурление
+        vec2 wb = vWorld.xz * 16.0;
+        float t = floor(timeV.x * 8.0) / 8.0;
+        float sp = length(vFlow);
+        vec2 fl = flowLook(wb, sp > 0.1 ? vFlow : vec2(0.25, 0.15), max(fwidth(wb.x), fwidth(wb.y)), t);
+        col *= 0.88 + 0.24 * fl.x;
+        float foam = max(fl.y * smoothstep(0.2, 0.7, sp), vFall * smoothstep(0.62 - 0.3 * vFall, 0.66 - 0.3 * vFall, fl.x));
+        col = mix(col, vec3(0.9, 0.95, 1.0), foam * 0.9);
+        a = mix(a, 0.92, foam);
     }
     outColor = vec4(mix(col, sky.rgb, max(haze, smoothstep(fade.x, fade.y, d))), a);
 }

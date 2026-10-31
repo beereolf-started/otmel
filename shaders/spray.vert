@@ -44,9 +44,12 @@ void main() {
     gl_Position = viewProj * vec4(p - originOld.xyz, 1.0);   // Р69
     uint n = uint(ax * 2 + (plus ? 0 : 1));
     float light = 0.6 + 0.4 * max(dot(NORMALS[n], normalize(sunDir.xyz)), 0.0);
-    // 0 капля, 1 пыль - белые; 2 падающая масса - вода
-    vec3 c = aInfo.y > 1.5 ? vec3(0.3, 0.58, 0.85) : aInfo.y > 0.5 ? vec3(0.9, 0.94, 0.97) : vec3(0.86, 0.92, 0.97);
-    vColor = vec4(c * light, aInfo.x);
+    // 0 капля, 1 пыль - белые; 2 падающая масса - вода; 3 клочья пены (Р75) - белые
+    vec3 c = aInfo.y > 2.5 ? vec3(0.93, 0.96, 1.0) : aInfo.y > 1.5 ? vec3(0.3, 0.58, 0.85) : aInfo.y > 0.5 ? vec3(0.9, 0.94, 0.97) : vec3(0.86, 0.92, 0.97);
+    // Р75: брызги и пыль видны на всю дальность - и тонут в дымке, как рельеф (tile.frag)
+    float d = distance(eye.xyz, p);
+    float haze = fade.w * (1.0 - exp(-d / fade.z));
+    vColor = vec4(mix(c * light, sky.rgb, max(haze, smoothstep(fade.x, fade.y, d))), aInfo.x);
     vWorld = p;
     vNormal = n;
     vWater = 3u;
