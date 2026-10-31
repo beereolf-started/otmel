@@ -5,16 +5,18 @@ layout(location = 2) in float vAbove;   // Р51: вода над своей зе
 layout(location = 3) in float vForest;  // Р67: густота леса 0..1
 
 layout(std140, binding = 0) uniform Frame {
-    mat4 viewProj;
+    mat4 viewProj;     // камера - относительно originOld (Р69)
     vec4 sunDir;
-    vec4 eye;
-    vec4 voxelZone;   // окно маски: minX, minZ (блоки), столбцов по стороне, блоков в столбце
+    vec4 eye;          // камера, прежние меры (16 блоков), абсолютно
+    vec4 voxelZone;
     vec4 fade;
     vec4 sky;
-    vec4 flowArea;
-    vec4 timeV;
-    vec4 simArea;
-    mat4 invViewProj;  // Р51: из экрана в мир
+    vec4 flowArea;     // Р43: поле течений - угол x, z, сторона (блоки)
+    vec4 timeV;        // Р43: x - секунды
+    vec4 simArea;      // Р58: зона мелкой воды
+    mat4 invViewProj;  // Р51: из экрана - в координаты относительно originOld
+    ivec4 originV;     // Р69: начало координат видеокарты - воксели (блоки мира), кратно куску
+    vec4 originOld;    // Р69: оно же в прежних мерах (originV / 16)
 };
 layout(binding = 2) uniform sampler2D uSceneDepth;   // Р51: глубина сцены без воды (только в проходе воды)
 
@@ -72,7 +74,7 @@ void main() {
         float thick = 64.0;
         if (sceneZ > 0.0) {
             vec4 p = invViewProj * vec4(suv * 2.0 - 1.0, sceneZ, 1.0);
-            thick = max(0.0, distance(p.xyz / p.w, eye.xyz) - d);
+            thick = max(0.0, distance(p.xyz / p.w, eye.xyz - originOld.xyz) - d);   // Р69
         }
         float absorb = 1.0 - exp(-thick * 0.32);
         col = mix(col * vec3(0.55, 0.72, 0.8), vec3(0.015, 0.07, 0.10), absorb);

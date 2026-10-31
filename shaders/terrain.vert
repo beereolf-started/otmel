@@ -3,15 +3,18 @@
 layout(location = 0) in uint aPacked;
 
 layout(std140, binding = 0) uniform Frame {
-    mat4 viewProj;     // камера
-    vec4 sunDir;       // направление на солнце (xyz)
-    vec4 eye;          // остальное - для плиток дальних уровней (tile.vert)
+    mat4 viewProj;     // камера - относительно originOld (Р69)
+    vec4 sunDir;
+    vec4 eye;          // камера, прежние меры (16 блоков), абсолютно
     vec4 voxelZone;
     vec4 fade;
     vec4 sky;
     vec4 flowArea;     // Р43: поле течений - угол x, z, сторона (блоки)
     vec4 timeV;        // Р43: x - секунды
-    vec4 simArea;      // Р45: зона автомата воды - угол x, z, сторона (блоки), w - 1, если есть
+    vec4 simArea;      // Р58: зона мелкой воды
+    mat4 invViewProj;  // Р51: из экрана - в координаты относительно originOld
+    ivec4 originV;     // Р69: начало координат видеокарты - воксели (блоки мира), кратно куску
+    vec4 originOld;    // Р69: оно же в прежних мерах (originV / 16)
 };
 layout(location = 0) uniform ivec3 uChunk;   // начало куска в вокселях; у мелкого куска - блок-основа
 layout(location = 1) uniform ivec3 uFineOff; // Р56: мелкий кусок - сдвиг от основы в мелких вокселях (1/16 блока)
@@ -37,8 +40,11 @@ void main() {
     vec3 local = vec3(p & 63u, (p >> 6) & 63u, (p >> 12) & 63u);
     uint normal = (p >> 18) & 7u;
     uint material = p >> 21;
-    // мир - в прежних мерах (16 блоков мира, Р54); мелкий кусок - ещё в 16 раз мельче (воксель = тексель)
-    vec3 world = uFine == 1 ? (vec3(uChunk) + (local * float(uFineScale) + vec3(uFineOff)) / 16.0) / 16.0 : (local + vec3(uChunk)) / 16.0;
+    // мир - в прежних мерах (16 блоков мира, Р54); мелкий кусок - ещё в 16 раз мельче (воксель = тексель).
+    // Р69: для видеокарты - относительно originV: разность считается в целых (точно), числа малые - вершины не дрожат
+    // (у мира в сотни тысяч блоков у float шаг ~1/32 блока - мелкие воксели расходились щелями)
+    ivec3 rc = uChunk - originV.xyz;
+    vec3 rel = uFine == 1 ? (vec3(rc) + (local * float(uFineScale) + vec3(uFineOff)) / 16.0) / 16.0 : (local + vec3(rc)) / 16.0;
     // Р66: щели Т-стыков. Склеенные прямоугольники сходятся вершиной посреди чужого ребра - при растеризации остаются
     // щели меньше пикселя, сквозь них видно небо (на силуэтах деревьев, краях блоков). Непрозрачный прямоугольник
     // раздвигается за свои края на ~полпикселя на любом расстоянии; угол - по номеру вершины (4 на прямоугольник:
@@ -53,10 +59,11 @@ void main() {
         vec3 du = vec3(0), dv = vec3(0);
         du[AX[ai].y] = cu == 1 ? 1.0 : -1.0;
         dv[AX[ai].z] = cv == 1 ? 1.0 : -1.0;
-        float eps = 0.0009 * distance(eye.xyz, world);   // полпикселя при обзоре 70° на 720 строк
-        world += (du + dv) * eps;
+        float eps = 0.0009 * distance(eye.xyz - originOld.xyz, rel);   // полпикселя при обзоре 70° на 720 строк
+        rel += (du + dv) * eps;
     }
-    gl_Position = viewProj * vec4(world, 1.0);
+    gl_Position = viewProj * vec4(rel, 1.0);
+    vec3 world = rel + originOld.xyz;   // для шума и расстояний - абсолютно
     // свет: рассеянный по нормали плюс постоянная подсветка неба
     float light = 0.35 + 0.65 * max(dot(NORMALS[normal], normalize(sunDir.xyz)), 0.0);
     vColor = vec4(COLORS[min(material, 10u)] * light, material == 6u ? WATER_ALPHA : 1.0);

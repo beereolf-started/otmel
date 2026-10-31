@@ -6,15 +6,18 @@
 // - с шагом в тексель; волны - бегущий по течению шум, вниз, тоже в тексель. Мир - в блоках, камера - в прежних
 // мерах (16 блоков, Р54).
 layout(std140, binding = 0) uniform Frame {
-    mat4 viewProj;
+    mat4 viewProj;     // камера - относительно originOld (Р69)
     vec4 sunDir;
-    vec4 eye;
+    vec4 eye;          // камера, прежние меры (16 блоков), абсолютно
     vec4 voxelZone;
     vec4 fade;
     vec4 sky;
-    vec4 flowArea;
-    vec4 timeV;
-    vec4 simArea;
+    vec4 flowArea;     // Р43: поле течений - угол x, z, сторона (блоки)
+    vec4 timeV;        // Р43: x - секунды
+    vec4 simArea;      // Р58: зона мелкой воды
+    mat4 invViewProj;  // Р51: из экрана - в координаты относительно originOld
+    ivec4 originV;     // Р69: начало координат видеокарты - воксели (блоки мира), кратно куску
+    vec4 originOld;    // Р69: оно же в прежних мерах (originV / 16)
 };
 layout(binding = 1) uniform sampler2D uFlow;   // скорость воды, блоки/с (по прежним блокам поля)
 layout(binding = 4) uniform sampler2D uFine;   // r - vb (верх глади в центре блока, блоки; < -1e8 - нет), g - верх земли
@@ -129,7 +132,7 @@ void main() {
         vFoam = clamp(up * 0.9 + down * 0.5 + max(0.0, length(vel) - 2.0) / 6.0, 0.0, 1.0);
     }
     vec3 world = p / 16.0;   // в прежних мерах
-    gl_Position = viewProj * vec4(world, 1.0);
+    gl_Position = viewProj * vec4(world - originOld.xyz, 1.0);   // Р69
     float light = 0.35 + 0.65 * max(dot(NORMALS[normal], normalize(sunDir.xyz)), 0.0);
     vColor = vec4(WATER * light, 0.55);
     vWorld = world;

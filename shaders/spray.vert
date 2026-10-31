@@ -5,15 +5,18 @@ layout(location = 0) in vec4 aPos;
 layout(location = 1) in vec4 aInfo;
 
 layout(std140, binding = 0) uniform Frame {
-    mat4 viewProj;
+    mat4 viewProj;     // камера - относительно originOld (Р69)
     vec4 sunDir;
-    vec4 eye;
+    vec4 eye;          // камера, прежние меры (16 блоков), абсолютно
     vec4 voxelZone;
     vec4 fade;
     vec4 sky;
-    vec4 flowArea;
-    vec4 timeV;
-    vec4 simArea;
+    vec4 flowArea;     // Р43: поле течений - угол x, z, сторона (блоки)
+    vec4 timeV;        // Р43: x - секунды
+    vec4 simArea;      // Р58: зона мелкой воды
+    mat4 invViewProj;  // Р51: из экрана - в координаты относительно originOld
+    ivec4 originV;     // Р69: начало координат видеокарты - воксели (блоки мира), кратно куску
+    vec4 originOld;    // Р69: оно же в прежних мерах (originV / 16)
 };
 
 layout(location = 0) out vec4 vColor;
@@ -35,7 +38,7 @@ void main() {
     p[ax] += plus ? s : 0.0;
     p[u] += (k == 1 || k == 2) ? s : 0.0;
     p[w] += k >= 2 ? s : 0.0;
-    gl_Position = viewProj * vec4(p, 1.0);
+    gl_Position = viewProj * vec4(p - originOld.xyz, 1.0);   // Р69
     uint n = uint(ax * 2 + (plus ? 0 : 1));
     float light = 0.6 + 0.4 * max(dot(NORMALS[n], normalize(sunDir.xyz)), 0.0);
     // 0 капля, 1 пыль - белые; 2 падающая масса - вода

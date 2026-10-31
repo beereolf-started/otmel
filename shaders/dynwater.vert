@@ -4,15 +4,18 @@
 layout(location = 0) in vec4 aPos;   // xyz - блоки, w - нормаль 0..5
 
 layout(std140, binding = 0) uniform Frame {
-    mat4 viewProj;
+    mat4 viewProj;     // камера - относительно originOld (Р69)
     vec4 sunDir;
-    vec4 eye;
+    vec4 eye;          // камера, прежние меры (16 блоков), абсолютно
     vec4 voxelZone;
     vec4 fade;
     vec4 sky;
-    vec4 flowArea;
-    vec4 timeV;
-    vec4 simArea;
+    vec4 flowArea;     // Р43: поле течений - угол x, z, сторона (блоки)
+    vec4 timeV;        // Р43: x - секунды
+    vec4 simArea;      // Р58: зона мелкой воды
+    mat4 invViewProj;  // Р51: из экрана - в координаты относительно originOld
+    ivec4 originV;     // Р69: начало координат видеокарты - воксели (блоки мира), кратно куску
+    vec4 originOld;    // Р69: оно же в прежних мерах (originV / 16)
 };
 
 layout(location = 0) out vec4 vColor;
@@ -25,7 +28,7 @@ const vec3 WATER = vec3(0.3, 0.62, 0.92);
 const vec3 NORMALS[6] = vec3[](vec3(1, 0, 0), vec3(-1, 0, 0), vec3(0, 1, 0), vec3(0, -1, 0), vec3(0, 0, 1), vec3(0, 0, -1));
 
 void main() {
-    gl_Position = viewProj * vec4(aPos.xyz, 1.0);
+    gl_Position = viewProj * vec4(aPos.xyz - originOld.xyz, 1.0);   // Р69
     uint n = uint(aPos.w + 0.5);
     // Р52: нормаль 6..11 - воксель брызг (капли над быстрой водой): белая пена
     bool spray = n >= 6u;

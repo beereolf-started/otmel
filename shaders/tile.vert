@@ -5,12 +5,18 @@ layout(location = 0) in uvec4 aData;
 layout(location = 1) in uint aWater;          // Р34: поверхность воды своя | уровня L+1 << 16
 
 layout(std140, binding = 0) uniform Frame {
-    mat4 viewProj;
+    mat4 viewProj;     // камера - относительно originOld (Р69)
     vec4 sunDir;
-    vec4 eye;         // камера, блоки
-    vec4 voxelZone;   // окно маски вокселей (Р21)
-    vec4 fade;        // начало и конец растворения вдали
+    vec4 eye;          // камера, прежние меры (16 блоков), абсолютно
+    vec4 voxelZone;
+    vec4 fade;
     vec4 sky;
+    vec4 flowArea;     // Р43: поле течений - угол x, z, сторона (блоки)
+    vec4 timeV;        // Р43: x - секунды
+    vec4 simArea;      // Р58: зона мелкой воды
+    mat4 invViewProj;  // Р51: из экрана - в координаты относительно originOld
+    ivec4 originV;     // Р69: начало координат видеокарты - воксели (блоки мира), кратно куску
+    vec4 originOld;    // Р69: оно же в прежних мерах (originV / 16)
 };
 layout(location = 0) uniform ivec2 uOrigin;   // начало плитки, блоки
 layout(location = 1) uniform int uSpacing;    // шаг узлов, блоки
@@ -61,7 +67,7 @@ void main() {
     int h = bitfieldExtract(int(packedH), 0, 16), hc = bitfieldExtract(int(packedH), 16, 16);
     vec3 world = vec3(xz.x, (mix(float(h), float(hc), k) + 1.0) / 16.0, xz.y);   // верх верхнего вокселя
     vWorld = world;
-    gl_Position = viewProj * vec4(world, 1.0);
+    gl_Position = viewProj * vec4(world - originOld.xyz, 1.0);   // Р69
     int g0 = bitfieldExtract(int(aData.x), 0, 16), g1 = bitfieldExtract(int(aData.x), 16, 16);
     vAbove = mix(float(h), float(hc), k) - mix(float(g0), float(g1), k);
     vForest = float((aData.w >> 16) & 255u) / 255.0;

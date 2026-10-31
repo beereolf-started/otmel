@@ -7,16 +7,18 @@ layout(location = 4) in float vFoam;   // Р59: пена мелкой воды
 layout(location = 0) out vec4 outColor;
 
 layout(std140, binding = 0) uniform Frame {
-    mat4 viewProj;
+    mat4 viewProj;     // камера - относительно originOld (Р69)
     vec4 sunDir;
-    vec4 eye;
+    vec4 eye;          // камера, прежние меры (16 блоков), абсолютно
     vec4 voxelZone;
     vec4 fade;
     vec4 sky;
     vec4 flowArea;     // Р43: поле течений - угол x, z, сторона (блоки)
     vec4 timeV;        // Р43: x - секунды
-    vec4 simArea;      // Р45: зона автомата воды - угол x, z, сторона (блоки), w - 1, если есть
-    mat4 invViewProj;  // Р51: из экрана в мир
+    vec4 simArea;      // Р58: зона мелкой воды
+    mat4 invViewProj;  // Р51: из экрана - в координаты относительно originOld
+    ivec4 originV;     // Р69: начало координат видеокарты - воксели (блоки мира), кратно куску
+    vec4 originOld;    // Р69: оно же в прежних мерах (originV / 16)
 };
 layout(binding = 1) uniform sampler2D uFlow;         // Р43: скорость воды, блоки/с (x, z)
 layout(binding = 2) uniform sampler2D uSceneDepth;   // Р51: глубина сцены без воды
@@ -71,7 +73,7 @@ void main() {
     float thick = 64.0;
     if (sceneZ > 0.0) {
         vec4 p = invViewProj * vec4(suv * 2.0 - 1.0, sceneZ, 1.0);
-        thick = max(0.0, distance(p.xyz / p.w, eye.xyz) - distance(vWorld, eye.xyz));
+        thick = max(0.0, distance(p.xyz / p.w, eye.xyz - originOld.xyz) - distance(vWorld, eye.xyz));   // Р69
     }
     float absorb = 1.0 - exp(-thick * ABSORB);
     vec3 c = mix(vColor.rgb * vec3(0.55, 0.72, 0.8), DEEP, absorb);

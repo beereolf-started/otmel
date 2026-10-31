@@ -546,6 +546,10 @@ int main(int argc, char** argv) {
         const glm::mat4 proj = glm::perspectiveRH_ZO(glm::radians(70.0f), float(width) / float(std::max(1, height)), farPlane, 0.002f);   // Р56: ближняя плоскость - 3 см (вплотную к коре и листьям)
         const glm::mat4 viewProj = proj * glm::lookAt(eye, eye + fwd, glm::vec3(0, 1, 0));
         const Frustum fr(viewProj);
+        // Р69: видеокарте - камера относительно начала у куска камеры (целые воксели): малые числа - без дрожи
+        const glm::ivec3 originV(int(std::floor(eye.x * 0.5f)) * 32, int(std::floor(eye.y * 0.5f)) * 32, int(std::floor(eye.z * 0.5f)) * 32);
+        const glm::vec3 originOld = glm::vec3(originV) / 16.0f;
+        const glm::mat4 viewProjGpu = proj * glm::lookAt(eye - originOld, eye - originOld + fwd, glm::vec3(0, 1, 0));
         const auto tUpd = clock_t_::now();
         voxels.update(eye, fr, 4.0);   // выгрузка готовых столбцов - не дольше 4 мс за кадр
         part[0] = std::max(part[0], msSince(tUpd));
@@ -1048,9 +1052,9 @@ int main(int argc, char** argv) {
         }
         frame.reset();
         frame.clear(sky);
-        frame.camera({viewProj, glm::vec3(0.4f, 1.0f, 0.25f), eye, voxels.window(),
+        frame.camera({viewProjGpu, glm::vec3(0.4f, 1.0f, 0.25f), eye, voxels.window(),
                       float(lod.drawDistance) * 0.85f, float(lod.drawDistance), 9000.0f, 0.6f, sky,
-                      std::chrono::duration<float>(now - startAt).count(), flowArea, simArea});
+                      std::chrono::duration<float>(now - startAt).count(), flowArea, simArea, originV});
         chunksDrawn = voxels.draw(fr, frame);
         for (const OakMesh& m : oakMeshes) frame.drawFineChunk(m.mesh, m.base, m.fineOff);
         for (const auto& [key, t] : forest)

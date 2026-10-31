@@ -75,6 +75,8 @@ struct FrameUbo {
     float time[4];   // Р43: секунды
     float simArea[4];   // Р45: зона автомата воды
     float invViewProj[16];   // Р51: из экрана в мир - толщина воды по лучу (глубина сцены под водой)
+    int32_t originV[4];      // Р69: начало координат видеокарты, воксели
+    float originOld[4];      // Р69: оно же в прежних мерах
 };
 
 class GLBackend final : public Backend {
@@ -297,6 +299,7 @@ public:
                 const glm::mat4 inv = glm::inverse(cam->viewProj);
                 const float* mi = &inv[0][0];
                 for (int i = 0; i < 16; ++i) u.invViewProj[i] = mi[i];
+                for (int i = 0; i < 3; ++i) { u.originV[i] = cam->originV[i]; u.originOld[i] = float(cam->originV[i]) / 16.0f; }
                 simArea_ = cam->simArea;
                 glNamedBufferSubData(ubo_, 0, sizeof(u), &u);
                 glBindBufferBase(GL_UNIFORM_BUFFER, 0, ubo_);
