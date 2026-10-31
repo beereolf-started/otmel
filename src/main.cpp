@@ -25,6 +25,7 @@
 #include "journal.h"
 #include "render/render.h"
 #include "gen/noise.h"
+#include "world/caves.h"
 #include "world/flow.h"
 #include "world/forest.h"
 #include "world/lod.h"
@@ -471,6 +472,8 @@ int main(int argc, char** argv) {
     int forestGroundSide = 0;
     std::unordered_map<uint64_t, ForestTree> forest;
     std::vector<std::future<ForestBuilt>> forestRunning;
+    glm::vec3 forestEyePrev(0);   // Р70: скорость камеры
+    auto spritesAt = clock_t_::now();
     // Р65: спрайты дубов вдали - в фоне, при сдвиге камеры на 64 блока или смене поля течений и зоны леса
     std::future<std::vector<float>> spriteJob;
     glm::vec2 spriteAt(1e9f);
@@ -879,6 +882,8 @@ int main(int argc, char** argv) {
                                 }
                             if (bad) { ++z->nWet; continue; }
                             if (hi - lo > 3) { ++z->nSteep; continue; }
+                            // Р70: не над шахтой - устье пещеры под стволом (ствол висел над дырой)
+                            if (world::caveMouth(tp, x, y, H(x, y), 1)) { ++z->nWet; continue; }
                             const float dens = world::forestDensity(tp, x, y, H(x, y));
                             if (dens <= 0.0f) { ++z->nSnow; continue; }
                             ++z->nC;
@@ -912,13 +917,26 @@ int main(int argc, char** argv) {
             // Р63: уровень дерева - по расстоянию: до 12 блоков - 0 (мелкий воксель), 32 - 1, 64 - 2, 128 - 3, дальше - 4
             // (воксель - блок). Сначала - деревья без сетки (грубым уровнем, сразу видно весь лес), затем ближние.
             if (forestGround) {
-                const auto levelFor = [](int d2) { return d2 < 12 * 12 ? 0 : d2 < 32 * 32 ? 1 : d2 < 64 * 64 ? 2 : d2 < 128 * 128 ? 3 : 4; };
+                // Р70: расстояние - в объёме (с высотой камеры: сверху деревья под тобой грубые); вне поля зрения
+                // дерево не уточняется дальше уровня 2; на скорости (> 30 блоков/с - 2, > 120 - 3) тоже
+                const float camSpeed = dt > 0 ? glm::length(eye - forestEyePrev) * 16.0f / dt : 0.0f;
+                forestEyePrev = eye;
+                const int speedMin = camSpeed > 120.0f ? 3 : camSpeed > 30.0f ? 2 : 0;
+                const float ey = eye.y * 16.0f;
+                const auto levelOf = [&](const ForestTree& t) {
+                    const float dx = float(t.spot.base.x - eb.x), dz = float(t.spot.base.z - eb.y), dy = float(t.spot.base.y) + 5.0f - ey;
+                    const float d2 = dx * dx + dy * dy + dz * dz;
+                    int l = d2 < 12 * 12 ? 0 : d2 < 32 * 32 ? 1 : d2 < 64 * 64 ? 2 : d2 < 128 * 128 ? 3 : 4;
+                    const glm::vec3 c(float(t.spot.base.x) / 16.0f, (float(t.spot.base.y) + 5.0f) / 16.0f, float(t.spot.base.z) / 16.0f);
+                    if (!fr.visible(c - glm::vec3(0.45f), c + glm::vec3(0.45f))) l = std::max(l, 2);
+                    return std::max(l, speedMin);
+                };
                 std::vector<std::pair<int, ForestTree*>> need;   // (приоритет, дерево)
                 for (auto& [key, t] : forest) {
                     if (t.building >= 0) continue;
-                    const int dx = t.spot.base.x - eb.x, dz = t.spot.base.z - eb.y, d2 = dx * dx + dz * dz;
-                    const int want = levelFor(d2);
+                    const int want = levelOf(t);
                     if (t.level == want) continue;
+                    const int dx = t.spot.base.x - eb.x, dz = t.spot.base.z - eb.y, d2 = dx * dx + dz * dz;
                     need.push_back({(t.level < 0 ? 0 : 1 << 30) + d2, &t});   // без сетки - первыми
                 }
                 std::sort(need.begin(), need.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
@@ -928,9 +946,8 @@ int main(int argc, char** argv) {
                 for (const auto& [pri, tp2] : need) {
                     if (forestRunning.size() >= 8) break;
                     ForestTree& t = *tp2;
-                    const int dx = t.spot.base.x - eb.x, dz = t.spot.base.z - eb.y;
                     // дерево без сетки - сначала грубым уровнем (миллисекунды), уточнится следующим заходом
-                    const int lvl = t.level < 0 ? 4 : levelFor(dx * dx + dz * dz);
+                    const int lvl = t.level < 0 ? 4 : levelOf(t);
                     t.building = lvl;
                     const ForestSpot sp = t.spot;
                     forestRunning.push_back(std::async(std::launch::async, [sp, lvl, gr, go, gs] {
@@ -943,9 +960,12 @@ int main(int argc, char** argv) {
                     }));
                 }
             }
+            size_t uploadBytes = 0;   // Р70: не больше 4 МБ сеток леса за кадр - без рывков
             for (auto it = forestRunning.begin(); it != forestRunning.end();) {
+                if (uploadBytes > (4u << 20)) break;
                 if (it->wait_for(std::chrono::seconds(0)) != std::future_status::ready) { ++it; continue; }
                 ForestBuilt fb = it->get();
+                for (const OakChunk& oc : fb.chunks) uploadBytes += oc.verts.size() * 4;
                 it = forestRunning.erase(it);
                 auto ft = forest.find(fb.key);
                 if (ft == forest.end()) continue;
@@ -1014,11 +1034,15 @@ int main(int argc, char** argv) {
                             if (ox < 0 || oz < 0 || ox >= FLOW_SIZE - 1 || oz >= FLOW_SIZE - 1) continue;
                             const float tx = qx - ox, tz = qz - oz;
                             const size_t k00 = cellAt(ox, oz), k10 = cellAt(ox + 1, oz), k01 = cellAt(ox, oz + 1), k11 = cellAt(ox + 1, oz + 1);
-                            bool wetNear = false;
-                            for (const size_t k : {k00, k10, k01, k11}) wetNear |= sfc[k] > g[k] + 0.01f;
+                            bool wetNear = false;   // Р70: вода - в клетках 3×3 вокруг (узкие русла)
+                            for (int wz = -1; wz <= 2 && !wetNear; ++wz)
+                                for (int wx = -1; wx <= 2; ++wx) { const size_t k = cellAt(ox + wx, oz + wz); wetNear |= sfc[k] > g[k] + 0.01f; }
                             if (wetNear) continue;
                             if (std::max({g[k00], g[k10], g[k01], g[k11]}) - std::min({g[k00], g[k10], g[k01], g[k11]}) > 1.0f) continue;   // круто
-                            const float gy = (g[k00] * (1 - tx) + g[k10] * tx) * (1 - tz) + (g[k01] * (1 - tx) + g[k11] * tx) * tz;
+                            const float gFlow = (g[k00] * (1 - tx) + g[k10] * tx) * (1 - tz) + (g[k01] * (1 - tx) + g[k11] * tx) * tz;
+                            // Р70: земля - ниже из двух: крупный рельеф (точнее на склонах) и поле (там прорезаны долины)
+                            const world::Relief brn = world::baseReliefAt(tp, tc.x, tc.z, world::slowAt(tp, tc.x, tc.z, 8), 8);
+                            const float gy = std::min(gFlow, float(brn.height) / 16.0f);
                             const float dens = world::forestDensity(tp, tc.x, tc.z, int32_t(gy * 16.0f));
                             if (tc.roll >= dens) continue;
                             const float fr = float(tc.seed & 0xFFFF) / 65535.0f;
@@ -1035,7 +1059,8 @@ int main(int argc, char** argv) {
                 spritesDirty = true;
             }
             // кольцо + дубы зоны, у которых ещё нет сетки (строятся) - спрайтами: лес виден сразу и целиком
-            if (spritesDirty) {
+            if (spritesDirty && (firstFrame || msSince(spritesAt) > 250.0)) {
+                spritesAt = clock_t_::now();
                 spritesDirty = false;
                 std::vector<float> inst = spriteFar;
                 for (const auto& [key, t] : forest) {
