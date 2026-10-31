@@ -16,6 +16,7 @@
 #include <future>
 #include <memory>
 #include <mutex>
+#include <unordered_set>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -541,7 +542,7 @@ int main(int argc, char** argv) {
     std::unique_ptr<FineData> fineData;
     // Р62: лес в генерации - зона 7×7 кусков (224 блока) вокруг куска камеры; места - в фоне, деревья - в фоне по 6
     struct ForestSpot { uint64_t key; glm::ivec3 base; glm::ivec3 shift; uint32_t seed; };
-    struct ForestZone { glm::ivec2 origin; int side; std::shared_ptr<std::vector<int32_t>> ground; std::vector<ForestSpot> spots; int nWet = 0, nSteep = 0, nSnow = 0, nSparse = 0; float rainSum = 0, groveSum = 0; int nC = 0; };
+    struct ForestZone { glm::ivec2 origin; int side; std::shared_ptr<std::vector<int32_t>> ground; std::vector<ForestSpot> spots; int nWet = 0, nSteep = 0, nSnow = 0, nSparse = 0, nCave = 0; float rainSum = 0, groveSum = 0; int nC = 0; };
     struct ForestBuilt { uint64_t key; int level; glm::ivec3 base; std::vector<OakChunk> chunks; };
     // Р63: дерево леса - текущий уровень детализации (-1 - нет), какой строится, его сетки
     struct ForestTree { ForestSpot spot; int level = -1, building = -1; std::vector<OakMesh> meshes; };
@@ -557,7 +558,8 @@ int main(int argc, char** argv) {
     // Р65: спрайты дубов вдали - в фоне, при сдвиге камеры на 64 блока или смене поля течений и зоны леса
     std::future<std::vector<float>> spriteJob;
     glm::vec2 spriteAt(1e9f);
-    glm::ivec2 spriteFlowAt(INT32_MIN), spriteZoneAt(INT32_MIN);
+    glm::ivec2 spriteZoneAt(INT32_MIN);
+    auto spriteCache = std::make_shared<std::unordered_map<uint64_t, world::SpriteRegion>>();   // Р74: только задание спрайтов
     size_t spriteCount = 0;
     std::vector<float> spriteFar;      // спрайты кольца (фон)
     bool spritesDirty = false;         // дубы зоны без сетки - тоже спрайтами (пока строятся)
@@ -948,9 +950,10 @@ int main(int argc, char** argv) {
                     const int S = z->side;
                     auto g = std::make_shared<std::vector<int32_t>>(size_t(S) * S);
                     std::vector<int32_t> w(size_t(S) * S);
-                    world::ColumnHeights hm;
+                    std::vector<world::ColumnHeights> hms(17 * 17);   // Р74: нужны и пещерам
                     for (int cz = 0; cz < 17; ++cz)
                         for (int cx = 0; cx < 17; ++cx) {
+                            world::ColumnHeights& hm = hms[size_t(cz) * 17 + cx];
                             world::columnHeights(tp, z->origin.x / 32 + cx, z->origin.y / 32 + cz, hm);
                             for (int j = 0; j < 32; ++j)
                                 for (int i = 0; i < 32; ++i) {
@@ -961,6 +964,23 @@ int main(int argc, char** argv) {
                     z->ground = g;
                     const auto H = [&](int x, int y) { return (*g)[size_t(y - z->origin.y) * S + (x - z->origin.x)]; };
                     const auto wet = [&](int x, int y) { const size_t k = size_t(y - z->origin.y) * S + (x - z->origin.x); return w[k] > (*g)[k]; };
+                    // Р74: воздух пещеры в вокселе - настоящие воксели (caveAir куска), куски - по разу
+                    struct CaveChunk { bool any; uint64_t air[world::CHUNK + 2][world::CHUNK + 2]; };
+                    std::unordered_map<uint64_t, std::unique_ptr<CaveChunk>> caves;
+                    const auto fd32 = [](int v) { return v >= 0 ? v / 32 : -((-v + 31) / 32); };
+                    const auto caveAir = [&](int x, int y, int zz) {
+                        const int cx = fd32(x), cy = fd32(y), cz = fd32(zz);
+                        const uint64_t key = uint64_t(uint32_t(cx)) << 42 ^ uint64_t(uint32_t(cy) & 0x3FFFFF) << 21 ^ uint64_t(uint32_t(cz) & 0x1FFFFF);
+                        auto it = caves.find(key);
+                        if (it == caves.end()) {
+                            auto c = std::make_unique<CaveChunk>();
+                            const int lx = cx - z->origin.x / 32, lz = cz - z->origin.y / 32;
+                            c->any = lx >= 0 && lz >= 0 && lx < 17 && lz < 17 &&
+                                     world::caveAir(tp, world::ChunkPos{cx, cy, cz}, hms[size_t(lz) * 17 + lx], c->air);
+                            it = caves.emplace(key, std::move(c)).first;
+                        }
+                        return it->second->any && ((it->second->air[zz - cz * 32 + 1][x - cx * 32 + 1] >> (y - (cy * 32 - 1))) & 1);
+                    };
                     // Р65: места, семена и густота - общие с дальними спрайтами и шумом крон (world/forest)
                     constexpr int CELL = world::FOREST_CELL;
                     const auto fdc = [](int v) { return v >= 0 ? v / CELL : -((-v + CELL - 1) / CELL); };
@@ -972,20 +992,29 @@ int main(int argc, char** argv) {
                             // вода и берег, крутизна
                             bool bad = false;
                             int32_t lo = INT32_MAX, hi = INT32_MIN;
-                            for (int dy = -2; dy <= 2 && !bad; ++dy)
-                                for (int dx = -2; dx <= 2; ++dx) {
+                            for (int dy = -3; dy <= 3 && !bad; ++dy)   // Р74: вода - не ближе 3 блоков
+                                for (int dx = -3; dx <= 3; ++dx) {
                                     if (wet(x + dx, y + dy)) { bad = true; break; }
+                                    if (std::abs(dx) > 2 || std::abs(dy) > 2) continue;
                                     lo = std::min(lo, H(x + dx, y + dy));
                                     hi = std::max(hi, H(x + dx, y + dy));
                                 }
                             if (bad) { ++z->nWet; continue; }
                             if (hi - lo > 3) { ++z->nSteep; continue; }
-                            // Р70: не над шахтой - устье пещеры под стволом (ствол висел над дырой)
-                            if (world::caveMouth(tp, x, y, H(x, y), 1)) { ++z->nWet; continue; }
                             const float dens = world::forestDensity(tp, x, y, H(x, y));
                             if (dens <= 0.0f) { ++z->nSnow; continue; }
                             ++z->nC;
                             if (tc.roll >= dens) { ++z->nSparse; continue; }
+                            // Р74: не над шахтой - под стволом (2×2, 4 блока вглубь) и вокруг него (5×5, верхние 2) нет
+                            // воздуха пещеры. Раньше - шум устья в одной точке (Р70): пропускал часть настоящих ходов
+                            bool cave = false;
+                            for (int dy = -2; dy <= 2 && !cave; ++dy)
+                                for (int dx = -2; dx <= 2 && !cave; ++dx) {
+                                    const bool under = dx >= 0 && dx <= 1 && dy >= 0 && dy <= 1;
+                                    const int top = H(x + dx, y + dy);
+                                    for (int d = 0; d < (under ? 4 : 2) && !cave; ++d) cave = caveAir(x + dx, top - d, y + dy);
+                                }
+                            if (cave) { ++z->nCave; continue; }
                             int32_t g0 = INT32_MAX;
                             for (const auto [dx, dy] : {std::pair{0, 0}, {1, 0}, {0, 1}, {1, 1}}) g0 = std::min(g0, H(x + dx, y + dy));
                             z->spots.push_back({(uint64_t(uint32_t(ci)) << 32) | uint32_t(cj), glm::ivec3(x, g0 + 1, y), glm::ivec3(tc.fx, 0, tc.fz), tc.seed});
@@ -1009,8 +1038,8 @@ int main(int argc, char** argv) {
                 for (const ForestSpot& sp : z->spots)
                     if (!forest.count(sp.key)) forest[sp.key].spot = sp;
                 spritesDirty = true;
-                journal::info("лес", "зона ({}, {}): мест {}; отказ: вода {}, круто {}, снег и сушь {}, редко {} (из {})",
-                              want.x, want.y, z->spots.size(), z->nWet, z->nSteep, z->nSnow, z->nSparse, z->nC);
+                journal::info("лес", "зона ({}, {}): мест {}; отказ: вода {}, круто {}, пещера {}, снег и сушь {}, редко {} (из {})",
+                              want.x, want.y, z->spots.size(), z->nWet, z->nSteep, z->nCave, z->nSnow, z->nSparse, z->nC);
             }
             // Р63: уровень дерева - по расстоянию: до 12 блоков - 0 (мелкий воксель), 32 - 1, 64 - 2, 128 - 3, дальше - 4
             // (воксель - блок). Сначала - деревья без сетки (грубым уровнем, сразу видно весь лес), затем ближние.
@@ -1095,60 +1124,62 @@ int main(int argc, char** argv) {
         // (world/forest), земля - по полю рельефа (клетка 16 блоков, между клетками - плавно), без воды и круч
         if (!flowGround.empty()) {
             const glm::vec2 ebf(eye.x * 16.0f, eye.z * 16.0f);
-            if (!spriteJob.valid() && (glm::distance(ebf, spriteAt) > 64.0f || spriteFlowAt != flowAt || spriteZoneAt != forestAt)) {
+            if (!spriteJob.valid() && (glm::distance(ebf, spriteAt) > 64.0f || spriteZoneAt != forestAt)) {
                 spriteAt = ebf;
-                spriteFlowAt = flowAt;
                 spriteZoneAt = forestAt;
-                spriteJob = zoneJobs.submit([&tp, g = flowGround, sfc = flowSurface, fa = flowAt, za = forestAt, ebf] {
+                spriteJob = zoneJobs.submit([&tp, cache = spriteCache, za = forestAt, ebf, vr = voxelBlocks * 16, detail = lod.detail] {
                     const auto t0 = clock_t_::now();
-                    std::vector<float> inst;
-                    // Р68: ближнее кольцо - до 1.6 км, каждая ячейка, земля - поле рельефа; дальнее - до 3.6 км, каждая
-                    // вторая ячейка по осям (четверть деревьев), спрайт шире ×1.6 (лес так же сплошной), земля - крупный
-                    // рельеф без рек
-                    constexpr int R = 1600, RF = 3600, CELL = world::FOREST_CELL;
-                    const auto fdc = [](int v) { return v >= 0 ? v / CELL : -((-v + CELL - 1) / CELL); };
-                    const auto cellAt = [&](int ox, int oz) { return size_t(std::clamp(oz, 0, FLOW_SIZE - 1)) * FLOW_SIZE + size_t(std::clamp(ox, 0, FLOW_SIZE - 1)); };
+                    // Р68: ближнее кольцо - до 1.6 км, каждая ячейка; дальнее - до 3.6 км, чётные ячейки
+                    constexpr int R = 1600, RF = 3600, S = world::SPRITE_REGION;
                     const int ex = int(ebf.x), ez = int(ebf.y);
-                    for (int cj = fdc(ez - RF); cj <= fdc(ez + RF); ++cj)
-                        for (int ci = fdc(ex - RF); ci <= fdc(ex + RF); ++ci) {
-                            const int cdx = ci * CELL - ex, cdz = cj * CELL - ez, cd2 = cdx * cdx + cdz * cdz;
-                            if (cd2 > R * R) {   // дальнее кольцо
-                                if (cd2 > RF * RF || (ci & 1) || (cj & 1)) continue;
-                                const world::TreeCandidate tc = world::forestCandidate(tp, ci, cj);
-                                const world::SlowFields sl = world::slowAt(tp, tc.x, tc.z, 10);
-                                const world::Relief br = world::baseReliefAt(tp, tc.x, tc.z, sl, 10);
-                                if (br.land < fx::ONE || br.height < tp.seaLevel) continue;
-                                const float dens = world::forestDensity(tp, tc.x, tc.z, br.height, world::climateAt(tp, tc.x, tc.z, sl));
-                                if (tc.roll >= dens) continue;
-                                const float fr = float(tc.seed & 0xFFFF) / 65535.0f;
-                                inst.insert(inst.end(), {(float(tc.x) + 0.5f) / 16.0f, (float(br.height) - 0.5f) / 16.0f, (float(tc.z) + 0.5f) / 16.0f,
-                                                         (10.0f + 3.0f * fr) / 16.0f, (8.0f + 3.0f * fr) * 1.6f / 16.0f, float(tc.seed & 0x7FFF), 0.0f, 0.0f});
-                                continue;
-                            }
-                            const world::TreeCandidate tc = world::forestCandidate(tp, ci, cj);
-                            if (tc.x >= za.x && tc.z >= za.y && tc.x < za.x + 15 * 32 && tc.z < za.y + 15 * 32) continue;   // там - дубы вблизи
-                            // земля - между центрами клеток поля плавно (прежние меры)
-                            const float qx = float(tc.x) / 16.0f - fa.x - 0.5f, qz = float(tc.z) / 16.0f - fa.y - 0.5f;
-                            const int ox = int(std::floor(qx)), oz = int(std::floor(qz));
-                            if (ox < 0 || oz < 0 || ox >= FLOW_SIZE - 1 || oz >= FLOW_SIZE - 1) continue;
-                            const float tx = qx - ox, tz = qz - oz;
-                            const size_t k00 = cellAt(ox, oz), k10 = cellAt(ox + 1, oz), k01 = cellAt(ox, oz + 1), k11 = cellAt(ox + 1, oz + 1);
-                            bool wetNear = false;   // Р70: вода - в клетках 3×3 вокруг (узкие русла)
-                            for (int wz = -1; wz <= 2 && !wetNear; ++wz)
-                                for (int wx = -1; wx <= 2; ++wx) { const size_t k = cellAt(ox + wx, oz + wz); wetNear |= sfc[k] > g[k] + 0.01f; }
-                            if (wetNear) continue;
-                            if (std::max({g[k00], g[k10], g[k01], g[k11]}) - std::min({g[k00], g[k10], g[k01], g[k11]}) > 1.0f) continue;   // круто
-                            const float gFlow = (g[k00] * (1 - tx) + g[k10] * tx) * (1 - tz) + (g[k01] * (1 - tx) + g[k11] * tx) * tz;
-                            // Р70: земля - ниже из двух: крупный рельеф (точнее на склонах) и поле (там прорезаны долины)
-                            const world::Relief brn = world::baseReliefAt(tp, tc.x, tc.z, world::slowAt(tp, tc.x, tc.z, 8), 8);
-                            const float gy = std::min(gFlow, float(brn.height) / 16.0f);
-                            const float dens = world::forestDensity(tp, tc.x, tc.z, int32_t(gy * 16.0f));
-                            if (tc.roll >= dens) continue;
-                            const float fr = float(tc.seed & 0xFFFF) / 65535.0f;
-                            inst.insert(inst.end(), {(float(tc.x) + (tc.fx + 0.5f) / 16.0f) / 16.0f, gy - 1.0f / 16.0f, (float(tc.z) + (tc.fz + 0.5f) / 16.0f) / 16.0f,
-                                                     (10.0f + 3.0f * fr) / 16.0f, (8.0f + 3.0f * fr) / 16.0f, float(tc.seed & 0x7FFF), 0.0f, 0.0f});
+                    const auto fdr = [](int v) { return v >= 0 ? v / S : -((-v + S - 1) / S); };
+                    struct Need { int rx, rz, mode; uint64_t key; };
+                    std::vector<Need> need;
+                    std::vector<uint64_t> keep;
+                    for (int rz = fdr(ez - RF); rz <= fdr(ez + RF); ++rz)
+                        for (int rx = fdr(ex - RF); rx <= fdr(ex + RF); ++rx) {
+                            const float d = std::hypot((rx + 0.5f) * S - ex, (rz + 0.5f) * S - ez);
+                            if (d - 0.71f * S > RF) continue;
+                            // область целиком в зоне дубов вблизи - там спрайтов нет
+                            if (rx * S >= za.x && rz * S >= za.y && (rx + 1) * S <= za.x + 15 * 32 && (rz + 1) * S <= za.y + 15 * 32) continue;
+                            int L = 0;   // уровень плиток на этом расстоянии (Р20: дальность уровня L - detail·2^L прежних блоков)
+                            while (double(detail) * 16.0 * double(1 << L) < d && L < 12) ++L;
+                            const int mode = world::spriteMode(d < float(vr), d > float(R), L);
+                            const uint64_t key = uint64_t(uint32_t(rx)) << 32 | uint32_t(rz);
+                            keep.push_back(key);
+                            const auto it = cache->find(key);
+                            if (it == cache->end() || it->second.mode != mode) need.push_back({rx, rz, mode, key});
                         }
-                    journal::info("лес", "спрайты: {} за {:.0f} мс", inst.size() / 8, msSince(t0));
+                    // новые области - параллельно (первый раз их сотни, дальше - полоса по краю)
+                    std::vector<std::vector<float>> out(need.size());
+                    std::atomic<size_t> next{0};
+                    const auto work = [&] {
+                        for (size_t k; (k = next++) < need.size();) out[k] = world::buildSpriteRegion(tp, need[k].rx, need[k].rz, need[k].mode);
+                    };
+                    if (need.size() > 4) {
+                        std::vector<std::thread> th;
+                        // первый раз (сотни областей, кадр ждёт) - все ядра, дальше - половина
+                        const unsigned hw = std::max(2u, std::thread::hardware_concurrency());
+                        for (unsigned t = 0; t < (need.size() > 64 ? hw : hw / 2); ++t) th.emplace_back(work);
+                        for (auto& t : th) t.join();
+                    } else {
+                        work();
+                    }
+                    for (size_t k = 0; k < need.size(); ++k) (*cache)[need[k].key] = {need[k].mode, std::move(out[k])};
+                    const std::unordered_set<uint64_t> kept(keep.begin(), keep.end());
+                    for (auto it = cache->begin(); it != cache->end();) it = kept.count(it->first) ? std::next(it) : cache->erase(it);
+                    std::vector<float> inst;
+                    for (const uint64_t key : keep) {
+                        const std::vector<float>& v = (*cache)[key].inst;
+                        for (size_t k = 0; k + 8 <= v.size(); k += 8) {
+                            const float x = v[k] * 16.0f, z = v[k + 2] * 16.0f;
+                            if (x >= za.x && z >= za.y && x < za.x + 15 * 32 && z < za.y + 15 * 32) continue;   // там - дубы вблизи
+                            const float dx = x - ex, dz = z - ez;
+                            if (dx * dx + dz * dz > float(RF) * RF) continue;
+                            inst.insert(inst.end(), v.begin() + k, v.begin() + k + 8);
+                        }
+                    }
+                    journal::info("лес", "спрайты: {} за {:.0f} мс (областей заново {} из {})", inst.size() / 8, msSince(t0), need.size(), keep.size());
                     return inst;
                 });
             }
