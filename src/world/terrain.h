@@ -145,16 +145,32 @@ struct Cover {
 };
 Cover coverAt(const TerrainParams& p, const Climate& c, int32_t height);
 
+// Р77: породы (набор TFC/TFG, world/rocks.cpp) и разрез столбца: до 5 слоёв сверху вниз
+enum Rock : uint8_t { GRANITE, DIORITE, GABBRO, RHYOLITE, BASALT, ANDESITE, DACITE, SHALE, CLAYSTONE, LIMESTONE,
+                      CONGLOMERATE, DOLOMITE, CHERT, CHALK, QUARTZITE, SLATE, PHYLLITE, SCHIST, GNEISS, MARBLE, ROCK_COUNT };
+inline Material rockMaterial(Rock r) { return Material(ROCK_FIRST + r); }
+constexpr int ROCK_LAYERS = 5;
+struct RockColumn {
+    int32_t bound[ROCK_LAYERS - 1];   // нижние границы слоёв 0..3, воксели, по убыванию (последний - без дна)
+    int32_t fold;                     // сдвиг пластов складками
+    uint8_t id[ROCK_LAYERS], alt[ROCK_LAYERS], altW[ROCK_LAYERS];   // порода слоя, вторая и её доля (0..255)
+    uint8_t sharp, bedded;            // бит i: граница под слоем i резкая; слой i - пласты осадков
+};
+struct Relief;
+// разрез столбца (x, z) с рельефом r; порода вокселя (x, y, z) по разрезу
+void rockColumn(const TerrainParams& p, int32_t x, int32_t z, const Relief& r, RockColumn& out);
+Material rockAt(const RockColumn& c, int32_t x, int32_t y, int32_t z);
+
 // Материал нетронутого рельефа - формулой от высоты поверхности и покрова столбца (Р2, Р22): выше поверхности
-// воздух, в верхнем вокселе покров, под ним 3 блока подпокровного слоя, ниже камень. Его же пишет fillChunk;
+// воздух, в верхнем вокселе покров, под ним 3 блока подпокровного слоя, ниже порода (Р77). Его же пишет fillChunk;
 // сетке нетронутого куска массив вокселей не нужен вовсе - материал нужен только у видимых граней.
 // Р28: выше дна до уровня воды столбца (water - верхний воксель воды, NO_WATER - сухо) - вода.
 constexpr int32_t NO_WATER = INT32_MIN;
-inline Material columnMaterial(int32_t top, Cover cv, int32_t wy, int32_t water = NO_WATER) {
+inline Material columnMaterial(int32_t top, Cover cv, int32_t wy, int32_t water, const RockColumn& rc, int32_t wx, int32_t wz) {
     if (wy > top) return wy <= water ? WATER : AIR;
     if (wy == top) return cv.top;
     if (wy >= top - 3 * VOXELS_PER_BLOCK) return cv.under;
-    return STONE;
+    return rockAt(rc, wx, wy, wz);
 }
 
 // Высоты столбцов куска С КАЙМОЙ в один воксель: [-1..32] по x и z, 34×34. Кайма нужна сетке: грань на краю
@@ -163,6 +179,7 @@ struct ColumnHeights {
     int32_t h[CHUNK + 2][CHUNK + 2];   // [z+1][x+1], высота дна (верхний воксель грунта), воксели
     int32_t water[CHUNK + 2][CHUNK + 2];   // Р28: верхний воксель воды столбца или NO_WATER
     Cover cover[CHUNK][CHUNK];         // [z][x], только без каймы: покров нужен лишь своим вокселям
+    RockColumn rock[CHUNK][CHUNK];     // Р77: разрез столбца, [z][x] без каймы
     int32_t minH, maxH;                // Р37: нижняя - по дну (вода прозрачна - дно под ней видно), верхняя - по
                                        // поверхности max(дно, вода)
     bool nearWater[CHUNK + 2][CHUNK + 2];   // Р37: вода над дном или берег - здесь нет входов в пещеры

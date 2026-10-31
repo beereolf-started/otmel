@@ -35,6 +35,7 @@ add_library(otmel_world STATIC
     src/world/spread.cpp
     src/world/oak.cpp
     src/world/forest.cpp
+    src/world/rocks.cpp
 )
 target_include_directories(otmel_world PUBLIC src)
 

@@ -155,7 +155,7 @@ void meshImpl(ChunkPos pos, const Chunk* vox, const ColumnHeights& hm, const uin
               std::vector<uint32_t>& out, MeshStats& stats) {
     out.clear();
     stats = {};
-    const int32_t y0 = pos.y * CHUNK;
+    const int32_t y0 = pos.y * CHUNK, x0w = pos.x * CHUNK, z0w = pos.z * CHUNK;
     // Столбцы с каймой по x и z (34×34), 34 бита по y, формулой: грунт - не выше дна, минус воздух пещер (Р26);
     // вода - выше дна и не выше уровня воды (Р28). Пещеры - только в грунте, под дном.
     // Р34: вода прозрачна - для граней она не «твёрдое»: грунт под водой даёт свои грани (видно дно), у воды
@@ -195,7 +195,8 @@ void meshImpl(ChunkPos pos, const Chunk* vox, const ColumnHeights& hm, const uin
 
     // ─── 2-4. Грани грунта, затем воды: вода - в конце сетки (stats.waterQuads) ──
     emitFaces(col, nullptr, [&](int x, int y, int z) {
-        return vox ? vox->at(x, y, z) : columnMaterial(hm.h[z + 1][x + 1], hm.cover[z][x], y0 + y, hm.water[z + 1][x + 1]);
+        return vox ? vox->at(x, y, z) : columnMaterial(hm.h[z + 1][x + 1], hm.cover[z][x], y0 + y, hm.water[z + 1][x + 1],
+                                                       hm.rock[z][x], x0w + x, z0w + z);
     }, out, stats.quads);
     if (!anyWater) return;
     rotateMasks(wcol, wet);

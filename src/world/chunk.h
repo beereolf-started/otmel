@@ -14,6 +14,7 @@ using Material = uint16_t;
 enum : Material { AIR = 0, STONE = 1, DIRT = 2, GRASS = 3, SAND = 4, SNOW = 5, WATER = 6,
                     BARK = 7, WOOD = 8, LEAVES = 9, LEAVES2 = 10,   // Р53: дерево - кора, древесина, листва (два оттенка)
                     BARK2 = 11,                      // Р71: кора в трещине - темнее
+                    ROCK_FIRST = 12, ROCK_LAST = 31, // Р77: 20 пород (world::Rock), материал = ROCK_FIRST + порода
                     MATERIAL_COUNT };
 
 struct ChunkPos { int32_t x, y, z; };
