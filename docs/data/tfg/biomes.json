@@ -1,0 +1,701 @@
+{
+ "tfc": {
+  "badlands": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "canyons": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "deep_ocean": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "deep_ocean_trench": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "highlands": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "hills": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "inverted_badlands": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "lake": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "low_canyons": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "lowlands": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "mountain_lake": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "mountains": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "ocean": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "ocean_reef": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "oceanic_mountain_lake": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "oceanic_mountains": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "old_mountain_lake": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "old_mountains": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "plains": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "plateau": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "plateau_lake": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "river": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "rolling_hills": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "salt_marsh": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "shore": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "tidal_flats": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "volcanic_mountain_lake": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "volcanic_mountains": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "volcanic_oceanic_mountain_lake": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "volcanic_oceanic_mountains": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  }
+ },
+ "tfg_earth": {
+  "active_shield_volcano": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "ancient_shield_volcano": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "badlands": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "burren_badlands": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "burren_badlands_tall": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "burren_plains": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "burren_plateau": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "burren_roche_moutonee": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "buttes": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "canyons": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "cenote_canyons": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "cenote_highlands": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "cenote_hills": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "cenote_plains": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "cenote_plateau": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "cenote_rolling_hills": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "coastal_dunes": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "deep_ocean": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "deep_ocean_trench": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "doline_canyons": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "doline_highlands": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "doline_hills": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "doline_plains": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "doline_plateau": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "doline_rolling_hills": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "dormant_shield_volcano": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "drumlins": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "dune_sea": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "embayments": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "extinct_shield_volcano": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "extreme_doline_mountains": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "extreme_doline_plateau": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "glacially_carved_mountains": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "glacially_carved_oceanic_mountains": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "glaciated_mountains": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "glaciated_oceanic_mountains": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "glaciated_shield_volcano": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "grassy_dunes": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "guano_island": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "highlands": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "hills": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "hoodoos": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "ice_sheet": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "ice_sheet_edge": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "ice_sheet_mountains": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "ice_sheet_mountains_edge": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "ice_sheet_oceanic": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "ice_sheet_oceanic_mountains": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "ice_sheet_oceanic_mountains_edge": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "ice_sheet_shield_volcano": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "ice_sheet_shore": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "ice_sheet_tuyas": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "ice_sheet_tuyas_edge": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "inverted_patterned_ground": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "knob_and_kettle": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "lake": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "low_canyons": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "lowlands": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "meltwater_lake": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "mesas": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "mountain_lake": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "mountains": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "mud_flats": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "ocean": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "ocean_reef": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "oceanic_mountain_lake": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "oceanic_mountains": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "old_mountain_lake": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "old_mountains": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "old_shield_volcano_shore": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "patterned_ground": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "plains": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "plateau": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "plateau_lake": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "plateau_wide": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "river": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "rocky_plateau": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "rocky_shores": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "rolling_hills": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "salt_flats": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "salt_marsh": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "sea_stacks": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "setback_cliffs": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "shield_volcano_shore": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "shilin_canyons": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "shilin_highlands": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "shilin_hills": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "shilin_plains": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "shilin_plateau": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "shore": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "stair_step_canyons": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "stone_circles": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "subglacial_lake": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "sunken_shield_volcano": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "terrace_lower": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "terrace_upper": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "tidal_flats": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "tower_karst_bay": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "tower_karst_canyons": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "tower_karst_highlands": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "tower_karst_hills": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "tower_karst_lake": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "tower_karst_plains": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "tuyas": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "volcanic_mountain_lake": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "volcanic_mountains": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "volcanic_oceanic_mountain_lake": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "volcanic_oceanic_mountains": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  },
+  "whorled_canyons": {
+   "temperature": 0.5,
+   "downfall": 0.5,
+   "has_precipitation": true
+  }
+ }
+}
