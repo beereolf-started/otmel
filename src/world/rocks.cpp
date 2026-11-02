@@ -11,6 +11,7 @@
 #include <algorithm>
 
 #include "gen/hash.h"
+#include "world/rock_table.h"
 #include "gen/noise.h"
 #include "world/terrain.h"
 
@@ -71,15 +72,36 @@ void rockColumn(const TerrainParams& p, int32_t x, int32_t z, const Relief& r, R
         const float frac = v - float(id), edge = std::min(frac, 1.0f - frac);
         int alt = frac < 0.5f ? id - 1 : id + 1;
         alt = (alt + d.n) % d.n;
-        float altW = edge < 0.12f ? 0.5f * (1.0f - edge / 0.12f) : 0.0f;
-        if (d.sediment) {   // пласты: вторая порода чередуется с основной
-            alt = (id + 1 + int(gen::hash2(20 + i, layer, s) % uint32_t(d.n - 1))) % d.n;
-            altW = 0.38f;
+        // Р78: НА СТЫКЕ РАЙОНОВ - ПРОМЕЖУТОЧНАЯ ПОРОДА, А НЕ ВКРАПИНКА.
+        //
+        // Прежде на стыке блоки двух пород перемешивались по весу, и переход читался как рябь. Теперь
+        // состав двух пород смешивается ЧИСЛАМИ, а по нему берётся ближайшее имя из справочника: гранит
+        // сменяется гранодиоритом, тот диоритом; известняк - мергелем, тот аргиллитом. Переход тот же
+        // плавный, но каждый его шаг - настоящая именованная порода.
+        //
+        // Боковой переход и слоистость пластов - РАЗНЫЕ вещи, и раньше они делили одно поле: у осадочных
+        // altW отдавался чередованию пластов, а стык районов терялся целиком. Теперь боковое смешение
+        // считается своим весом latW и применяется к породе пласта, а чередование пластов остаётся сверх него.
+        // Полоса перехода шире прежней (0.12): узкая давала промежуточную породу лентой в десяток блоков,
+        // и череда не читалась. На 0.25 переход занимает заметную часть стыка районов.
+        const float latW = edge < 0.25f ? 0.5f * (1.0f - edge / 0.25f) : 0.0f;
+        const auto lateral = [&](int which) -> uint8_t {
+            if (latW <= 0.0f) return uint8_t(d.rock[which]);
+            const uint8_t fam = uint8_t(rockDef(d.rock[which]).family | rockDef(d.rock[alt]).family);
+            return uint8_t(nearestRock(mixComp(rockDef(d.rock[which]).comp, rockDef(d.rock[alt]).comp, latW), fam));
+        };
+        const uint8_t here = lateral(id);
+        if (d.sediment) {   // пласты: вторая порода чередуется с основной, обе - уже с поправкой на стык
+            const int bed = (id + 1 + int(gen::hash2(20 + i, layer, s) % uint32_t(d.n - 1))) % d.n;
             out.bedded |= uint8_t(1u << i);
+            out.id[i] = here;
+            out.alt[i] = uint8_t(d.rock[bed]);   // вторая порода пластов - своя, стык районов её не касается
+            out.altW[i] = uint8_t(0.38f * 255.0f);
+        } else {
+            out.id[i] = here;
+            out.alt[i] = here;
+            out.altW[i] = 0;
         }
-        out.id[i] = d.rock[id];
-        out.alt[i] = d.rock[alt];
-        out.altW[i] = uint8_t(altW * 255.0f);
         if (i < ROCK_LAYERS - 1) {
             const float t = unit(gen::value2(x, z, 11, gen::hash2(30 + i, layer, s)));
             // толщина пропорциональна рельефу (Р76 п.6): в горах долины режут на километры - слои вчетверо толще

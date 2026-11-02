@@ -11,8 +11,10 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <string>
 #include <vector>
 
+#include "world/rock_table.h"
 #include "world/terrain.h"
 
 using clk = std::chrono::steady_clock;
@@ -62,7 +64,41 @@ std::vector<std::pair<int32_t, int32_t>> pick(const world::TerrainParams& p, int
 
 }  // namespace
 
+/**
+ * Разведка пород по прямой: идём на восток и печатаем, какая порода лежит верхним слоем разреза.
+ * Нужна, чтобы увидеть, что породы СМЕНЯЮТ ДРУГ ДРУГА через промежуточные (Р78), а не прыгают.
+ */
+void walkRocks(const world::TerrainParams& p, int32_t cx0, int32_t cz0, int cols) {
+    static world::ColumnHeights hm;
+    std::vector<int> seq;
+    for (int k = 0; k < cols; ++k) {
+        world::columnHeights(p, cx0 + k, cz0, hm);
+        for (int x = 0; x < world::CHUNK; x += 8) seq.push_back(hm.rock[0][x].id[0]);
+    }
+    std::printf("разведка пород: %d столбцов кусков на восток от (%d, %d)\n", cols, cx0, cz0);
+    int runs = 0;
+    size_t i = 0;
+    while (i < seq.size()) {
+        size_t j = i;
+        while (j < seq.size() && seq[j] == seq[i]) ++j;
+        if (runs < 40) std::printf("  %-24s %4d шагов\n", world::rockDef(seq[i]).name, int(j - i) * 4);
+        ++runs;
+        i = j;
+    }
+    bool met[world::ROCK_COUNT] = {};
+    for (int r : seq) met[r] = true;
+    int kinds = 0, novel = 0;
+    for (int r = 0; r < world::ROCK_COUNT; ++r)
+        if (met[r]) { ++kinds; if (r >= world::ROCK_TFG) ++novel; }
+    std::printf("  всего участков %d, разных пород %d, из них промежуточных (Р78) %d\n", runs, kinds, novel);
+}
+
 int main(int argc, char** argv) {
+    if (argc > 1 && std::string(argv[1]) == "--rocks") {
+        world::TerrainParams tp;
+        walkRocks(tp, -6225, 11780, argc > 2 ? std::max(4, atoi(argv[2])) : 60);
+        return 0;
+    }
     const int want = argc > 1 ? std::max(8, atoi(argv[1])) : 48;
     world::TerrainParams p;
 

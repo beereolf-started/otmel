@@ -147,7 +147,11 @@ Cover coverAt(const TerrainParams& p, const Climate& c, int32_t height);
 
 // Р77: породы (набор TFC/TFG, world/rocks.cpp) и разрез столбца: до 5 слоёв сверху вниз
 enum Rock : uint8_t { GRANITE, DIORITE, GABBRO, RHYOLITE, BASALT, ANDESITE, DACITE, SHALE, CLAYSTONE, LIMESTONE,
-                      CONGLOMERATE, DOLOMITE, CHERT, CHALK, QUARTZITE, SLATE, PHYLLITE, SCHIST, GNEISS, MARBLE, ROCK_COUNT };
+                      CONGLOMERATE, DOLOMITE, CHERT, CHALK, QUARTZITE, SLATE, PHYLLITE, SCHIST, GNEISS, MARBLE,
+                      // Р78: промежуточные - закрывают разрывы между породами выше; номера прежних не меняются
+                      GRANODIORITE, MONZONITE, PERIDOTITE, TRACHYTE, LATITE, BASALTIC_ANDESITE, OBSIDIAN,
+                      SANDSTONE, SILTSTONE, MARL, GREYWACKE, HORNFELS, AMPHIBOLITE, MIGMATITE, GREENSCHIST,
+                      SERPENTINITE, ROCK_COUNT };
 inline Material rockMaterial(Rock r) { return Material(ROCK_FIRST + r); }
 constexpr int ROCK_LAYERS = 5;
 struct RockColumn {
