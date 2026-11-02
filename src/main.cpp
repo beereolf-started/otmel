@@ -39,6 +39,7 @@
 #include "world/water_sim.h"
 #include "world/terrain.h"
 #include "builder.h"
+#include "devinfo.h"
 #include "voxel_zone.h"
 
 namespace {
@@ -352,6 +353,10 @@ int main(int argc, char** argv) {
     const float ground = float(world::reliefAt(tp, int32_t(atX * 16), int32_t(atZ * 16)).height) / world::VOXELS_PER_BLOCK;
     glm::vec3 eye(atX, ground + 3.0f, atZ);
     float yaw = -0.6f, pitch = -0.35f, speedScale = 1.0f;
+    // Подсказки разработчика (devinfo.h): что под прицелом и переход по координатам
+    dev::Aim aim;
+    std::string gotoText;
+    bool typing = false;
     int debug = 0;
     for (int i = 1; i + 5 < argc; ++i)
         if (std::string(argv[i]) == "--eye") {
@@ -615,6 +620,30 @@ int main(int argc, char** argv) {
             if (ev.type == SDL_EVENT_QUIT) running = false;
             // Р73: в режиме снимка мышь и клавиши не трогают камеру - курсор над окном поворачивал её, замеры плавали
             if (shot && ev.type != SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED) continue;
+            // T - ввод координат перехода; пока вводим, движение камерой отключено (иначе буквы её тащат)
+            if (ev.type == SDL_EVENT_KEY_DOWN && ev.key.key == SDLK_T && !typing) {
+                typing = true;
+                gotoText.clear();
+                SDL_StartTextInput(window);
+                continue;
+            }
+            if (typing) {
+                if (ev.type == SDL_EVENT_TEXT_INPUT) gotoText += ev.text.text;
+                if (ev.type == SDL_EVENT_KEY_DOWN && ev.key.key == SDLK_BACKSPACE && !gotoText.empty()) gotoText.pop_back();
+                if (ev.type == SDL_EVENT_KEY_DOWN && (ev.key.key == SDLK_ESCAPE || ev.key.key == SDLK_RETURN)) {
+                    glm::vec3 to(0.0f);
+                    bool hasY = false;
+                    if (ev.key.key == SDLK_RETURN && dev::parseGoto(gotoText, to, hasY)) {
+                        if (!hasY) to.y = dev::groundAt(tp, to.x, to.z) + 3.0f;
+                        eye = to;
+                        journal::info("переход", "камера переставлена в ({:.0f}, {:.0f}, {:.0f})", to.x, to.y, to.z);
+                    }
+                    typing = false;
+                    gotoText.clear();
+                    SDL_StopTextInput(window);
+                }
+                continue;
+            }
             if (ev.type == SDL_EVENT_KEY_DOWN && ev.key.key == SDLK_ESCAPE) running = false;
             if (ev.type == SDL_EVENT_KEY_DOWN && ev.key.key == SDLK_L) gpu->setDebug(debug ^= 1);
             if (ev.type == SDL_EVENT_MOUSE_BUTTON_DOWN && ev.button.button == SDL_BUTTON_LEFT) {
@@ -651,7 +680,7 @@ int main(int argc, char** argv) {
         const glm::vec3 fwd(std::cos(pitch) * std::cos(yaw), std::sin(pitch), std::cos(pitch) * std::sin(yaw));
         const glm::vec3 right = glm::normalize(glm::cross(fwd, glm::vec3(0, 1, 0)));
         static const bool noKeys[SDL_SCANCODE_COUNT] = {};
-        const bool* keys = shot ? noKeys : SDL_GetKeyboardState(nullptr);
+        const bool* keys = (shot || typing) ? noKeys : SDL_GetKeyboardState(nullptr);
         // Р56: камера - в прежних мерах (16 блоков мира): шаг ~5 блоков/с, с Shift ~48 - чтобы разглядеть мелочь
         const float speed = (keys[SDL_SCANCODE_LSHIFT] ? 3.0f : 0.3f) * speedScale * dt;
         if (keys[SDL_SCANCODE_W]) eye += fwd * speed;
@@ -1443,10 +1472,23 @@ int main(int argc, char** argv) {
 
         if (now - titleAt > std::chrono::milliseconds(500)) {
             const double ms = sumMs / frames;
-            SDL_SetWindowTitle(window, std::format("Отмель — кадр {:.2f} мс | воксели: столбцов {} (ждут {}), кусков {} ({} прямоуг.) | "
+            // Подсказка разработчика: что под прицелом. Считается тем же кодом, что строит куски,
+            // поэтому дорого - только здесь, раз в полсекунды.
+            aim = dev::aimedAt(tp, eye, yaw, pitch, 64.0f);
+            std::string head;
+            if (typing) {
+                head = std::format("перейти: {}_   (Enter - идти, Esc - отмена; «x z» или «x y z»)   |   ", gotoText);
+            } else if (aim.hit) {
+                head = std::format("под прицелом: {}{}{} — ({} {} {}), {:.1f} бл.   |   ", aim.name,
+                                   aim.detail.empty() ? "" : " · ", aim.detail,
+                                   aim.block.x, aim.block.y, aim.block.z, aim.distance);
+            } else {
+                head = "под прицелом: пусто (64 бл.)   |   ";
+            }
+            SDL_SetWindowTitle(window, (head + std::format("Отмель — кадр {:.2f} мс | воксели: столбцов {} (ждут {}), кусков {} ({} прямоуг.) | "
                                                    "плиток {} ({} тр.) | вызовов {}",
                                                    ms, voxels.stats().ready, voxels.stats().pending, chunksDrawn, fs.quads,
-                                                   fs.tiles, fs.tileTriangles, fs.drawCalls).c_str());
+                                                   fs.tiles, fs.tileTriangles, fs.drawCalls)).c_str());
             farStats.built = 0;
             farStats.workMs = 0;
             sumMs = 0;
