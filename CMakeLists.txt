@@ -88,6 +88,10 @@ endforeach()
 add_custom_target(otmel_shaders ALL DEPENDS ${SPV_FILES})
 add_dependencies(otmel otmel_shaders)
 
+# Замер цены столбца (долг по цене из Р77): мс на столбец куска, мкс на столбец мира
+add_executable(otmel_bench tools/column_bench.cpp)
+target_link_libraries(otmel_bench PRIVATE otmel_world)
+
 # Карта мира сверху - тем же кодом генерации (Р19)
 add_executable(otmel_map tools/biome_map.cpp)
 target_link_libraries(otmel_map PRIVATE otmel_world)
