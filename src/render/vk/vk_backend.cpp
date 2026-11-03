@@ -183,6 +183,10 @@ public:
         free_.push_back(id);
     }
 
+    // Панель отладки: в пути Vulkan пока не рисуется - нужен свой проход с текстурой и набором
+    // привязок. Делается следующим шагом; до тех пор панель видна в пути OpenGL (ключ --gl).
+    void setOverlay(int, int, std::span<const uint8_t>) override {}
+
     void setDebug(int mode) override { debug_ = mode; }
     void setVsync(bool on) override { if (vsync_ != on) { vsync_ = on; swapDirty_ = true; } }
 

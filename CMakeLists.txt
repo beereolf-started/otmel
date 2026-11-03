@@ -44,6 +44,7 @@ add_executable(otmel
     src/main.cpp
     src/journal.cpp
     src/devinfo.cpp
+    src/dev_text.cpp
     src/voxel_zone.cpp
     src/builder.cpp
     src/render/gl/gl_backend.cpp
@@ -68,7 +69,7 @@ find_program(GLSLC glslc HINTS $ENV{VULKAN_SDK}/Bin ${GLSLC_CANDIDATES})
 if(NOT GLSLC)
     list(GET GLSLC_CANDIDATES 0 GLSLC)
 endif()
-set(SHADERS terrain.vert terrain.frag tile.vert tile.frag dynwater.vert finewater.vert spray.vert treesprite.vert treesprite.frag)
+set(SHADERS terrain.vert terrain.frag tile.vert tile.frag overlay.vert overlay.frag dynwater.vert finewater.vert spray.vert treesprite.vert treesprite.frag)
 set(SPV_FILES)
 foreach(S ${SHADERS})
     set(OUT ${CMAKE_CURRENT_BINARY_DIR}/shaders/${S}.spv)

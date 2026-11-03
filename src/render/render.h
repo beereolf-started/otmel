@@ -86,6 +86,9 @@ public:
     // blocks - пары координат таких блоков (мир)
     virtual void setFineWater(glm::ivec2 origin, int side, std::span<const float> data, std::span<const uint8_t> mask,
                               std::span<const int32_t> blocks) = 0;
+    // Панель отладки поверх мира: готовая картинка w×h точек, RGBA, левый верхний угол экрана.
+    // Пустой набор точек - панель скрыта. Картинку рисует dev_text.cpp средствами системы.
+    virtual void setOverlay(int w, int h, std::span<const uint8_t> rgba) = 0;
     // параметр отладки шейдеров: 1 - раскрасить плитки по уровням
     virtual void setDebug(int mode) = 0;
     virtual void execute(const CommandList& list, FrameStats& stats) = 0;

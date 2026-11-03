@@ -99,6 +99,7 @@ public:
     bool init(const std::string& shaderDir, int w, int h) {
         program_ = loadProgram(shaderDir, "terrain");
         tileProgram_ = loadProgram(shaderDir, "tile");
+        overlayProgram_ = loadProgram(shaderDir, "overlay");
         dynProgram_ = loadProgram(shaderDir, "dynwater", "terrain");   // Р45: вода автомата
         fineProgram_ = loadProgram(shaderDir, "finewater", "terrain");   // Р58: мелкая вода у камеры
         sprayProgram_ = loadProgram(shaderDir, "spray", "terrain");      // Р59: брызги
@@ -345,8 +346,48 @@ public:
         drawWater(stats);
     }
 
+    void setOverlay(int w, int h, std::span<const uint8_t> rgba) override {
+        if (w <= 0 || h <= 0 || rgba.empty()) { overlayW_ = overlayH_ = 0; return; }
+        if (w != overlayW_ || h != overlayH_) {          // размер у текстуры неизменен - пересоздаём
+            if (overlayTex_) glDeleteTextures(1, &overlayTex_);
+            glCreateTextures(GL_TEXTURE_2D, 1, &overlayTex_);
+            glTextureStorage2D(overlayTex_, 1, GL_RGBA8, w, h);
+            glTextureParameteri(overlayTex_, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+            glTextureParameteri(overlayTex_, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+            glTextureParameteri(overlayTex_, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            glTextureParameteri(overlayTex_, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+            overlayW_ = w;
+            overlayH_ = h;
+        }
+        glTextureSubImage2D(overlayTex_, 0, 0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, rgba.data());
+    }
+
+    /** Панель поверх готового кадра: прямо в кадровый буфер экрана, после снятия сглаживания. */
+    void drawOverlay() {
+        if (!overlayW_ || !overlayProgram_ || !overlayTex_) return;
+        const float m = 12.0f;                           // поле от края окна, точки
+        const float x0 = -1.0f + 2.0f * m / float(width_), y0 = 1.0f - 2.0f * m / float(height_);
+        const float x1 = x0 + 2.0f * float(overlayW_) / float(width_);
+        const float y1 = y0 - 2.0f * float(overlayH_) / float(height_);
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glViewport(0, 0, width_, height_);
+        glDisable(GL_DEPTH_TEST);
+        glDisable(GL_CULL_FACE);     // иначе прямоугольник панели выбрасывается по направлению обхода
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        glUseProgram(overlayProgram_);
+        glProgramUniform4f(overlayProgram_, 0, x0, y0, x1, y1);
+        glBindTextureUnit(0, overlayTex_);
+        glBindVertexArray(emptyVao_ ? emptyVao_ : (glCreateVertexArrays(1, &emptyVao_), emptyVao_));
+        glDrawArrays(GL_TRIANGLES, 0, 6);
+        glDisable(GL_BLEND);
+        glEnable(GL_CULL_FACE);
+        glEnable(GL_DEPTH_TEST);
+    }
+
     void present() override {
         resolve();
+        drawOverlay();
         SDL_GL_SwapWindow(window_);
     }
     void resize(int w, int h) override {
@@ -355,6 +396,7 @@ public:
     }
     void readPixels(int w, int h, std::vector<uint8_t>& rgb) override {
         resolve();
+        drawOverlay();        // снимок должен показывать то же, что экран, вместе с панелью
         rgb.resize(static_cast<size_t>(w) * h * 3);
         glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
         glPixelStorei(GL_PACK_ALIGNMENT, 1);
@@ -524,6 +566,8 @@ private:
     SDL_Window* window_;
     SDL_GLContext context_;
     GLuint program_ = 0, tileProgram_ = 0, vao_ = 0, tileVao_ = 0, ibo_ = 0, tileIbo_ = 0, ubo_ = 0;
+    GLuint overlayProgram_ = 0, overlayTex_ = 0, emptyVao_ = 0;   // панель отладки
+    int overlayW_ = 0, overlayH_ = 0;
     GLuint fbo_ = 0, colorRb_ = 0, depthRb_ = 0, maskTex_ = 0, flowTex_ = 0;
     GLuint depthFbo_ = 0, depthTex_ = 0;   // Р51: копия глубины сцены для воды
     GLuint dynProgram_ = 0, dynVao_ = 0, dynVbo_ = 0;   // Р45: вода автомата

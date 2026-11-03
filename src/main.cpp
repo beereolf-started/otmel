@@ -39,6 +39,7 @@
 #include "world/water_sim.h"
 #include "world/terrain.h"
 #include "builder.h"
+#include "dev_text.h"
 #include "devinfo.h"
 #include "voxel_zone.h"
 
@@ -357,6 +358,9 @@ int main(int argc, char** argv) {
     dev::Aim aim;
     std::string gotoText;
     bool typing = false;
+    bool showPanel = true;                 // F3 - показать или убрать панель отладки
+    std::vector<std::string> panelLines;   // что на ней написано сейчас
+    dev::TextImage panelImage;
     int debug = 0;
     for (int i = 1; i + 5 < argc; ++i)
         if (std::string(argv[i]) == "--eye") {
@@ -644,6 +648,7 @@ int main(int argc, char** argv) {
                 }
                 continue;
             }
+            if (ev.type == SDL_EVENT_KEY_DOWN && ev.key.key == SDLK_F3) { showPanel = !showPanel; panelLines.clear(); }
             if (ev.type == SDL_EVENT_KEY_DOWN && ev.key.key == SDLK_ESCAPE) running = false;
             if (ev.type == SDL_EVENT_KEY_DOWN && ev.key.key == SDLK_L) gpu->setDebug(debug ^= 1);
             if (ev.type == SDL_EVENT_MOUSE_BUTTON_DOWN && ev.button.button == SDL_BUTTON_LEFT) {
@@ -1475,6 +1480,31 @@ int main(int argc, char** argv) {
             // Подсказка разработчика: что под прицелом. Считается тем же кодом, что строит куски,
             // поэтому дорого - только здесь, раз в полсекунды.
             aim = dev::aimedAt(tp, eye, yaw, pitch, 64.0f);
+            // Панель отладки: перерисовываем, только если строки изменились - рисование текста системой
+            // не бесплатное, а меняется оно раз в полсекунды.
+            std::vector<std::string> fresh;
+            if (showPanel) {
+                fresh.push_back(std::format("камера: {:.0f} {:.0f} {:.0f}   поворот {:.0f}°/{:.0f}°   кадр {:.2f} мс",
+                                            eye.x, eye.y, eye.z, yaw * 57.2958f, pitch * 57.2958f, ms));
+                fresh.push_back(aim.hit ? std::format("под прицелом: {} — ({} {} {}), {:.1f} бл.", aim.name,
+                                                      aim.block.x, aim.block.y, aim.block.z, aim.distance)
+                                        : std::string("под прицелом: пусто (64 бл.)"));
+                if (aim.hit && !aim.detail.empty()) fresh.push_back("состав: " + aim.detail);
+                fresh.push_back(std::format("земля под камерой: {:.0f} бл.", dev::groundAt(tp, eye.x, eye.z)));
+                fresh.push_back(std::format("воксели: столбцов {} (ждут {}), кусков {}   плиток {}",
+                                            voxels.stats().ready, voxels.stats().pending, chunksDrawn, fs.tiles));
+                fresh.push_back(typing ? std::format("перейти: {}_   (Enter - идти, Esc - отмена)", gotoText)
+                                       : std::string("T - перейти по координатам, F3 - убрать панель"));
+            }
+            if (fresh != panelLines) {
+                panelLines = fresh;
+                if (panelLines.empty()) {
+                    panelImage = {};
+                    gpu->setOverlay(0, 0, {});
+                } else if (dev::renderLines(panelLines, 15, panelImage)) {
+                    gpu->setOverlay(panelImage.w, panelImage.h, panelImage.rgba);
+                }
+            }
             std::string head;
             if (typing) {
                 head = std::format("перейти: {}_   (Enter - идти, Esc - отмена; «x z» или «x y z»)   |   ", gotoText);
