@@ -53,7 +53,11 @@ private:
     void reprioritize(glm::vec3 eye, glm::vec3 forward, const Frustum& fr);
     // радиус зоны по горизонтали на нынешней высоте: зона - шар, а не цилиндр
     int32_t horizRadius(glm::vec3 eye) const;
-    mutable float groundY_ = 0;            // высота земли под камерой (блоки), из её построенного столбца
+    // Высота земли под камерой (блоки), из её построенного столбца. Пока ни одна колонка не готова,
+    // она НЕИЗВЕСТНА - и тогда радиус обязан быть полным. Иначе выходит, что игрок висит на своей
+    // абсолютной высоте над нулём, зона схлопывается и мир не грузится вовсе.
+    static constexpr float GROUND_UNKNOWN = -1e30f;
+    mutable float groundY_ = GROUND_UNKNOWN;
     int32_t rHoriz_ = 1;                   // нынешний радиус зоны по горизонтали (столбцы)
     void release(Column& c);
     void finishMask();

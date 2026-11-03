@@ -162,8 +162,10 @@ void caveStats(const world::TerrainParams& p, int32_t cx0, int32_t cz0, int cols
                         }
                     }
             }
-            if (holed) ++mouths;
-            (void)wx; (void)wz;
+            if (holed) {
+                ++mouths;
+                if (mouths <= 5) std::printf("  отверстие: блоки %d %d\n", wx, wz);
+            }
         }
     int64_t n = 0;
     for (int64_t r : runs) n += r;

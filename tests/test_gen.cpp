@@ -424,6 +424,70 @@ int main() {
         CHECK(shallowAll == 0 || shallowAir * 20 < shallowAll, "у поверхности пещер мало (только входы)");
     }
 
+    // ─── Р79: над пустотой либо камень, либо ничего ──────────────────────────────────────
+    // Земля не может висеть крышкой над пустотой: она держится ни на чём и, когда появится
+    // осыпание, провалится. Значит у свода ровно два законных вида: либо над пустотой два блока
+    // породы и уже на них земля, либо над пустотой нет ничего - это и есть лаз наружу.
+    {
+        world::TerrainParams tp;
+        static uint64_t airs[5][world::CHUNK + 2][world::CHUNK + 2];
+        world::ColumnHeights hm;
+        int clx, clz;
+        landChunk(tp, clx, clz);
+        const int32_t ROOF = 2 * world::VOXELS_PER_BLOCK;   // столько породы обязано держать свод
+        const auto isRock = [](world::Material m) {
+            return m == world::STONE || (m >= world::ROCK_FIRST && m <= world::ROCK_LAST);
+        };
+        int64_t columns = 0, voids = 0, holes = 0, lids = 0;
+        int32_t lidAt[3] = {};
+        for (int gz = -5; gz <= 5; ++gz)
+            for (int gx = -5; gx <= 5; ++gx) {
+                const int32_t cx = clx + gx * 11, cz = clz + gz * 11;
+                world::columnHeights(tp, cx, cz, hm);
+                const int32_t cyTop = hm.maxH >> world::CHUNK_LOG2;
+                bool has[5];
+                for (int k = 0; k < 5; ++k)
+                    has[k] = world::caveAir(tp, world::ChunkPos{cx, cyTop - k, cz}, hm, airs[k]);
+                for (int lz = 0; lz < world::CHUNK; ++lz)
+                    for (int lx = 0; lx < world::CHUNK; ++lx) {
+                        const int32_t top = hm.h[lz + 1][lx + 1];
+                        const int32_t wx = cx * world::CHUNK + lx, wz = cz * world::CHUNK + lz;
+                        ++columns;
+                        int32_t ya = INT32_MIN;   // самая верхняя пустота столбца
+                        for (int k = 0; k < 5 && ya == INT32_MIN; ++k) {
+                            if (!has[k]) continue;
+                            // в маске пустот есть кайма: её бит yi - это воксель y0 - 1 + yi, то есть
+                            // свой воксель куска y лежит в бите y + 1
+                            for (int y = world::CHUNK - 1; y >= 0; --y)
+                                if ((airs[k][lz + 1][lx + 1] >> (y + 1)) & 1) { ya = (cyTop - k) * world::CHUNK + y; break; }
+                        }
+                        if (ya == INT32_MIN) continue;
+                        ++voids;
+                        if (ya >= top) { ++holes; continue; }   // пустота выходит наружу - над ней ничего
+                        for (int32_t y = ya + 1; y <= std::min<int32_t>(top, ya + ROOF); ++y) {
+                            const world::Material m = world::columnMaterial(top, hm.cover[lz][lx], y,
+                                                                           hm.water[lz + 1][lx + 1], hm.rock, wx, wz);
+                            if (isRock(m)) continue;
+                            ++lids;
+                            if (lids <= 3)
+                                std::printf("  крышка: блок (%.1f, %.1f, %.1f), материал %d, пустота на глубине %d, опора %d; "
+                                            "верх %d, кусок %d, маски %d%d%d%d%d\n",
+                                            wx / 16.0, y / 16.0, wz / 16.0, int(m), int(top - ya), int(y - ya), int(top),
+                                            int(cyTop), int(has[0]), int(has[1]), int(has[2]), int(has[3]), int(has[4]));
+                            if (lids == 1) { lidAt[0] = wx; lidAt[1] = y; lidAt[2] = wz; }
+                            break;
+                        }
+                    }
+            }
+        std::printf("свод: столбцов %lld, с пустотой %lld, выходят наружу %lld, земля крышкой %lld\n",
+                    (long long)columns, (long long)voids, (long long)holes, (long long)lids);
+        if (lids)
+            std::printf("  первая крышка: блок (%.1f, %.1f, %.1f)\n", lidAt[0] / 16.0, lidAt[1] / 16.0, lidAt[2] / 16.0);
+        CHECK(voids > 0, "у поверхности есть пустоты - есть что проверять");
+        CHECK(holes > 0, "пустоты выходят наружу - лазы есть");
+        CHECK(lids == 0, "над пустотой либо два блока породы, либо ничего (земля крышкой не висит)");
+    }
+
     // ─── Р29: реки и озёра ───────────────────────────────────────────────────────────────
     {
         world::TerrainParams tp;

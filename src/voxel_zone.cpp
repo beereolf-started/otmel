@@ -102,6 +102,7 @@ int32_t VoxelZone::horizRadius(glm::vec3 eye) const {
         for (const ChunkMesh& m : it->second.chunks) top = std::max(top, m.origin.y + world::CHUNK);
         groundY_ = float(top) / float(world::VOXELS_PER_BLOCK);
     }
+    if (groundY_ == GROUND_UNKNOWN) return radius_;        // земли ещё не знаем - грузим всё
     const float dy = std::max(0.0f, eye.y - groundY_) / float(BLOCKS_PER_COLUMN);   // в столбцах
     const float r2 = float(radius_) * float(radius_) - dy * dy;
     return r2 <= 1.0f ? 1 : int32_t(std::sqrt(r2));
