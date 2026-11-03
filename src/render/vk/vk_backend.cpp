@@ -352,6 +352,7 @@ public:
         beginRendering(c, col, dep);
         vkCmdBindDescriptorSets(c, VK_PIPELINE_BIND_POINT_GRAPHICS, layout_, 0, 1, &s.setWater, 0, nullptr);
         current = VK_NULL_HANDLE;
+        boundBlock_ = UINT32_MAX;
         for (const Command* cmd : water_) {
             if (auto* d = std::get_if<CmdDrawChunk>(cmd)) {
                 const Mesh& m = meshes_[d->mesh];
@@ -787,7 +788,29 @@ private:
         vkCmdSetViewport(c, 0, 1, &vp);
         vkCmdSetScissor(c, 0, 1, &sc);
     }
-    void bindVertex(VkCommandBuffer c, const Alloc& a) { vkCmdBindVertexBuffers(c, 0, 1, &blocks_[a.block].buf, &a.offset); }
+    // ПРИВЯЗКА БУФЕРА - РАЗ НА БЛОК, А НЕ НА КУСОК (Р79).
+    //
+    // Куски мира по 2×2×2 блока, их в кадре около десяти тысяч, и на каждый шло три команды:
+    // привязка буфера, передача смещения и сам вызов - тридцать тысяч команд за кадр. Видеокарта
+    // за кадр не успевала, а процессор ждал её в промежутке между кадрами, который ничем не мерился:
+    // отсюда и фризы при продолжительном движении.
+    //
+    // Все сетки кусков лежат в общих блоках памяти, поэтому буфер блока привязывается один раз, а
+    // где внутри него лежит кусок - сообщает сам вызов отрисовки своим смещением по вершинам.
+    // Вершина куска - одно четырёхбайтовое число (shaders/terrain.vert), отсюда деление на 4.
+    uint32_t boundBlock_ = UINT32_MAX;
+    void bindVertexBlock(VkCommandBuffer c, const Alloc& a) {
+        if (a.block == boundBlock_) return;
+        const VkDeviceSize zero = 0;
+        vkCmdBindVertexBuffers(c, 0, 1, &blocks_[a.block].buf, &zero);
+        boundBlock_ = a.block;
+    }
+    // Любая чужая привязка (плитки, вода, спрайты) сбивает привязку блока кусков - помечаем её негодной,
+    // иначе следующий кусок нарисовался бы из чужого буфера.
+    void bindVertex(VkCommandBuffer c, const Alloc& a) {
+        boundBlock_ = UINT32_MAX;
+        vkCmdBindVertexBuffers(c, 0, 1, &blocks_[a.block].buf, &a.offset);
+    }
     void bindTerrain(VkCommandBuffer c, VkPipeline& current, VkPipeline p) {
         if (current == p) return;
         vkCmdBindPipeline(c, VK_PIPELINE_BIND_POINT_GRAPHICS, p);
@@ -805,8 +828,8 @@ private:
                            {d.fineOff.x, d.fineOff.y, d.fineOff.z, 0},
                            {d.fine ? 1 : 0, d.fineScale, 0, 0}};
         vkCmdPushConstants(c, layout_, PUSH_STAGES, 0, sizeof(pc), &pc);
-        bindVertex(c, m.a);
-        vkCmdDrawIndexed(c, quads * 6, 1, firstQuad * 6, 0, 0);
+        bindVertexBlock(c, m.a);
+        vkCmdDrawIndexed(c, quads * 6, 1, firstQuad * 6, int32_t(m.a.offset / 4), 0);
     }
     void drawTile(VkCommandBuffer c, const CmdDrawTile& t, const Mesh& m, int water, FrameStats& stats) {
         const PushTile pc{{t.originBlocks.x, t.originBlocks.y, t.spacing, t.level}, {t.morphStart, t.morphEnd, 0, 0}, {debug_, water, 0, 0}};
