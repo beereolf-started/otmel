@@ -13,7 +13,7 @@ constexpr int STEP = 1 << STEP_LOG2;
 constexpr int MAX_NODES = (CHUNK + 2) / STEP + 2;   // узлов по стороне на кусок с каймой: 7
 // По высоте узлов нужно больше: у куска под самой поверхностью кровля осыпается по пустоте,
 // лежащей ниже него, и поле приходится знать на полосу опоры глубже (5 блоков = 80 вокселей).
-constexpr int MAX_NODES_Y = (CHUNK + 2 + 5 * VOXELS_PER_BLOCK) / STEP + 4;
+constexpr int MAX_NODES_Y = (CHUNK + 2 + 4 * VOXELS_PER_BLOCK + 5 * VOXELS_PER_BLOCK) / STEP + 4;
 
 enum CaveLayer : int32_t { TUNNEL_A = 101, TUNNEL_B, HALL, HALL_FINE, GIANT, ENTRANCE };
 inline uint32_t caveSeed(uint32_t seed, CaveLayer l) { return gen::hash2(l, 0xCA7E, seed); }
@@ -69,8 +69,11 @@ constexpr int32_t ROOF_BAND = SOIL_DEPTH + ROCK_ROOF;      // вся полос�
 // края отверстия: в середине входа гашения нет, за этой полосой оно полное.
 constexpr fx::q16 ENTRANCE_EDGE = fx::ONE / 4;
 // Р79: сколько камня между сводом и землёй ещё держит всю её толщу. Тоньше - земля осыпается тем
-// сильнее, чем тоньше камень; это и задаёт откос у края отверстия.
-constexpr int32_t SLUMP = 2 * VOXELS_PER_BLOCK;
+// сильнее, чем тоньше камень; это и задаёт ширину ската у края отверстия. Величина горизонтальная
+// по действию: свод подходит к земле полого, поэтому чем больше здесь блоков, тем дальше от дыры
+// начинает убывать земля. При двух блоках скат укладывался в два блока при трёх блоках земли - то
+// есть был почти отвесным.
+constexpr int32_t SLUMP = 5 * VOXELS_PER_BLOCK;
 
 bool caveAir(const TerrainParams& p, ChunkPos pos, const ColumnHeights& hm, uint64_t air[CHUNK + 2][CHUNK + 2]) {
     const CaveParams& c = p.caves;
@@ -92,7 +95,7 @@ bool caveAir(const TerrainParams& p, ChunkPos pos, const ColumnHeights& hm, uint
     // Полоса опоры задевает этот кусок: значит в нём может осыпаться кровля, а сама пустота под ней
     // лежит ниже, в соседнем куске снизу - узлы приходится считать с запасом вниз.
     const bool bandHere = minTop - ROOF_BAND <= y0 + CHUNK + 1;
-    const int32_t below = bandHere ? ROOF_BAND : 0;
+    const int32_t below = bandHere ? SOIL_DEPTH + SLUMP : 0;   // до самого низа, откуда ещё считается осыпание
 
     // узлы каналов
     const int32_t nx0 = x0 >> STEP_LOG2, ny0 = (y0 - below) >> STEP_LOG2, nz0 = z0 >> STEP_LOG2;
