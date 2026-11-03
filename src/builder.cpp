@@ -78,6 +78,8 @@ void Builder::worker() {
     world::ColumnHeights hm;
     std::vector<uint32_t> verts;
     static thread_local uint64_t air[world::CHUNK + 2][world::CHUNK + 2];
+    // на сколько срезана земля в каждом столбце: по этому числу покров ложится на новый верх
+    static thread_local uint8_t cut[world::CHUNK + 2][world::CHUNK + 2];
     for (;;) {
         bool isTile = false;
         world::TileKey tile{};
@@ -154,7 +156,7 @@ void Builder::worker() {
         const int cyFrom = col.cyMin == NO_DEPTH ? cyShallow : std::max(std::min(cyLo, col.cyMin), WORLD_BOTTOM);
         for (int cy = cyFrom; cy <= cyHi; ++cy) {
             const world::ChunkPos pos{col.cx, cy, col.cz};
-            bool caves = shallowCaves && world::caveAir(tp_, pos, hm, air);
+            bool caves = shallowCaves && world::caveAir(tp_, pos, hm, air, cut);
             if (caves && caveFloor != INT32_MIN) {   // Р39: ниже пола (с соседями) пещеры закрыты; заглушки у соседей без пещер
                 const int64_t n = std::clamp<int64_t>(int64_t(caveFloor) - (int64_t(cy) * world::CHUNK - 1), 0, 34);
                 const uint64_t keep = n >= 64 ? 0 : ~((uint64_t(1) << n) - 1);
@@ -191,7 +193,7 @@ void Builder::worker() {
             if (!caves && underground) continue;   // подземный и без пещер - сплошной камень
             // нетронутый кусок: сетка прямо от высот (и пещер), без заполнения вокселей (Р22)
             world::MeshStats ms;
-            world::buildMesh(pos, hm, verts, ms, caves ? air : nullptr);
+            world::buildMesh(pos, hm, verts, ms, caves ? air : nullptr, caves ? cut : nullptr);
             if (verts.empty()) continue;
             r.chunks.push_back({{col.cx * world::CHUNK, cy * world::CHUNK, col.cz * world::CHUNK}, verts, ms.quads, ms.waterQuads, underground});
         }

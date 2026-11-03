@@ -16,7 +16,10 @@ namespace world {
 
 // Воздух пещер в куске С КАЙМОЙ: air[z+1][x+1] - 34 бита по высоте (бит i - воксель y0 - 1 + i), как маски
 // сетки (Р18). Ответ false - в куске и кайме воздуха пещер нет вовсе (air тогда не заполняется).
-bool caveAir(const TerrainParams& p, ChunkPos pos, const ColumnHeights& hm, uint64_t air[CHUNK + 2][CHUNK + 2]);
+// cut (если не nullptr) - на сколько вокселей срезана земля в столбце: поверхность опустилась, и
+// покров (дёрн, снег) должен лечь на новый верх, а не остаться голой землёй.
+bool caveAir(const TerrainParams& p, ChunkPos pos, const ColumnHeights& hm, uint64_t air[CHUNK + 2][CHUNK + 2],
+             uint8_t (*cut)[CHUNK + 2] = nullptr);
 
 // Р39: может ли у столбца кусков (cx, cz) быть вход в пещеру (шум входов у центра - с запасом, как в быстром отказе)
 bool caveEntranceNear(const TerrainParams& p, int32_t cx, int32_t cz);

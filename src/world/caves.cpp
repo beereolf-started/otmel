@@ -79,7 +79,11 @@ constexpr fx::q16 ENTRANCE_EDGE = fx::ONE / 4;
 // есть был почти отвесным.
 constexpr int32_t SLUMP = 5 * VOXELS_PER_BLOCK;
 
-bool caveAir(const TerrainParams& p, ChunkPos pos, const ColumnHeights& hm, uint64_t air[CHUNK + 2][CHUNK + 2]) {
+bool caveAir(const TerrainParams& p, ChunkPos pos, const ColumnHeights& hm, uint64_t air[CHUNK + 2][CHUNK + 2],
+             uint8_t (*cutOut)[CHUNK + 2]) {
+    if (cutOut)
+        for (int z = 0; z < CHUNK + 2; ++z)
+            for (int x = 0; x < CHUNK + 2; ++x) cutOut[z][x] = 0;
     const CaveParams& c = p.caves;
     const int32_t x0 = pos.x * CHUNK - 1, y0 = pos.y * CHUNK - 1, z0 = pos.z * CHUNK - 1;   // начало каймы
 
@@ -122,8 +126,14 @@ bool caveAir(const TerrainParams& p, ChunkPos pos, const ColumnHeights& hm, uint
     // Быстрый отказ 2: смешивание не выходит за пределы значений в узлах. Порог сдвинут на запас
     // воронки: при значении выше -SLOPE земля ещё осыпается, пусть пустоты и нет, и отказывать
     // тогда нельзя - иначе соседние куски разойдутся и над пустотой останется крышка.
-    const fx::q16 slopeMax = 3 * fx::mul(c.tunnelWidth, c.tunnelWidth);
-    if (maxT <= -slopeMax && maxH <= -slopeMax) return false;
+    //
+    // У куска, в котором лежит ВЕРХ столбца, порог много ниже: там считается срез земли, а он
+    // тянется на четыре блока от кромки хода, и поле на таком удалении уже заметно ниже нуля. Пока
+    // порог был общим, такой кусок отбрасывался, а нижний срез всё-таки считал: верхний рисовал
+    // землю целиком, нижний срезал её под ним - пласт повисал, а под ним зияла дыра.
+    const fx::q16 w2chunk = fx::mul(c.tunnelWidth, c.tunnelWidth);
+    const fx::q16 rejectAt = bandHere ? 64 * w2chunk : 3 * w2chunk;
+    if (maxT <= -rejectAt && maxH <= -rejectAt) return false;
 
     // по вокселям - только ниже поверхности своего столбца (выше и так воздух)
     constexpr int32_t mask = STEP - 1;
@@ -271,7 +281,17 @@ bool caveAir(const TerrainParams& p, ChunkPos pos, const ColumnHeights& hm, uint
                 // Прежде спад мерился подъёмом верхней грани хода. У стенки рва грань поднимается
                 // почти отвесно, спад укладывался в доли блока, и земля стояла стеной.
                 const int32_t base = top - soil;         // первый воксель камня под землёй
-                const fx::q16 tb = field(base);
+                // Поле берём НАИБОЛЬШЕЕ ПО ВСЕЙ ТОЛЩЕ ЗЕМЛИ, а не только на её подошве: ход может
+                // подняться и выше подошвы, целиком внутри земли. Тогда по одной подошве срез
+                // выходил малым, пустота открывалась внутри земли, и то, что над ней, повисало -
+                // это и были левитирующие куски.
+                // Смотрим не только саму землю, но и ДВА БЛОКА ПОРОДЫ ПОД НЕЙ. Земля на тонком
+                // каменном мостике над пустотой не держится: соседние столбцы проваливаются до дна
+                // пещеры, а этот остаётся стоять столбиком в один блок площади. Ровно такие столбы
+                // и были видны на склоне.
+                const int32_t low = base - ROCK_ROOF;
+                fx::q16 tb = std::max(field(low), field(top));
+                for (int32_t wy = (top & ~int32_t(STEP - 1)); wy > low; wy -= STEP) tb = std::max(tb, field(wy));
                 int32_t cut;                             // вокселей земли под снос, сверху
                 if (tb >= 0) {
                     cut = soil;                          // кромка прошла здесь: земли нет вовсе
@@ -279,17 +299,23 @@ bool caveAir(const TerrainParams& p, ChunkPos pos, const ColumnHeights& hm, uint
                     const auto tun = [](const Node& n) { return n.tunnel; };
                     const int32_t gx = (triAt(base, fx::ONE, fz, tun) - triAt(base, 0, fz, tun)) / STEP;
                     const int32_t gz = (triAt(base, fx_, fx::ONE, tun) - triAt(base, fx_, 0, tun)) / STEP;
-                    const int32_t g = std::max(std::abs(gx), std::abs(gz));   // на воксель
-                    if (g <= 0) {
-                        cut = 0;
-                    } else {
-                        const int64_t r = int64_t(-tb) / g;          // вокселей до кромки
-                        cut = int32_t(std::max<int64_t>(0, soil - r * 3 / 4));
-                    }
+                    // Уклону нужна нижняя граница. Там, где он случайно близок к нулю, расстояние
+                    // до кромки выходило огромным, срез обнулялся - и столбец оставался стоять
+                    // столбом в один блок, хотя все соседи вокруг срезаны. Нижняя граница - падение
+                    // поля на толщину хода за четыре блока: дальше четырёх блоков срез и так нулевой.
+                    const int32_t gmin = std::max(1, w2 / (4 * VOXELS_PER_BLOCK));
+                    const int32_t g = std::max(std::max(std::abs(gx), std::abs(gz)), gmin);   // на воксель
+                    const int64_t r = int64_t(-tb) / g;              // вокселей до кромки
+                    cut = int32_t(std::max<int64_t>(0, soil - r * 3 / 4));
                 }
                 // стык с целой землёй - касательный: последний блок сводим к нулю по квадрату,
                 // иначе срез упирается в поверхность гранью и по краю идёт складка
                 if (cut > 0 && cut < VOXELS_PER_BLOCK) cut = cut * cut / VOXELS_PER_BLOCK;
+                // Срез тоньше полублока не делаем вовсе. Горизонтальный уклон поля считается по
+                // ячейке сетки и потому меняется от ячейки к ячейке скачком; на дальней кайме
+                // воронки это давало срез в один-два вокселя, скачущий пятнами по всему склону.
+                if (cut < VOXELS_PER_BLOCK / 2) cut = 0;
+                if (cutOut) cutOut[z][x] = uint8_t(std::min(cut, 255));   // покров ляжет на новый верх
                 for (int32_t wy = top - cut + 1; wy <= from; ++wy) take(wy);   // только земля
             }
             air[z][x] = bits;

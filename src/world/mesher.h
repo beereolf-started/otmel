@@ -22,6 +22,6 @@ void buildMesh(const Chunk& c, const ColumnHeights& heights, std::vector<uint32_
 // Нетронутый кусок по одному положению: массив вокселей не нужен вовсе (Р2, Р22).
 // air - воздух пещер в куске с каймой (Р26, world/caves.h) или nullptr: твёрдо = ниже поверхности И не пещера.
 void buildMesh(ChunkPos pos, const ColumnHeights& heights, std::vector<uint32_t>& vertices, MeshStats& stats,
-               const uint64_t (*air)[CHUNK + 2] = nullptr);
+               const uint64_t (*air)[CHUNK + 2] = nullptr, const uint8_t (*cut)[CHUNK + 2] = nullptr);
 
 }  // namespace world

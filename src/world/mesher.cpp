@@ -152,7 +152,7 @@ void rotateMasks(uint64_t (&col)[3][CHUNK][CHUNK], const uint64_t (&edge)[CHUNK 
 
 // vox - воксели правленого куска; nullptr - нетронутый: маски и материалы формулой от высот и покрова
 void meshImpl(ChunkPos pos, const Chunk* vox, const ColumnHeights& hm, const uint64_t (*air)[CHUNK + 2],
-              std::vector<uint32_t>& out, MeshStats& stats) {
+              std::vector<uint32_t>& out, MeshStats& stats, const uint8_t (*cut)[CHUNK + 2]) {
     out.clear();
     stats = {};
     const int32_t y0 = pos.y * CHUNK, x0w = pos.x * CHUNK, z0w = pos.z * CHUNK;
@@ -164,7 +164,10 @@ void meshImpl(ChunkPos pos, const Chunk* vox, const ColumnHeights& hm, const uin
     bool anyWater = false;
     for (int z = 0; z < CHUNK + 2; ++z)
         for (int x = 0; x < CHUNK + 2; ++x) {
-            const uint64_t ground = columnFromHeight(hm.h[z][x], y0);
+            // верх столбца - с учётом среза земли у воронки: по этой же высоте ниже выбирается и
+            // материал, иначе маска считает воксель твёрдым, а материал для него выходит воздухом
+            const int32_t topEff = hm.h[z][x] - (cut ? int32_t(cut[z][x]) : 0);
+            const uint64_t ground = columnFromHeight(topEff, y0);
             solid[z][x] = ground & ~(air ? air[z][x] : 0);
             wet[z][x] = columnFromHeight(hm.water[z][x], y0) & ~ground;
             anyWater |= wet[z][x] != 0;
@@ -195,7 +198,10 @@ void meshImpl(ChunkPos pos, const Chunk* vox, const ColumnHeights& hm, const uin
 
     // ─── 2-4. Грани грунта, затем воды: вода - в конце сетки (stats.waterQuads) ──
     emitFaces(col, nullptr, [&](int x, int y, int z) {
-        return vox ? vox->at(x, y, z) : columnMaterial(hm.h[z + 1][x + 1], hm.cover[z][x], y0 + y, hm.water[z + 1][x + 1],
+        // верх столбца берём с учётом среза земли: поверхность опустилась, и покров должен лечь на
+        // новый верх, иначе по откосу воронки видна голая земля вместо дёрна или снега
+        const int32_t topEff = hm.h[z + 1][x + 1] - (cut ? int32_t(cut[z + 1][x + 1]) : 0);
+        return vox ? vox->at(x, y, z) : columnMaterial(topEff, hm.cover[z][x], y0 + y, hm.water[z + 1][x + 1],
                                                        hm.rock, x0w + x, z0w + z);
     }, out, stats.quads);
     if (!anyWater) return;
@@ -207,12 +213,12 @@ void meshImpl(ChunkPos pos, const Chunk* vox, const ColumnHeights& hm, const uin
 }  // namespace
 
 void buildMesh(const Chunk& c, const ColumnHeights& hm, std::vector<uint32_t>& out, MeshStats& stats) {
-    meshImpl(c.pos, c.edited ? &c : nullptr, hm, nullptr, out, stats);
+    meshImpl(c.pos, c.edited ? &c : nullptr, hm, nullptr, out, stats, nullptr);
 }
 
 void buildMesh(ChunkPos pos, const ColumnHeights& hm, std::vector<uint32_t>& out, MeshStats& stats,
-               const uint64_t (*air)[CHUNK + 2]) {
-    meshImpl(pos, nullptr, hm, air, out, stats);
+               const uint64_t (*air)[CHUNK + 2], const uint8_t (*cut)[CHUNK + 2]) {
+    meshImpl(pos, nullptr, hm, air, out, stats, cut);
 }
 
 }  // namespace world

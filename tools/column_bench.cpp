@@ -198,10 +198,13 @@ void probe(const world::TerrainParams& p, int32_t bx, int32_t bz, int cols, bool
         const int32_t top = hm.h[lz + 1][lx + 1];
         const int32_t cyTop = top >= 0 ? top / world::CHUNK : -((-top + world::CHUNK - 1) / world::CHUNK);
         bool has[5];
-        for (int j = 0; j < 5; ++j) has[j] = world::caveAir(p, world::ChunkPos{cx, cyTop - j, cz}, hm, air[j]);
+        static uint8_t cut[5][world::CHUNK + 2][world::CHUNK + 2];
+        for (int j = 0; j < 5; ++j) has[j] = world::caveAir(p, world::ChunkPos{cx, cyTop - j, cz}, hm, air[j], cut[j]);
+        int srez = 0;
+        for (int j = 0; j < 5; ++j) srez = std::max(srez, int(cut[j][lz + 1][lx + 1]));
         const world::Material deep = world::rockAt(hm.rock, vx, top - 10 * world::VOXELS_PER_BLOCK, vzk);
-        std::printf("  %7.2f бл: верх %6.1f бл, земли %5.2f бл, на 10 бл ниже %-14s;", (alongZ ? vzk : vx) / 16.0, top / 16.0,
-                    hm.cover[lz][lx].soil / 16.0, world::rockDef(int(deep) - world::ROCK_FIRST).name);
+        std::printf("  %7.2f бл: верх %6.1f, земли %5.2f, срез %5.2f;", (alongZ ? vzk : vx) / 16.0, top / 16.0,
+                    hm.cover[lz][lx].soil / 16.0, srez / 16.0);
         int runs = 0;
         int32_t runFrom = INT32_MIN, prev = INT32_MIN;
         for (int j = 0; j < 5; ++j) {
@@ -224,7 +227,72 @@ void probe(const world::TerrainParams& p, int32_t bx, int32_t bz, int cols, bool
     }
 }
 
+
+/**
+ * Поиск столбов: воксельные столбцы, у которых срез земли нулевой, а у всех четырёх соседей
+ * заметный. Такой столбец и остаётся стоять столбиком среди срезанной земли.
+ */
+void pillars(const world::TerrainParams& p, int32_t bx, int32_t bz, int sideBlocks) {
+    static world::ColumnHeights hm;
+    static uint64_t air[world::CHUNK + 2][world::CHUNK + 2];
+    static uint64_t masks[6][world::CHUNK + 2][world::CHUNK + 2];
+    static int32_t surf[world::CHUNK + 2][world::CHUNK + 2];
+    const int32_t cx0 = (bx * world::VOXELS_PER_BLOCK) / world::CHUNK;
+    const int32_t cz0 = (bz * world::VOXELS_PER_BLOCK) / world::CHUNK;
+    const int side = std::max(2, sideBlocks * world::VOXELS_PER_BLOCK / world::CHUNK);
+    int64_t found = 0, looked = 0;
+    std::printf("поиск столбов: %d столбцов кусков от блока (%d, %d)\n", side * side, bx, bz);
+    for (int j = 0; j < side; ++j)
+        for (int i = 0; i < side; ++i) {
+            const int32_t cx = cx0 + i, cz = cz0 + j;
+            world::columnHeights(p, cx, cz, hm);
+            const int32_t cyTop = hm.maxH / world::CHUNK;
+            for (int k = 0; k < 6; ++k) {
+                const bool ok = world::caveAir(p, world::ChunkPos{cx, cyTop - k, cz}, hm, air);
+                for (int z = 0; z < world::CHUNK + 2; ++z)
+                    for (int x = 0; x < world::CHUNK + 2; ++x) masks[k][z][x] = ok ? air[z][x] : 0;
+            }
+            // верх столбца: сверху вниз первый воксель, не помеченный пустотой
+            for (int z = 0; z < world::CHUNK + 2; ++z)
+                for (int x = 0; x < world::CHUNK + 2; ++x) {
+                    int32_t wy = hm.h[z][x];
+                    for (int guard = 0; guard < 6 * world::VOXELS_PER_BLOCK; ++guard) {
+                        const int32_t cy = wy >= 0 ? wy / world::CHUNK : -((-wy + world::CHUNK - 1) / world::CHUNK);
+                        const int k = int(cyTop - cy);
+                        if (k < 0 || k >= 6) break;
+                        const int yi = int(wy - (cy * world::CHUNK - 1));
+                        if (yi < 0 || yi >= world::CHUNK + 2 || !((masks[k][z][x] >> yi) & 1)) break;
+                        --wy;
+                    }
+                    surf[z][x] = wy;
+                }
+            for (int z = 1; z <= world::CHUNK; ++z)
+                for (int x = 1; x <= world::CHUNK; ++x) {
+                    ++looked;
+                    const int32_t hi = std::max(std::max(surf[z][x - 1], surf[z][x + 1]),
+                                                std::max(surf[z - 1][x], surf[z + 1][x]));
+                    if (surf[z][x] - hi < 2 * world::VOXELS_PER_BLOCK) continue;
+                    ++found;
+                    if (found <= 8) {
+                        const world::Material m =
+                            world::columnMaterial(hm.h[z][x], hm.cover[std::min(z, world::CHUNK) - 1][std::min(x, world::CHUNK) - 1],
+                                                  surf[z][x], hm.water[z][x], hm.rock, cx * world::CHUNK + x - 1,
+                                                  cz * world::CHUNK + z - 1);
+                        std::printf("  столб: блок (%.2f, %.2f, %.2f), соседи ниже на %.2f бл, материал %d\n",
+                                    (cx * world::CHUNK + x - 1) / 16.0, surf[z][x] / 16.0,
+                                    (cz * world::CHUNK + z - 1) / 16.0, (surf[z][x] - hi) / 16.0, int(m));
+                    }
+                }
+        }
+    std::printf("  столбов %lld из %lld столбцов\n", (long long)found, (long long)looked);
+}
+
 int main(int argc, char** argv) {
+    if (argc > 3 && std::string(argv[1]) == "--pillars") {
+        world::TerrainParams tp;
+        pillars(tp, atoi(argv[2]), atoi(argv[3]), argc > 4 ? std::max(4, atoi(argv[4])) : 32);
+        return 0;
+    }
     if (argc > 3 && std::string(argv[1]) == "--probe") {
         world::TerrainParams tp;
         probe(tp, atoi(argv[2]), atoi(argv[3]), argc > 4 ? std::max(2, atoi(argv[4])) : 24, argc > 5);
