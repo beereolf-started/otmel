@@ -235,8 +235,10 @@ void probe(const world::TerrainParams& p, int32_t bx, int32_t bz, int cols, bool
 void pillars(const world::TerrainParams& p, int32_t bx, int32_t bz, int sideBlocks) {
     static world::ColumnHeights hm;
     static uint64_t air[world::CHUNK + 2][world::CHUNK + 2];
+    static uint8_t cut[world::CHUNK + 2][world::CHUNK + 2];
     static uint64_t masks[6][world::CHUNK + 2][world::CHUNK + 2];
     static int32_t surf[world::CHUNK + 2][world::CHUNK + 2];
+    static uint8_t best[world::CHUNK + 2][world::CHUNK + 2];
     const int32_t cx0 = (bx * world::VOXELS_PER_BLOCK) / world::CHUNK;
     const int32_t cz0 = (bz * world::VOXELS_PER_BLOCK) / world::CHUNK;
     const int side = std::max(2, sideBlocks * world::VOXELS_PER_BLOCK / world::CHUNK);
@@ -247,16 +249,21 @@ void pillars(const world::TerrainParams& p, int32_t bx, int32_t bz, int sideBloc
             const int32_t cx = cx0 + i, cz = cz0 + j;
             world::columnHeights(p, cx, cz, hm);
             const int32_t cyTop = hm.maxH / world::CHUNK;
+            for (int z = 0; z < world::CHUNK + 2; ++z)
+                for (int x = 0; x < world::CHUNK + 2; ++x) best[z][x] = 0;
             for (int k = 0; k < 6; ++k) {
-                const bool ok = world::caveAir(p, world::ChunkPos{cx, cyTop - k, cz}, hm, air);
+                const bool ok = world::caveAir(p, world::ChunkPos{cx, cyTop - k, cz}, hm, air, cut);
                 for (int z = 0; z < world::CHUNK + 2; ++z)
-                    for (int x = 0; x < world::CHUNK + 2; ++x) masks[k][z][x] = ok ? air[z][x] : 0;
+                    for (int x = 0; x < world::CHUNK + 2; ++x) {
+                        masks[k][z][x] = ok ? air[z][x] : 0;
+                        best[z][x] = std::max(best[z][x], cut[z][x]);
+                    }
             }
-            // верх столбца: сверху вниз первый воксель, не помеченный пустотой
+            // верх столбца: высота минус срез земли, а затем вниз, пока воксель помечен пустотой
             for (int z = 0; z < world::CHUNK + 2; ++z)
                 for (int x = 0; x < world::CHUNK + 2; ++x) {
-                    int32_t wy = hm.h[z][x];
-                    for (int guard = 0; guard < 6 * world::VOXELS_PER_BLOCK; ++guard) {
+                    int32_t wy = hm.h[z][x] - best[z][x];
+                    for (int guard = 0; guard < 8 * world::VOXELS_PER_BLOCK; ++guard) {
                         const int32_t cy = wy >= 0 ? wy / world::CHUNK : -((-wy + world::CHUNK - 1) / world::CHUNK);
                         const int k = int(cyTop - cy);
                         if (k < 0 || k >= 6) break;
@@ -269,18 +276,21 @@ void pillars(const world::TerrainParams& p, int32_t bx, int32_t bz, int sideBloc
             for (int z = 1; z <= world::CHUNK; ++z)
                 for (int x = 1; x <= world::CHUNK; ++x) {
                     ++looked;
-                    const int32_t hi = std::max(std::max(surf[z][x - 1], surf[z][x + 1]),
-                                                std::max(surf[z - 1][x], surf[z + 1][x]));
-                    if (surf[z][x] - hi < 2 * world::VOXELS_PER_BLOCK) continue;
+                    const int32_t hi = std::min(std::min(surf[z][x - 1], surf[z][x + 1]),
+                                                std::min(surf[z - 1][x], surf[z + 1][x]));
+                    if (hi - surf[z][x] < 2 * world::VOXELS_PER_BLOCK) continue;
                     ++found;
                     if (found <= 8) {
-                        const world::Material m =
-                            world::columnMaterial(hm.h[z][x], hm.cover[std::min(z, world::CHUNK) - 1][std::min(x, world::CHUNK) - 1],
-                                                  surf[z][x], hm.water[z][x], hm.rock, cx * world::CHUNK + x - 1,
-                                                  cz * world::CHUNK + z - 1);
-                        std::printf("  столб: блок (%.2f, %.2f, %.2f), соседи ниже на %.2f бл, материал %d\n",
+                        const world::Cover cv = hm.cover[std::min(z, world::CHUNK) - 1][std::min(x, world::CHUNK) - 1];
+                        const world::Material m = world::columnMaterial(hm.h[z][x] - best[z][x], cv, surf[z][x],
+                                                                       hm.water[z][x], hm.rock,
+                                                                       cx * world::CHUNK + x - 1, cz * world::CHUNK + z - 1);
+                        std::printf("  яма: блок (%.2f, %.2f, %.2f), соседи выше на %.2f, материал %d, "
+                                    "срез свой %.2f, соседей %.2f %.2f %.2f %.2f, земли %.2f\n",
                                     (cx * world::CHUNK + x - 1) / 16.0, surf[z][x] / 16.0,
-                                    (cz * world::CHUNK + z - 1) / 16.0, (surf[z][x] - hi) / 16.0, int(m));
+                                    (cz * world::CHUNK + z - 1) / 16.0, (hi - surf[z][x]) / 16.0, int(m),
+                                    best[z][x] / 16.0, best[z][x - 1] / 16.0, best[z][x + 1] / 16.0,
+                                    best[z - 1][x] / 16.0, best[z + 1][x] / 16.0, cv.soil / 16.0);
                     }
                 }
         }
