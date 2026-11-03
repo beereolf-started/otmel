@@ -10,10 +10,14 @@ namespace {
 
 constexpr int STEP_LOG2 = 3;                 // узлы через 8 вокселей (полблока)
 constexpr int STEP = 1 << STEP_LOG2;
-constexpr int MAX_NODES = (CHUNK + 2) / STEP + 2;   // узлов по стороне на кусок с каймой: 7
+// Узлов по стороне на кусок с каймой - ровно 7, как и сказано: начало куска с каймой всегда даёт
+// остаток 7 по модулю 8, поэтому кайма задевает ещё один узел. Формула с +2 давала 6, и запись шла
+// на узел дальше массива. Пока массив был низким, лишняя запись попадала в соседнюю строку того же
+// массива и сходила с рук; стоило надстроить его вверх - она стала портить чужую память.
+constexpr int MAX_NODES = (CHUNK + 2) / STEP + 3;
 // По высоте узлов нужно больше: у куска под самой поверхностью кровля осыпается по пустоте,
 // лежащей ниже него, и поле приходится знать на полосу опоры глубже (5 блоков = 80 вокселей).
-constexpr int MAX_NODES_Y = (CHUNK + 2 + 10 * VOXELS_PER_BLOCK) / STEP + 4;
+constexpr int MAX_NODES_Y = (CHUNK + 2 + 10 * VOXELS_PER_BLOCK) / STEP + 5;
 
 enum CaveLayer : int32_t { TUNNEL_A = 101, TUNNEL_B, HALL, HALL_FINE, GIANT, ENTRANCE };
 inline uint32_t caveSeed(uint32_t seed, CaveLayer l) { return gen::hash2(l, 0xCA7E, seed); }
