@@ -93,7 +93,24 @@ void walkRocks(const world::TerrainParams& p, int32_t cx0, int32_t cz0, int cols
     std::printf("  всего участков %d, разных пород %d, из них промежуточных (Р78) %d\n", runs, kinds, novel);
 }
 
+/** Цена столбцов слева и справа от места: не дороже ли считать мир в отрицательную сторону. */
+void mirror(const world::TerrainParams& p, int32_t cx0, int32_t cz0, int cols) {
+    std::vector<std::pair<int32_t, int32_t>> west, east;
+    for (int k = 1; k <= cols; ++k) {
+        west.push_back({cx0 - k, cz0});
+        east.push_back({cx0 + k, cz0});
+    }
+    const double w = msOf(p, west), e = msOf(p, east);
+    std::printf("цена столбца слева и справа от (%d, %d), по %d штук:\n", cx0, cz0, cols);
+    std::printf("  на запад: %6.2f мс    на восток: %6.2f мс    разница %+.1f%%\n", w, e, (w / e - 1.0) * 100.0);
+}
+
 int main(int argc, char** argv) {
+    if (argc > 1 && std::string(argv[1]) == "--mirror") {
+        world::TerrainParams tp;
+        mirror(tp, -99600 / 2, 188480 / 2, argc > 2 ? std::max(8, atoi(argv[2])) : 64);
+        return 0;
+    }
     if (argc > 1 && std::string(argv[1]) == "--rocks") {
         world::TerrainParams tp;
         walkRocks(tp, -6225, 11780, argc > 2 ? std::max(4, atoi(argv[2])) : 60);

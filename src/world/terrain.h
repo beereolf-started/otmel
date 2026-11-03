@@ -142,6 +142,9 @@ fx::q16 temperatureAt(const TerrainParams& p, const Climate& c, int32_t height);
 // Покров: верхний воксель и слой под ним (3 блока)
 struct Cover {
     Material top, under;
+    // Р79: на крутизне покров не держится - осыпается, и наружу выходит сама порода. Отсюда скалы,
+    // обрывы и омываемые рекой камни, а горы перестают быть земляными холмами.
+    bool bare = false;
 };
 Cover coverAt(const TerrainParams& p, const Climate& c, int32_t height);
 
@@ -172,6 +175,7 @@ Material rockAt(const RockColumn& c, int32_t x, int32_t y, int32_t z);
 constexpr int32_t NO_WATER = INT32_MIN;
 inline Material columnMaterial(int32_t top, Cover cv, int32_t wy, int32_t water, const RockColumn& rc, int32_t wx, int32_t wz) {
     if (wy > top) return wy <= water ? WATER : AIR;
+    if (cv.bare) return rockAt(rc, wx, wy, wz);     // Р79: крутизна - покрова нет вовсе, сразу порода
     if (wy == top) return cv.top;
     if (wy >= top - 3 * VOXELS_PER_BLOCK) return cv.under;
     return rockAt(rc, wx, wy, wz);

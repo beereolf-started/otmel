@@ -352,7 +352,15 @@ int main(int argc, char** argv) {
     // Камера: в блоках. Мышь - взгляд, WASD - движение, пробел/Ctrl - вверх/вниз, Shift - быстрее,
     // колесо - скорость, L - раскраска дальних уровней, Esc - выход. Старт - в 48 блоках мира над землёй (Р54: 3 прежних).
     const float ground = float(world::reliefAt(tp, int32_t(atX * 16), int32_t(atZ * 16)).height) / world::VOXELS_PER_BLOCK;
-    glm::vec3 eye(atX, ground + 3.0f, atZ);
+    // ПОЛОЖЕНИЕ КАМЕРЫ - С ДВОЙНОЙ ТОЧНОСТЬЮ (Р79).
+    //
+    // Числом одинарной точности на удалении в сто тысяч блоков шаг представимости около 0.008 блока,
+    // а на двухстах тысячах - 0.016. Шаг камеры за кадр - примерно 0.003 блока, то есть МЕНЬШЕ этого
+    // шага: прибавка по одной оси копилась и срывалась скачком, по другой - вдвое реже и вдвое крупнее.
+    // Отсюда были рывки и ощущение, что по одной оси тянет охотнее, чем по другой. Копим в double,
+    // а в отрисовку отдаём уже разность с началом координат - она мала, и точности хватает с запасом.
+    glm::dvec3 eye(atX, ground + 3.0f, atZ);
+    const auto eyeF = [&eye] { return glm::vec3(eye); };
     float yaw = -0.6f, pitch = -0.35f, speedScale = 1.0f;
     // Подсказки разработчика (devinfo.h): что под прицелом и переход по координатам
     dev::Aim aim;
@@ -364,7 +372,7 @@ int main(int argc, char** argv) {
     int debug = 0;
     for (int i = 1; i + 5 < argc; ++i)
         if (std::string(argv[i]) == "--eye") {
-            eye = {std::stof(argv[i + 1]), std::stof(argv[i + 2]), std::stof(argv[i + 3])};
+            eye = {std::stod(argv[i + 1]), std::stod(argv[i + 2]), std::stod(argv[i + 3])};
             yaw = std::stof(argv[i + 4]);
             pitch = std::stof(argv[i + 5]);
         }
@@ -640,7 +648,7 @@ int main(int argc, char** argv) {
                     bool hasY = false;
                     if (ev.key.key == SDLK_RETURN && dev::parseGoto(gotoText, to, hasY)) {
                         if (!hasY) to.y = dev::groundAt(tp, to.x, to.z) + 3.0f;
-                        eye = to;
+                        eye = glm::dvec3(to);
                         journal::info("переход", "камера переставлена в ({:.0f}, {:.0f}, {:.0f})", to.x, to.y, to.z);
                     }
                     typing = false;
@@ -689,23 +697,27 @@ int main(int argc, char** argv) {
         const bool* keys = (shot || typing) ? noKeys : SDL_GetKeyboardState(nullptr);
         // Р56: камера - в прежних мерах (16 блоков мира): шаг ~5 блоков/с, с Shift ~48 - чтобы разглядеть мелочь
         const float speed = (keys[SDL_SCANCODE_LSHIFT] ? 3.0f : 0.3f) * speedScale * dt;
-        if (keys[SDL_SCANCODE_W]) eye += fwd * speed;
-        if (keys[SDL_SCANCODE_S]) eye -= fwd * speed;
-        if (keys[SDL_SCANCODE_D]) eye += right * speed;
-        if (keys[SDL_SCANCODE_A]) eye -= right * speed;
+        if (keys[SDL_SCANCODE_W]) eye += glm::dvec3(fwd) * double(speed);
+        if (keys[SDL_SCANCODE_S]) eye -= glm::dvec3(fwd) * double(speed);
+        if (keys[SDL_SCANCODE_D]) eye += glm::dvec3(right) * double(speed);
+        if (keys[SDL_SCANCODE_A]) eye -= glm::dvec3(right) * double(speed);
         if (keys[SDL_SCANCODE_SPACE]) eye.y += speed;
         if (keys[SDL_SCANCODE_LCTRL]) eye.y -= speed;
-        if (shot && warm && flySpeed > 0) eye += glm::normalize(glm::vec3(fwd.x, 0, fwd.z)) * flySpeed * dt;
+        if (shot && warm && flySpeed > 0) eye += glm::dvec3(glm::normalize(glm::vec3(fwd.x, 0, fwd.z))) * double(flySpeed * dt);
 
         // обратная глубина (Р20): ближняя и дальняя плоскости переставлены местами
         const float farPlane = float(lod.drawDistance) * 1.5f;
         const glm::mat4 proj = glm::perspectiveRH_ZO(glm::radians(70.0f), float(width) / float(std::max(1, height)), farPlane, 0.002f);   // Р56: ближняя плоскость - 3 см (вплотную к коре и листьям)
-        const glm::mat4 viewProj = proj * glm::lookAt(eye, eye + fwd, glm::vec3(0, 1, 0));
+        const glm::vec3 eyeAbs = eyeF();          // мировое положение одинарной точностью - для отсечения
+        const glm::mat4 viewProj = proj * glm::lookAt(eyeAbs, eyeAbs + fwd, glm::vec3(0, 1, 0));
         const Frustum fr(viewProj);
         // Р69: видеокарте - камера относительно начала у куска камеры (целые воксели): малые числа - без дрожи
-        const glm::ivec3 originV(int(std::floor(eye.x * 0.5f)) * 32, int(std::floor(eye.y * 0.5f)) * 32, int(std::floor(eye.z * 0.5f)) * 32);
-        const glm::vec3 originOld = glm::vec3(originV) / 16.0f;
-        const glm::mat4 viewProjGpu = proj * glm::lookAt(eye - originOld, eye - originOld + fwd, glm::vec3(0, 1, 0));
+        const glm::ivec3 originV(int(std::floor(eye.x * 0.5)) * 32, int(std::floor(eye.y * 0.5)) * 32, int(std::floor(eye.z * 0.5)) * 32);
+        const glm::dvec3 originOld = glm::dvec3(originV) / 16.0;
+        // разность берём в двойной точности и только потом сводим к одинарной: она мала (меньше двух
+        // блоков), поэтому у неё остаётся вся точность, и мир перестаёт дёргаться под камерой
+        const glm::vec3 eyeLocal = glm::vec3(eye - originOld);
+        const glm::mat4 viewProjGpu = proj * glm::lookAt(eyeLocal, eyeLocal + fwd, glm::vec3(0, 1, 0));
         lap(0);
         const auto tUpd = clock_t_::now();
         voxels.update(eye, fwd, fr, 4.0);   // выгрузка готовых столбцов - не дольше 4 мс за кадр
@@ -857,7 +869,7 @@ int main(int argc, char** argv) {
                     const glm::vec3 eo = edge * U;
                     if (!fr.visible(eo - glm::vec3(U, h * U + U, U), eo + glm::vec3(U))) continue;
                     // вдали блок воды меньше пикселя: крупнее и реже (на 120 блоках - вдвое)
-                    const float dist = glm::distance(eo, eye) * 16.0f, scale = std::max(1.0f, dist / 120.0f);
+                    const float dist = glm::distance(eo, eyeF()) * 16.0f, scale = std::max(1.0f, dist / 120.0f);
                     const glm::vec2 fv = flowOf(bx, bz);
                     const float sp = glm::length(fv), discharge = (0.6f + sp) / scale;
                     // вылет: поперёк кромки - со скоростью течения (не меньше 0.6 м/с), вдоль - половина его доли
@@ -1212,7 +1224,7 @@ int main(int argc, char** argv) {
             if (forestGround) {
                 // Р70: расстояние - в объёме (с высотой камеры: сверху деревья под тобой грубые); вне поля зрения
                 // дерево не уточняется дальше уровня 2; на скорости (> 30 блоков/с - 2, > 120 - 3) тоже
-                const float camSpeed = dt > 0 ? glm::length(eye - forestEyePrev) * 16.0f / dt : 0.0f;
+                const float camSpeed = dt > 0 ? glm::length(eyeF() - forestEyePrev) * 16.0f / dt : 0.0f;
                 forestEyePrev = eye;
                 const int speedMin = camSpeed > 120.0f ? 3 : camSpeed > 30.0f ? 2 : 0;
                 const float ey = eye.y * 16.0f;

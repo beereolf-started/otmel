@@ -205,6 +205,14 @@ fx::q16 temperatureAt(const TerrainParams& p, const Climate& c, int32_t height) 
     return c.temp - static_cast<fx::q16>(int64_t(above) * p.lapsePerVoxel);
 }
 
+// Р79: с какого перепада к соседнему столбцу покров уже не держится.
+//
+// Столбцы стоят через воксель, высоты тоже в вокселях, поэтому перепад к соседу - это прямо тангенс
+// уклона: 1 - сорок пять градусов, 2 - шестьдесят три. Условие «больше BARE_SLOPE» при значении 1
+// означает перепад от двух вокселей, то есть круче шестидесяти градусов: зеленеют холмы и пологие
+// склоны, оголяются обрывы, гребни и стенки ущелий.
+constexpr int32_t BARE_SLOPE = 1;
+
 Cover coverAt(const TerrainParams& p, const Climate& c, int32_t height) {
     // Р25: дно и берег - песок (до 2 блоков над водой)
     if (height < p.seaLevel + 2 * VOXELS_PER_BLOCK) return {SAND, SAND};
@@ -347,9 +355,20 @@ void columnHeights(const TerrainParams& p, int32_t chunkX, int32_t chunkZ, Colum
     // климат и покров - только своим столбцам, не кайме; у воды рек и озёр - песок (Р29)
     for (int z = 0; z < CHUNK; ++z)
         for (int x = 0; x < CHUNK; ++x)
-            out.cover[z][x] = shore[z + 1][x + 1]
-                                  ? Cover{SAND, SAND}
-                                  : coverAt(p, climateAt(p, x0 + 1 + x, z0 + 1 + z, slow.at(x0 + 1 + x, z0 + 1 + z)), out.h[z + 1][x + 1]);
+        {
+            Cover cv = shore[z + 1][x + 1]
+                           ? Cover{SAND, SAND}
+                           : coverAt(p, climateAt(p, x0 + 1 + x, z0 + 1 + z, slow.at(x0 + 1 + x, z0 + 1 + z)), out.h[z + 1][x + 1]);
+            // Р79: КРУТИЗНА СНИМАЕТ ПОКРОВ. Берём наибольший перепад к четырём соседям (кайма для этого и
+            // нужна). Перепад в вокселях на воксель - это тангенс уклона: 1 - сорок пять градусов. Землю
+            // держит пологое, на крутом она осыпается и наружу выходит порода. Под водой не трогаем:
+            // там своё дно (песок), и обнажать его незачем.
+            const int32_t h = out.h[z + 1][x + 1];
+            const int32_t d = std::max(std::max(std::abs(out.h[z + 1][x + 2] - h), std::abs(out.h[z + 1][x] - h)),
+                                       std::max(std::abs(out.h[z + 2][x + 1] - h), std::abs(out.h[z][x + 1] - h)));
+            if (!shore[z + 1][x + 1] && d > BARE_SLOPE) cv.bare = true;
+            out.cover[z][x] = cv;
+        }
 }
 
 void fillChunk(const ColumnHeights& heights, Chunk& c) {
