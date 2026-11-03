@@ -55,6 +55,15 @@ bool caveEntranceNear(const TerrainParams& p, int32_t cx, int32_t cz) {
            c.entranceFrom - fx::ONE / 10;
 }
 
+// Р79: сколько породы обязано быть над сводом пещеры. Считается ОТ ПОДОШВЫ ЗЕМЛИ, а не от
+// поверхности: на скалах и обрывах земли нет вовсе (покров сходит с крутизны), и там пещера имеет
+// право начинаться почти сразу - это и есть вход в скале. А под лугом та же пещера обязана лежать
+// ниже всей земли и ещё двух блоков породы, иначе своду не на чем держаться.
+constexpr int32_t ROCK_ROOF = 2 * VOXELS_PER_BLOCK;
+// Р79: с какой глубины вход подтягивает ход к поверхности
+constexpr int32_t ENTRANCE_PULL = 8 * VOXELS_PER_BLOCK;
+constexpr int32_t SOIL_DEPTH = 3 * VOXELS_PER_BLOCK + 1;   // покров и подпокровный слой
+
 bool caveAir(const TerrainParams& p, ChunkPos pos, const ColumnHeights& hm, uint64_t air[CHUNK + 2][CHUNK + 2]) {
     const CaveParams& c = p.caves;
     const int32_t x0 = pos.x * CHUNK - 1, y0 = pos.y * CHUNK - 1, z0 = pos.z * CHUNK - 1;   // начало каймы
@@ -123,7 +132,21 @@ bool caveAir(const TerrainParams& p, ChunkPos pos, const ColumnHeights& hm, uint
                         // видна насквозь (Р37: и у берега - вход в берегу открывался в бок русла)
                         if (entrance < 0) entrance = !hm.nearWater[z][x] && entranceAt(wx, wz) ? 1 : 0;
                         // не у входа: тоннель гаснет за последний блок перед верхним слоем
-                        if (!entrance) t -= fx::q16(int64_t(fx::mul(c.tunnelWidth, c.tunnelWidth)) * (c.tunnelCover - d) / VOXELS_PER_BLOCK);
+                        // Вне входа ход гаснет за последний блок перед верхним слоем. У входа гаснет
+                        // тоже, но вдвое мягче: наружу открывается ЩЕЛЬ, а не ворота - пролезть можно,
+                        // а провалиться в неё с поверхности нельзя (Р79).
+                        const fx::q16 w2e = fx::mul(c.tunnelWidth, c.tunnelWidth);
+                        const fx::q16 fade = fx::q16(int64_t(w2e) * (c.tunnelCover - d) / VOXELS_PER_BLOCK);
+                        // У ВХОДА ХОД НЕ ГАСНЕТ ВОВСЕ. Я было заставил гаснуть и его - вход стал
+                        // настолько узким и редким, что его нельзя было найти: один на шестьсот блоков.
+                        // Узость подземелья задаётся толщиной самого хода (tunnelWidth), а не гашением
+                        // у поверхности; вход должен быть входом.
+                        if (!entrance) t -= fade;
+                        // А у входа, наоборот, ПОДТЯГИВАЕМ ход к поверхности: иначе входом становится
+                        // лишь тот ход, который сам случайно подошёл к ней на два блока, и таких - один
+                        // на шестьсот блоков пути. С подтяжкой входом становится и ход, прошедший чуть
+                        // глубже: он выходит наружу наклонной щелью той же ширины.
+                        else if (d < ENTRANCE_PULL) t += fx::q16(int64_t(w2e) * (ENTRANCE_PULL - d) / (2 * VOXELS_PER_BLOCK));
                     }
                     open = t > 0;
                 }
@@ -133,6 +156,14 @@ bool caveAir(const TerrainParams& p, ChunkPos pos, const ColumnHeights& hm, uint
                     if (d < c.hallDepth) h -= fx::q16(int64_t(fx::ONE * 3 / 10) * (c.hallDepth - d) / (8 * VOXELS_PER_BLOCK));
                     open = h > 0;
                 }
+                // Р79: НАД ПУСТОТОЙ ОБЯЗАН БЫТЬ КАМЕНЬ, а не одна земля. Покров - воксель, под ним три
+                // блока подпокровного слоя; если свод приходится на них, он держится ни на чём, и когда
+                // появится осыпание, такая пещера просто провалится. Поэтому вне входа пустота не
+                // открывается, пока над ней нет ещё двух блоков породы сверх всей толщи земли. У входа
+                // правило не действует: вход - это и есть дыра наружу.
+                // покров хранится без каймы ([0..CHUNK-1]), а обход идёт с каймой - приводим индекс
+                const int cvz = std::clamp(z - 1, 0, CHUNK - 1), cvx = std::clamp(x - 1, 0, CHUNK - 1);
+                if (open && entrance <= 0 && d < (hm.cover[cvz][cvx].bare ? 0 : SOIL_DEPTH) + ROCK_ROOF) open = false;
                 if (open) bits |= uint64_t(1) << yi;
             }
             air[z][x] = bits;

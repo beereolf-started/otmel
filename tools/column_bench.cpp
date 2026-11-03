@@ -14,6 +14,7 @@
 #include <string>
 #include <vector>
 
+#include "world/caves.h"
 #include "world/rock_table.h"
 #include "world/terrain.h"
 
@@ -105,7 +106,82 @@ void mirror(const world::TerrainParams& p, int32_t cx0, int32_t cz0, int cols) {
     std::printf("  на запад: %6.2f мс    на восток: %6.2f мс    разница %+.1f%%\n", w, e, (w / e - 1.0) * 100.0);
 }
 
+/**
+ * Разбор пещер: какую долю подземелья они занимают и какой высоты ходы. Нужен, чтобы судить о
+ * «гигантизме» числом: основой должны быть узкие ходы, а залы - находкой.
+ */
+void caveStats(const world::TerrainParams& p, int32_t cx0, int32_t cz0, int cols) {
+    static world::ColumnHeights hm;
+    static uint64_t air[world::CHUNK + 2][world::CHUNK + 2];
+    int64_t open = 0, total = 0;
+    int64_t runs[6] = {};   // высота хода: 1, 2, 3, 4-6, 7-12, больше
+    for (int k = 0; k < cols; ++k) {
+        const int32_t cx = cx0 + (k % 8) * 3, cz = cz0 + (k / 8) * 3;
+        world::columnHeights(p, cx, cz, hm);
+        const int32_t topY = hm.maxH / world::CHUNK;
+        for (int32_t cy = topY - 20; cy <= topY; ++cy) {
+            if (!world::caveAir(p, world::ChunkPos{cx, cy, cz}, hm, air)) { total += int64_t(world::CHUNK) * world::CHUNK * world::CHUNK; continue; }
+            for (int z = 1; z <= world::CHUNK; ++z)
+                for (int x = 1; x <= world::CHUNK; ++x) {
+                    int run = 0;
+                    for (int y = 0; y < world::CHUNK; ++y) {
+                        ++total;
+                        if ((air[z][x] >> y) & 1) { ++open; ++run; continue; }
+                        if (run) {
+                            // высота в блоках, с округлением вверх: ход в воксель - это уже «меньше блока»
+                            const int b = (run + world::VOXELS_PER_BLOCK - 1) / world::VOXELS_PER_BLOCK;
+                            runs[b <= 1 ? 0 : b == 2 ? 1 : b == 3 ? 2 : b <= 6 ? 3 : b <= 12 ? 4 : 5] += 1;
+                            run = 0;
+                        }
+                    }
+                }
+        }
+    }
+    // Как часто на местности попадается вход. Точки разносим ШИРОКО: вход - редкость, и мерить его
+    // внутри нескольких соседних кусков бессмысленно, там его не будет никогда.
+    int64_t mouths = 0, looked = 0;
+    const int side = 40, stride = 32;        // 40×40 мест через 32 куска = через 64 блока, охват ~2.5 км
+    for (int gz = 0; gz < side; ++gz)
+        for (int gx = 0; gx < side; ++gx) {
+            const int32_t cx = cx0 + (gx - side / 2) * stride, cz = cz0 + (gz - side / 2) * stride;
+            world::columnHeights(p, cx, cz, hm);
+            const int32_t wx = cx * world::CHUNK + world::CHUNK / 2, wz = cz * world::CHUNK + world::CHUNK / 2;
+            ++looked;
+            // настоящее отверстие: прорезаем верхние куски и смотрим, выходит ли пустота к поверхности
+            bool holed = false;
+            const int32_t topY = hm.maxH / world::CHUNK;
+            for (int32_t cy = topY; cy >= topY - 2 && !holed; --cy) {
+                if (!world::caveAir(p, world::ChunkPos{cx, cy, cz}, hm, air)) continue;
+                for (int z = 1; z <= world::CHUNK && !holed; ++z)
+                    for (int x = 1; x <= world::CHUNK && !holed; ++x) {
+                        const int32_t top = hm.h[z][x];
+                        for (int y = 0; y < world::CHUNK; ++y) {
+                            if (!((air[z][x] >> y) & 1)) continue;
+                            const int32_t wy = cy * world::CHUNK + y;
+                            if (top - wy < world::VOXELS_PER_BLOCK) { holed = true; break; }
+                        }
+                    }
+            }
+            if (holed) ++mouths;
+            (void)wx; (void)wz;
+        }
+    int64_t n = 0;
+    for (int64_t r : runs) n += r;
+    std::printf("пещеры на %d кусках: пустота занимает %.2f%% подземелья, ходов найдено %lld\n",
+                cols, 100.0 * double(open) / double(total ? total : 1), (long long)n);
+    std::printf("  отверстие к поверхности найдено в %.2f%% мест (%lld из %lld), места через 64 блока\n",
+                100.0 * double(mouths) / double(looked ? looked : 1), (long long)mouths, (long long)looked);
+    const char* NAME[6] = {"до 1 блока", "2 блока", "3 блока", "4-6 блоков", "7-12 блоков", "больше 12"};
+    for (int i = 0; i < 6; ++i)
+        std::printf("  высота %-12s %6.2f%%\n", NAME[i], 100.0 * double(runs[i]) / double(n ? n : 1));
+}
+
 int main(int argc, char** argv) {
+    if (argc > 1 && std::string(argv[1]) == "--caves") {
+        world::TerrainParams tp;
+        caveStats(tp, -6225, 11780, argc > 2 ? std::max(4, atoi(argv[2])) : 24);
+        return 0;
+    }
     if (argc > 1 && std::string(argv[1]) == "--mirror") {
         world::TerrainParams tp;
         mirror(tp, -99600 / 2, 188480 / 2, argc > 2 ? std::max(8, atoi(argv[2])) : 64);
