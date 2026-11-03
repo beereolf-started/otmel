@@ -126,41 +126,44 @@ bool caveAir(const TerrainParams& p, ChunkPos pos, const ColumnHeights& hm, uint
             // до какой глубины ход вообще может подняться вне входа (гашение ниже)
             const int32_t roofBand = soil + ROCK_ROOF;
 
+            // смешивание поля по трём осям: x, затем z, затем y
+            const auto tri = [&](int32_t wy, auto get) {
+                const int iy = (wy >> STEP_LOG2) - ny0;
+                const fx::q16 fy = (wy & mask) << FR;
+                const fx::q16 a = fx::lerp(get(nodes[iz][iy][ix]), get(nodes[iz][iy][ix + 1]), fx_);
+                const fx::q16 b = fx::lerp(get(nodes[iz + 1][iy][ix]), get(nodes[iz + 1][iy][ix + 1]), fx_);
+                const fx::q16 e = fx::lerp(get(nodes[iz][iy + 1][ix]), get(nodes[iz][iy + 1][ix + 1]), fx_);
+                const fx::q16 f = fx::lerp(get(nodes[iz + 1][iy + 1][ix]), get(nodes[iz + 1][iy + 1][ix + 1]), fx_);
+                return fx::lerp(fx::lerp(a, b, fz), fx::lerp(e, f, fz), fy);
+            };
+            const fx::q16 w2 = fx::mul(c.tunnelWidth, c.tunnelWidth);   // толщина хода входит в поле квадратом
+            const auto isEntrance = [&]() {
+                if (entrance < 0) entrance = !hm.nearWater[z][x] && entranceAt(wx, wz) ? 1 : 0;
+                return entrance == 1;
+            };
+
             // Пустота по самому полю: форму хода задаёт только шум, и ход идёт под тем углом, под
             // каким его провёл шум. Ничего вертикального здесь не прорезается.
             const auto natural = [&](int32_t wy) {
                 const int32_t d = top - wy;   // глубина под поверхностью, воксели
-                const int iy = (wy >> STEP_LOG2) - ny0;
-                const fx::q16 fy = (wy & mask) << FR;
-                // смешивание по трём осям: x, затем z, затем y
-                const auto tri = [&](auto get) {
-                    const fx::q16 a = fx::lerp(get(nodes[iz][iy][ix]), get(nodes[iz][iy][ix + 1]), fx_);
-                    const fx::q16 b = fx::lerp(get(nodes[iz + 1][iy][ix]), get(nodes[iz + 1][iy][ix + 1]), fx_);
-                    const fx::q16 e = fx::lerp(get(nodes[iz][iy + 1][ix]), get(nodes[iz][iy + 1][ix + 1]), fx_);
-                    const fx::q16 f = fx::lerp(get(nodes[iz + 1][iy + 1][ix]), get(nodes[iz + 1][iy + 1][ix + 1]), fx_);
-                    return fx::lerp(fx::lerp(a, b, fz), fx::lerp(e, f, fz), fy);
-                };
                 bool open = false;
                 if (maxT > 0) {
-                    fx::q16 t = tri([](const Node& n) { return n.tunnel; });
+                    fx::q16 t = tri(wy, [](const Node& n) { return n.tunnel; });
                     // Вне входа ход гаснет во всей полосе опоры: под лугом пещера обязана лежать ниже
                     // земли и ещё двух блоков породы. У входа не гаснет - там ход и должен выйти
                     // наружу. Под водой и у берега входов нет: вода прозрачна (Р34, Р37), дыра в дне
                     // русла была бы видна насквозь.
-                    if (t > 0 && d < roofBand) {
-                        if (entrance < 0) entrance = !hm.nearWater[z][x] && entranceAt(wx, wz) ? 1 : 0;
-                        // гашение строгое: вычитаем заведомо больше, чем ход может дать (толщина
-                        // хода - это и есть наибольшее значение поля), поэтому вне входа в полосе
-                        // опоры пустоты не бывает совсем. Так куски у самой поверхности вне входов
-                        // можно отбрасывать целиком, не считая их.
-                        if (!entrance)
-                            t -= fx::q16(int64_t(fx::mul(c.tunnelWidth, c.tunnelWidth)) * (roofBand - d + VOXELS_PER_BLOCK) /
-                                         VOXELS_PER_BLOCK);
-                    }
+                    //
+                    // гашение строгое: вычитаем заведомо больше, чем ход может дать (наибольшее
+                    // значение поля - это и есть толщина хода), поэтому вне входа в полосе опоры
+                    // пустоты не бывает совсем. Так куски у самой поверхности вне входов можно
+                    // отбрасывать целиком, не считая их.
+                    if (t > 0 && d < roofBand && !isEntrance())
+                        t -= fx::q16(int64_t(w2) * (roofBand - d + VOXELS_PER_BLOCK) / VOXELS_PER_BLOCK);
                     open = t > 0;
                 }
                 if (!open && maxH > 0 && d >= c.hallDepth - 8 * VOXELS_PER_BLOCK) {
-                    fx::q16 h = tri([](const Node& n) { return n.hall; });
+                    fx::q16 h = tri(wy, [](const Node& n) { return n.hall; });
                     // залы гаснут к верху на 8 блоках над hallDepth - потолок не плоский
                     if (d < c.hallDepth) h -= fx::q16(int64_t(fx::ONE * 3 / 10) * (c.hallDepth - d) / (8 * VOXELS_PER_BLOCK));
                     open = h > 0;
@@ -182,16 +185,41 @@ bool caveAir(const TerrainParams& p, ChunkPos pos, const ColumnHeights& hm, uint
             // выход получается ровно его продолжением, без отвесного среза по столбцу.
             if (bandHere && soil > 0 && top >= y0 && top - (y0 + CHUNK + 1) < soil) {
                 const int32_t from = std::min(top, y0 + CHUNK + 1);
+                const auto take = [&](int32_t wy) {
+                    const int yi = int(wy - y0);
+                    if (yi >= 0 && yi < CHUNK + 2) bits |= uint64_t(1) << yi;
+                };
                 int32_t ya = INT32_MIN;   // самая верхняя пустота в пределах толщи земли
                 // на воксель глубже самой земли: пустота, подошедшая прямо под её подошву, тоже
                 // оставляет землю висеть - камня под ней уже нет
                 for (int32_t wy = from; wy >= top - soil; --wy)
                     if (natural(wy)) { ya = wy; break; }
                 if (ya != INT32_MIN)
-                    for (int32_t wy = ya + 1; wy <= from; ++wy) {
-                        const int yi = int(wy - y0);
-                        if (yi >= 0 && yi < CHUNK + 2) bits |= uint64_t(1) << yi;   // только земля
+                    for (int32_t wy = ya + 1; wy <= from; ++wy) take(wy);   // только земля
+
+                // ЗЕМЛЯ СЫПУЧАЯ: у края ямы она не стоит стеной, а осыпается скатом, и отверстие в
+                // ней выходит воронкой - широкой сверху и сходящейся книзу к самому ходу. Иначе по
+                // краям остаются стоять комья, которые держатся ни на чём.
+                //
+                // Ширину берём прямо из поля: толщина хода входит в него квадратом, поэтому
+                // расширить ход вдвое - это прибавить к полю три его толщины, втрое - восемь. У
+                // подошвы земли прибавки нет вовсе (там ровно ход), у поверхности она наибольшая -
+                // это и даёт откос. Воронка бывает только у входа: вне входа земля не тронута.
+                // Идём снизу вверх по всей толще земли, а не по своей части куска: осыпание не знает
+                // границ кусков, и, если земля ушла из-под ног, всё что над ней уходит тоже - иначе
+                // наверху остаётся висеть отдельный ком.
+                if (isEntrance()) {
+                    bool gone = false;
+                    for (int32_t wy = top - soil + 1; wy <= from; ++wy) {
+                        if (!gone) {
+                            const int64_t up = soil - (top - wy);   // 0 у подошвы земли, soil у поверхности
+                            const fx::q16 t = tri(wy, [](const Node& n) { return n.tunnel; });
+                            const fx::q16 wide = fx::q16(int64_t(w2) * 4 * up * (up + soil) / (int64_t(soil) * soil));
+                            gone = t + wide > 0;
+                        }
+                        if (gone) take(wy);
                     }
+                }
             }
             air[z][x] = bits;
             any |= bits != 0;

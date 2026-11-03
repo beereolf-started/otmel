@@ -350,12 +350,14 @@ void columnHeights(const TerrainParams& p, int32_t chunkX, int32_t chunkZ, Colum
                     out.nearWater[z][x] = true;
                 }
     }
-    // Р79: разрез - один на кусок, в его середине (см. ColumnHeights::rock)
-    {
-        const int32_t mx = x0 + 1 + CHUNK / 2, mz = z0 + 1 + CHUNK / 2;
-        const Relief rm = reliefAt(p, mx, mz, slow.at(mx, mz), 0, &rivers);
-        rockColumn(p, mx, mz, rm, out.rock);
-    }
+    // Р79: разрез - в четырёх углах куска (см. ColumnHeights::rock). Углы лежат на границах кусков
+    // и потому общие с соседями: что посчитает этот кусок, то посчитает и сосед, шва не возникает.
+    for (int j = 0; j < 2; ++j)
+        for (int i = 0; i < 2; ++i) {
+            const int32_t mx = x0 + 1 + i * CHUNK, mz = z0 + 1 + j * CHUNK;
+            const Relief rm = reliefAt(p, mx, mz, slow.at(mx, mz), 0, &rivers);
+            rockColumn(p, mx, mz, rm, out.rock[j][i]);
+        }
     // климат и покров - только своим столбцам, не кайме; у воды рек и озёр - песок (Р29)
     for (int z = 0; z < CHUNK; ++z)
         for (int x = 0; x < CHUNK; ++x)

@@ -182,14 +182,15 @@ struct RockColumn {
 struct Relief;
 // разрез столбца (x, z) с рельефом r; порода вокселя (x, y, z) по разрезу
 void rockColumn(const TerrainParams& p, int32_t x, int32_t z, const Relief& r, RockColumn& out);
-Material rockAt(const RockColumn& c, int32_t x, int32_t y, int32_t z);
+Material rockAt(const RockColumn (&c)[2][2], int32_t x, int32_t y, int32_t z);
 
 // Материал нетронутого рельефа - формулой от высоты поверхности и покрова столбца (Р2, Р22): выше поверхности
 // воздух, в верхнем вокселе покров, под ним 3 блока подпокровного слоя, ниже порода (Р77). Его же пишет fillChunk;
 // сетке нетронутого куска массив вокселей не нужен вовсе - материал нужен только у видимых граней.
 // Р28: выше дна до уровня воды столбца (water - верхний воксель воды, NO_WATER - сухо) - вода.
 constexpr int32_t NO_WATER = INT32_MIN;
-inline Material columnMaterial(int32_t top, Cover cv, int32_t wy, int32_t water, const RockColumn& rc, int32_t wx, int32_t wz) {
+inline Material columnMaterial(int32_t top, Cover cv, int32_t wy, int32_t water, const RockColumn (&rc)[2][2],
+                               int32_t wx, int32_t wz) {
     if (wy > top) return wy <= water ? WATER : AIR;
     if (cv.soil <= 0) return rockAt(rc, wx, wy, wz);   // Р79: круча - земли нет вовсе, сразу порода
     if (wy == top) return cv.top;
@@ -211,7 +212,11 @@ struct ColumnHeights {
     // просто постоянно. Поэтому считаем один раз в середине куска. Это и есть та цена, из-за которой
     // с появлением пород постройка столбца подорожала вчетверо, а движение стало дёргаться на каждой
     // новой порции кусков.
-    RockColumn rock;
+    // Р79: разрез известен в ЧЕТЫРЁХ УГЛАХ куска ([z][x]), а не в одной его середине. Углы общие
+    // с соседними кусками, поэтому разрез непрерывен через границу, а воксель между углами берёт
+    // один из них жребием по весам - переход от породы к породе размывается крапом вместо прямой
+    // черты по краю куска.
+    RockColumn rock[2][2];
     int32_t minH, maxH;                // Р37: нижняя - по дну (вода прозрачна - дно под ней видно), верхняя - по
                                        // поверхности max(дно, вода)
     bool nearWater[CHUNK + 2][CHUNK + 2];   // Р37: вода над дном или берег - здесь нет входов в пещеры

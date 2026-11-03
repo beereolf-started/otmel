@@ -74,7 +74,7 @@ void walkRocks(const world::TerrainParams& p, int32_t cx0, int32_t cz0, int cols
     std::vector<int> seq;
     for (int k = 0; k < cols; ++k) {
         world::columnHeights(p, cx0 + k, cz0, hm);
-        for (int x = 0; x < world::CHUNK; x += 8) seq.push_back(hm.rock.id[0]);
+        for (int x = 0; x < world::CHUNK; x += 8) seq.push_back(hm.rock[0][0].id[0]);
     }
     std::printf("разведка пород: %d столбцов кусков на восток от (%d, %d)\n", cols, cx0, cz0);
     int runs = 0;
@@ -198,8 +198,9 @@ void probe(const world::TerrainParams& p, int32_t bx, int32_t bz, int cols) {
         const int32_t cyTop = top >= 0 ? top / world::CHUNK : -((-top + world::CHUNK - 1) / world::CHUNK);
         bool has[5];
         for (int j = 0; j < 5; ++j) has[j] = world::caveAir(p, world::ChunkPos{cx, cyTop - j, cz}, hm, air[j]);
-        std::printf("  x=%7.2f бл: верх %6.1f бл, земли %5.2f бл;", vx / 16.0, top / 16.0,
-                    hm.cover[lz][lx].soil / 16.0);
+        const world::Material deep = world::rockAt(hm.rock, vx, top - 10 * world::VOXELS_PER_BLOCK, vz);
+        std::printf("  x=%7.2f бл: верх %6.1f бл, земли %5.2f бл, на 10 бл ниже %-14s;", vx / 16.0, top / 16.0,
+                    hm.cover[lz][lx].soil / 16.0, world::rockDef(int(deep) - world::ROCK_FIRST).name);
         int runs = 0;
         int32_t runFrom = INT32_MIN, prev = INT32_MIN;
         for (int j = 0; j < 5; ++j) {

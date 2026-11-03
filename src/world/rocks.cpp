@@ -113,7 +113,17 @@ void rockColumn(const TerrainParams& p, int32_t x, int32_t z, const Relief& r, R
     }
 }
 
-Material rockAt(const RockColumn& c, int32_t x, int32_t y, int32_t z) {
+Material rockAt(const RockColumn (&corner)[2][2], int32_t x, int32_t y, int32_t z) {
+    // Р79: какой из четырёх углов куска берём - решает жребий, и выпадает угол тем чаще, чем он
+    // ближе. У самой границы куска почти всегда выпадает её угол, а он общий с соседом - значит
+    // переход через границу незаметен; в середине углы выпадают поровну, и две породы смешиваются
+    // крапом. Прежде разрез был один на кусок, и породы менялись прямой чертой по его краю.
+    const auto part = [](int32_t v) { return v - (v >= 0 ? v / CHUNK : -((-v + CHUNK - 1) / CHUNK)) * CHUNK; };
+    const uint32_t hp = gen::hash3(x, y + 0x5EED, z, ROCK_SEED);
+    const int ix = int32_t((hp & 0xFFFFu) * uint32_t(CHUNK) >> 16) < part(x) ? 1 : 0;
+    const int iz = int32_t((hp >> 16) * uint32_t(CHUNK) >> 16) < part(z) ? 1 : 0;
+    const RockColumn& c = corner[iz][ix];
+
     int i = 0;
     while (i < ROCK_LAYERS - 1 && y <= c.bound[i]) ++i;
     const uint32_t h = gen::hash3(x, y, z, ROCK_SEED);
