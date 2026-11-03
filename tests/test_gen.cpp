@@ -434,7 +434,6 @@ int main() {
         world::ColumnHeights hm;
         int clx, clz;
         landChunk(tp, clx, clz);
-        const int32_t ROOF = 2 * world::VOXELS_PER_BLOCK;   // столько породы обязано держать свод
         const auto isRock = [](world::Material m) {
             return m == world::STONE || (m >= world::ROCK_FIRST && m <= world::ROCK_LAST);
         };
@@ -464,7 +463,8 @@ int main() {
                         if (ya == INT32_MIN) continue;
                         ++voids;
                         if (ya >= top) { ++holes; continue; }   // пустота выходит наружу - над ней ничего
-                        for (int32_t y = ya + 1; y <= std::min<int32_t>(top, ya + ROOF); ++y) {
+                        {
+                            const int32_t y = ya + 1;   // что лежит прямо на своде: обязано быть камнем
                             const world::Material m = world::columnMaterial(top, hm.cover[lz][lx], y,
                                                                            hm.water[lz + 1][lx + 1], hm.rock, wx, wz);
                             if (isRock(m)) continue;
@@ -485,7 +485,7 @@ int main() {
             std::printf("  первая крышка: блок (%.1f, %.1f, %.1f)\n", lidAt[0] / 16.0, lidAt[1] / 16.0, lidAt[2] / 16.0);
         CHECK(voids > 0, "у поверхности есть пустоты - есть что проверять");
         CHECK(holes > 0, "пустоты выходят наружу - лазы есть");
-        CHECK(lids == 0, "над пустотой либо два блока породы, либо ничего (земля крышкой не висит)");
+        CHECK(lids == 0, "над пустотой либо камень, либо ничего (земля крышкой не висит)");
     }
 
     // ─── Р29: реки и озёра ───────────────────────────────────────────────────────────────
