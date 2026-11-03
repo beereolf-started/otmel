@@ -183,23 +183,24 @@ void caveStats(const world::TerrainParams& p, int32_t cx0, int32_t cz0, int cols
  * Разбор места по вокселям: ряд соседних столбцов, и в каждом - где пустота, где земля, где порода.
  * Нужен, чтобы судить о висящих слитках и обвалах числом, а не по картинке.
  */
-void probe(const world::TerrainParams& p, int32_t bx, int32_t bz, int cols) {
+void probe(const world::TerrainParams& p, int32_t bx, int32_t bz, int cols, bool alongZ = false) {
     static world::ColumnHeights hm;
     static uint64_t air[5][world::CHUNK + 2][world::CHUNK + 2];
     const int32_t vx0 = bx * world::VOXELS_PER_BLOCK, vz = bz * world::VOXELS_PER_BLOCK;
     std::printf("разбор у блока (%d, %d), %d столбцов на восток\n", bx, bz, cols);
     for (int k = 0; k < cols; ++k) {
-        const int32_t vx = vx0 + k;
+        const int32_t vx = vx0 + (alongZ ? 0 : k * world::VOXELS_PER_BLOCK);   // шаг - блок, а не воксель
         const int32_t cx = vx >= 0 ? vx / world::CHUNK : -((-vx + world::CHUNK - 1) / world::CHUNK);
-        const int32_t cz = vz >= 0 ? vz / world::CHUNK : -((-vz + world::CHUNK - 1) / world::CHUNK);
+        const int32_t vzk = vz + (alongZ ? k * world::VOXELS_PER_BLOCK : 0);
+        const int32_t cz = vzk >= 0 ? vzk / world::CHUNK : -((-vzk + world::CHUNK - 1) / world::CHUNK);
         world::columnHeights(p, cx, cz, hm);
-        const int lx = int(vx - cx * world::CHUNK), lz = int(vz - cz * world::CHUNK);
+        const int lx = int(vx - cx * world::CHUNK), lz = int(vzk - cz * world::CHUNK);
         const int32_t top = hm.h[lz + 1][lx + 1];
         const int32_t cyTop = top >= 0 ? top / world::CHUNK : -((-top + world::CHUNK - 1) / world::CHUNK);
         bool has[5];
         for (int j = 0; j < 5; ++j) has[j] = world::caveAir(p, world::ChunkPos{cx, cyTop - j, cz}, hm, air[j]);
-        const world::Material deep = world::rockAt(hm.rock, vx, top - 10 * world::VOXELS_PER_BLOCK, vz);
-        std::printf("  x=%7.2f бл: верх %6.1f бл, земли %5.2f бл, на 10 бл ниже %-14s;", vx / 16.0, top / 16.0,
+        const world::Material deep = world::rockAt(hm.rock, vx, top - 10 * world::VOXELS_PER_BLOCK, vzk);
+        std::printf("  %7.2f бл: верх %6.1f бл, земли %5.2f бл, на 10 бл ниже %-14s;", (alongZ ? vzk : vx) / 16.0, top / 16.0,
                     hm.cover[lz][lx].soil / 16.0, world::rockDef(int(deep) - world::ROCK_FIRST).name);
         int runs = 0;
         int32_t runFrom = INT32_MIN, prev = INT32_MIN;
@@ -226,7 +227,7 @@ void probe(const world::TerrainParams& p, int32_t bx, int32_t bz, int cols) {
 int main(int argc, char** argv) {
     if (argc > 3 && std::string(argv[1]) == "--probe") {
         world::TerrainParams tp;
-        probe(tp, atoi(argv[2]), atoi(argv[3]), argc > 4 ? std::max(2, atoi(argv[4])) : 24);
+        probe(tp, atoi(argv[2]), atoi(argv[3]), argc > 4 ? std::max(2, atoi(argv[4])) : 24, argc > 5);
         return 0;
     }
     if (argc > 1 && std::string(argv[1]) == "--caves") {

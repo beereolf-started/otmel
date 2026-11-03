@@ -65,6 +65,12 @@ bool caveEntranceNear(const TerrainParams& p, int32_t cx, int32_t cz) {
 constexpr int32_t ROCK_ROOF = 2 * VOXELS_PER_BLOCK;
 constexpr int32_t SOIL_DEPTH = 3 * VOXELS_PER_BLOCK + 1;   // покров и подпокровный слой
 constexpr int32_t ROOF_BAND = SOIL_DEPTH + ROCK_ROOF;      // вся полоса опоры: пять блоков
+// Р79: на сколько шум входа не дотягивает до порога, а гашение уже ослаблено. Это ширина ската у
+// края отверстия: в середине входа гашения нет, за этой полосой оно полное.
+constexpr fx::q16 ENTRANCE_EDGE = fx::ONE / 4;
+// Р79: сколько камня между сводом и землёй ещё держит всю её толщу. Тоньше - земля осыпается тем
+// сильнее, чем тоньше камень; это и задаёт откос у края отверстия.
+constexpr int32_t SLUMP = 2 * VOXELS_PER_BLOCK;
 
 bool caveAir(const TerrainParams& p, ChunkPos pos, const ColumnHeights& hm, uint64_t air[CHUNK + 2][CHUNK + 2]) {
     const CaveParams& c = p.caves;
@@ -79,12 +85,9 @@ bool caveAir(const TerrainParams& p, ChunkPos pos, const ColumnHeights& hm, uint
             minTop = std::min(minTop, hm.h[z][x]);
         }
     if (maxDepth < 0) return false;   // весь кусок над поверхностью
-    const auto entranceAt = [&](int32_t x, int32_t z) {
-        return gen::simplex2(x, z, c.entranceCellLog2, caveSeed(p.seed, ENTRANCE)) > c.entranceFrom;
-    };
     const bool entranceArea =
         gen::simplex2(x0 + CHUNK / 2, z0 + CHUNK / 2, c.entranceCellLog2, caveSeed(p.seed, ENTRANCE)) >=
-        c.entranceFrom - fx::ONE / 10;
+        c.entranceFrom - ENTRANCE_EDGE;
     if (maxDepth < ROOF_BAND && !entranceArea) return false;
     // Полоса опоры задевает этот кусок: значит в нём может осыпаться кровля, а сама пустота под ней
     // лежит ниже, в соседнем куске снизу - узлы приходится считать с запасом вниз.
@@ -137,9 +140,26 @@ bool caveAir(const TerrainParams& p, ChunkPos pos, const ColumnHeights& hm, uint
                 return fx::lerp(fx::lerp(a, b, fz), fx::lerp(e, f, fz), fy);
             };
             const fx::q16 w2 = fx::mul(c.tunnelWidth, c.tunnelWidth);   // толщина хода входит в поле квадратом
-            const auto isEntrance = [&]() {
-                if (entrance < 0) entrance = !hm.nearWater[z][x] && entranceAt(wx, wz) ? 1 : 0;
-                return entrance == 1;
+            // Р79: ГАШЕНИЕ У ПОВЕРХНОСТИ - ПЛАВНОЕ, а не «вход или не вход». Признак был двоичный: в
+            // одном столбце ход не гасился вовсе и выходил наружу, а в соседнем гасился полностью, и
+            // под поверхностью не оставалось пустоты ни на одном уровне. Край отверстия выходил
+            // отвесной стеной в пять блоков. Теперь доля гашения идёт тем же шумом входа: в середине
+            // входа - ноль, к его краю растёт до единицы, и кровля утончается постепенно, а край
+            // отверстия получается скатом.
+            const auto entranceDamp = [&]() -> fx::q16 {
+                if (entrance < 0) {
+                    fx::q16 v = fx::ONE;
+                    // под водой и у берега входов нет: вода прозрачна (Р34, Р37), дыра в дне русла
+                    // была бы видна насквозь
+                    if (!hm.nearWater[z][x]) {
+                        const fx::q16 e = gen::simplex2(wx, wz, c.entranceCellLog2, caveSeed(p.seed, ENTRANCE));
+                        if (e >= c.entranceFrom) v = 0;
+                        else if (e > c.entranceFrom - ENTRANCE_EDGE)
+                            v = fx::q16(int64_t(c.entranceFrom - e) * fx::ONE / ENTRANCE_EDGE);
+                    }
+                    entrance = int(v);
+                }
+                return fx::q16(entrance);
             };
 
             // Пустота по самому полю: форму хода задаёт только шум, и ход идёт под тем углом, под
@@ -154,12 +174,13 @@ bool caveAir(const TerrainParams& p, ChunkPos pos, const ColumnHeights& hm, uint
                     // наружу. Под водой и у берега входов нет: вода прозрачна (Р34, Р37), дыра в дне
                     // русла была бы видна насквозь.
                     //
-                    // гашение строгое: вычитаем заведомо больше, чем ход может дать (наибольшее
-                    // значение поля - это и есть толщина хода), поэтому вне входа в полосе опоры
-                    // пустоты не бывает совсем. Так куски у самой поверхности вне входов можно
-                    // отбрасывать целиком, не считая их.
-                    if (t > 0 && d < roofBand && !isEntrance())
-                        t -= fx::q16(int64_t(w2) * (roofBand - d + VOXELS_PER_BLOCK) / VOXELS_PER_BLOCK);
+                    // в полную силу гашение строгое: вычитаем заведомо больше, чем ход может дать
+                    // (наибольшее значение поля - это и есть толщина хода), поэтому вдали от входа в
+                    // полосе опоры пустоты не бывает совсем. Так куски у самой поверхности вне
+                    // входов можно отбрасывать целиком, не считая их.
+                    if (t > 0 && d < roofBand)
+                        t -= fx::mul(fx::q16(int64_t(w2) * (roofBand - d + VOXELS_PER_BLOCK) / VOXELS_PER_BLOCK),
+                                     entranceDamp());
                     open = t > 0;
                 }
                 if (!open && maxH > 0 && d >= c.hallDepth - 8 * VOXELS_PER_BLOCK) {
@@ -189,19 +210,29 @@ bool caveAir(const TerrainParams& p, ChunkPos pos, const ColumnHeights& hm, uint
                     const int yi = int(wy - y0);
                     if (yi >= 0 && yi < CHUNK + 2) bits |= uint64_t(1) << yi;
                 };
-                int32_t ya = INT32_MIN;   // самая верхняя пустота в пределах толщи земли
-                // на воксель глубже самой земли: пустота, подошедшая прямо под её подошву, тоже
-                // оставляет землю висеть - камня под ней уже нет
-                for (int32_t wy = from; wy >= top - soil; --wy)
+                // Ищем самую верхнюю пустоту не только в самой земле, но и на два блока ниже её
+                // подошвы: по тому, сколько камня осталось между сводом и землёй, и решается,
+                // сколько земли ещё держится.
+                int32_t ya = INT32_MIN;
+                for (int32_t wy = from; wy >= top - soil - SLUMP; --wy)
                     if (natural(wy)) { ya = wy; break; }
-                if (ya != INT32_MIN)
-                    for (int32_t wy = ya + 1; wy <= from; ++wy) take(wy);   // только земля
+                if (ya != INT32_MIN) {
+                    // Земля сыпучая: она не обрывается отвесной стенкой в три блока там, где свод
+                    // только-только задел её подошву. Чем тоньше камень между сводом и землёй, тем
+                    // меньше земли держится; когда камня не остаётся вовсе - не остаётся и земли.
+                    //
+                    // Снимаем землю СВЕРХУ: сыплется то, что выше, а низ ложится на камень. Свод
+                    // поднимается к поверхности полого, поэтому и земля сходит на нет полого - у
+                    // отверстия получается воронка, а её даёт сама пустота, безо всякого рисования.
+                    const int32_t rock = (top - soil) - ya;   // камня между сводом и землёй, вокселей
+                    const int32_t keep = rock <= 0 ? 0 : rock >= SLUMP ? soil : soil * rock / SLUMP;
+                    for (int32_t wy = top - soil + 1 + keep; wy <= from; ++wy) take(wy);   // только земля
+                }
 
                 // Воронку рисовать не надо: там, где ход выходит пологим углом, её даёт сама
-                // пустота. Чинить надо только её верх - обрубок земли над выходом, чем и занято
-                // правило выше. Расширять ход прибавкой к полю нельзя: прибавка открывает не
-                // окрестность хода, а всю область, где поле близко к нулю, и на пологом склоне это
-                // целые поля выдранной земли с отвесными краями, далеко от любого отверстия.
+                // пустота. Расширять ход прибавкой к полю нельзя: прибавка открывает не окрестность
+                // хода, а всю область, где поле близко к нулю, и на пологом склоне это целые поля
+                // выдранной земли с отвесными краями, далеко от любого отверстия.
             }
             air[z][x] = bits;
             any |= bits != 0;
