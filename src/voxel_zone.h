@@ -51,6 +51,10 @@ private:
     bool inWindow(int32_t cx, int32_t cz, int margin = 0) const;
     void moveWindow(int32_t ccx, int32_t ccz);
     void reprioritize(glm::vec3 eye, glm::vec3 forward, const Frustum& fr);
+    // радиус зоны по горизонтали на нынешней высоте: зона - шар, а не цилиндр
+    int32_t horizRadius(glm::vec3 eye) const;
+    mutable float groundY_ = 0;            // высота земли под камерой (блоки), из её построенного столбца
+    int32_t rHoriz_ = 1;                   // нынешний радиус зоны по горизонтали (столбцы)
     void release(Column& c);
     void finishMask();
 

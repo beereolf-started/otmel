@@ -73,7 +73,7 @@ void walkRocks(const world::TerrainParams& p, int32_t cx0, int32_t cz0, int cols
     std::vector<int> seq;
     for (int k = 0; k < cols; ++k) {
         world::columnHeights(p, cx0 + k, cz0, hm);
-        for (int x = 0; x < world::CHUNK; x += 8) seq.push_back(hm.rock[0][x].id[0]);
+        for (int x = 0; x < world::CHUNK; x += 8) seq.push_back(hm.rock.id[0]);
     }
     std::printf("разведка пород: %d столбцов кусков на восток от (%d, %d)\n", cols, cx0, cz0);
     int runs = 0;

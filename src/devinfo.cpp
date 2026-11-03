@@ -86,7 +86,7 @@ struct ChunkCache {
         }
         const int lx = vx - cx * CHUNK, lz = vz - cz * CHUNK, ly = vy - cy * CHUNK;
         const world::Material m = world::columnMaterial(hm.h[lz + 1][lx + 1], hm.cover[lz][lx], vy,
-                                                        hm.water[lz + 1][lx + 1], hm.rock[lz][lx], vx, vz);
+                                                        hm.water[lz + 1][lx + 1], hm.rock, vx, vz);
         if (caves && ly >= 0 && ly < 64 && ((air[lz + 1][lx + 1] >> ly) & 1)) return world::AIR;
         return m;
     }

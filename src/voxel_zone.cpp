@@ -90,10 +90,33 @@ void VoxelZone::moveWindow(int32_t ccx, int32_t ccz) {
     maskDirty_ = true;
 }
 
+/**
+ * Радиус зоны по горизонтали на нынешней высоте (столбцы). Высоту земли под камерой берём из её же
+ * построенного столбца - верх его самого высокого куска; считать для этого ничего не нужно. Пока
+ * столбец не готов, держим прежнее значение.
+ */
+int32_t VoxelZone::horizRadius(glm::vec3 eye) const {
+    auto it = ready_.find(key(ccx_, ccz_));
+    if (it != ready_.end() && !it->second.chunks.empty()) {
+        int32_t top = INT32_MIN;
+        for (const ChunkMesh& m : it->second.chunks) top = std::max(top, m.origin.y + world::CHUNK);
+        groundY_ = float(top) / float(world::VOXELS_PER_BLOCK);
+    }
+    const float dy = std::max(0.0f, eye.y - groundY_) / float(BLOCKS_PER_COLUMN);   // в столбцах
+    const float r2 = float(radius_) * float(radius_) - dy * dy;
+    return r2 <= 1.0f ? 1 : int32_t(std::sqrt(r2));
+}
+
 void VoxelZone::reprioritize(glm::vec3 eye, glm::vec3 forward, const Frustum& fr) {
     // ждущие столбцы окна - по весу: квадрат расстояния, вне взгляда - вчетверо дальше; ближние - в конец.
     // Готовые столбцы рядом с камерой, построенные мельче нужного (Р26: подземный ярус), - тоже в очередь.
     // Р27: и столбцы яруса, у которых сменились заглушки (был краем - стал серединой или наоборот).
+    // ШАР, А НЕ ЦИЛИНДР. Радиус по горизонтали сжимается по мере подъёма: на высоте dy над землёй
+    // от шара радиуса R остаётся круг радиуса sqrt(R² - dy²), а выше R под нами не остаётся ничего -
+    // там и так рисуются сглаженные дальние куски местности. Прежде круг не сужался вовсе, и, поднявшись,
+    // игрок тащил за собой полный диск вокселей, которых с высоты всё равно не разглядеть.
+    const int32_t rHoriz = horizRadius(eye);
+    rHoriz_ = rHoriz;   // той же мерой считаем «сколько ещё не построено»
     struct Job { int64_t w; int32_t cx, cz, cyMin; uint8_t caps; };
     std::vector<Job> jobs;
     for (int z = 0; z < side_; ++z)
@@ -115,7 +138,7 @@ void VoxelZone::reprioritize(glm::vec3 eye, glm::vec3 forward, const Frustum& fr
             // ШАР, А НЕ КОРОБКА: за кругом радиуса не строим ничего. Углы квадратного окна - это
             // лишняя четверть всей работы, и именно они дальше всего от игрока. Там, где вокселей
             // нет, рисуются сглаженные дальние куски местности - как и везде за пределами зоны.
-            if (d2 > int64_t(radius_) * radius_) continue;
+            if (d2 > int64_t(rHoriz) * rHoriz) continue;
             const float bx = float(cx * BLOCKS_PER_COLUMN), bz = float(cz * BLOCKS_PER_COLUMN);
             // высота столбца до постройки неизвестна - коробка по правдоподобным высотам рельефа
             const bool seen = fr.visible({bx, eye.y - 300.0f, bz}, {bx + BLOCKS_PER_COLUMN, eye.y + 300.0f, bz + BLOCKS_PER_COLUMN});
@@ -207,7 +230,7 @@ void VoxelZone::finishMask() {
             const int m = mask_[size_t(z) * side_ + x];
             // считаем только то, что вообще собирались строить: углы окна вне круга не наши
             const int64_t dx = int64_t(x) - radius_, dz = int64_t(z) - radius_;
-            if (dx * dx + dz * dz <= int64_t(radius_) * radius_) { wanted += 1; ready += m; }
+            if (dx * dx + dz * dz <= int64_t(rHoriz_) * rHoriz_) { wanted += 1; ready += m; }
             sat_[size_t(z + 1) * w + x + 1] = m + sat_[size_t(z) * w + x + 1] + sat_[size_t(z + 1) * w + x] - sat_[size_t(z) * w + x];
         }
     stats_.ready = ready;

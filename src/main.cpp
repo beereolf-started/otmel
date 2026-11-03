@@ -139,13 +139,8 @@ public:
 
 private:
     void run() {
-        // ПРИОРИТЕТ НИЖЕ ГЛАВНОГО ПОТОКА (Р79). Рабочие постройки мира давно идут с пониженным
-        // приоритетом, а эти группы (зоны, деревья) шли с обычным - и на машине, где потоков больше,
-        // чем ядер, главный поток голодал. Замер показывал это прямо: работа в кадре 5-11 мс, а от
-        // прошлого кадра проходило 133-300 мс, причём время уходило ВНЕ всех измеряемых участков.
-        // Это и есть фризы при продолжительном движении: пока мир строится без остановки, рисовать
-        // оказывается некогда.
-        SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+        // Приоритет этих групп НЕ понижаем: кадр их дожидается (зоны, спрайты леса), и с пониженным
+        // приоритетом он ждёт дольше. Пробовали понижать - замер не показал улучшения, откатили.
         for (;;) {
             std::function<void()> job;
             {
@@ -830,8 +825,7 @@ int main(int argc, char** argv) {
                                 }
                         };
                         std::vector<std::thread> th;
-                        const auto rowsLow = [&rows] { SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL); rows(); };
-                        for (unsigned t = 0; t < std::max(2u, std::thread::hardware_concurrency()); ++t) th.emplace_back(rowsLow);
+                        for (unsigned t = 0; t < std::max(2u, std::thread::hardware_concurrency()); ++t) th.emplace_back(rows);
                         for (auto& t : th) t.join();
                         for (int j = 32; j < LIPG - 32; ++j)
                             for (int i = 32; i < LIPG - 32; ++i) {
@@ -1354,8 +1348,7 @@ int main(int argc, char** argv) {
                         std::vector<std::thread> th;
                         // первый раз (сотни областей, кадр ждёт) - все ядра, дальше - половина
                         const unsigned hw = std::max(2u, std::thread::hardware_concurrency());
-                        const auto workLow = [&work] { SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL); work(); };
-                        for (unsigned t = 0; t < (need.size() > 64 ? hw : hw / 2); ++t) th.emplace_back(workLow);
+                        for (unsigned t = 0; t < (need.size() > 64 ? hw : hw / 2); ++t) th.emplace_back(work);
                         for (auto& t : th) t.join();
                     } else {
                         work();

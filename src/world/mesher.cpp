@@ -196,7 +196,7 @@ void meshImpl(ChunkPos pos, const Chunk* vox, const ColumnHeights& hm, const uin
     // ─── 2-4. Грани грунта, затем воды: вода - в конце сетки (stats.waterQuads) ──
     emitFaces(col, nullptr, [&](int x, int y, int z) {
         return vox ? vox->at(x, y, z) : columnMaterial(hm.h[z + 1][x + 1], hm.cover[z][x], y0 + y, hm.water[z + 1][x + 1],
-                                                       hm.rock[z][x], x0w + x, z0w + z);
+                                                       hm.rock, x0w + x, z0w + z);
     }, out, stats.quads);
     if (!anyWater) return;
     rotateMasks(wcol, wet);

@@ -236,7 +236,6 @@ void columnHeights(const TerrainParams& p, int32_t chunkX, int32_t chunkZ, Colum
     for (int z = 0; z < CHUNK + 2; ++z) {
         for (int x = 0; x < CHUNK + 2; ++x) {
             const Relief r = reliefAt(p, x0 + x, z0 + z, slow.at(x0 + x, z0 + z), 0, &rivers);
-            if (x >= 1 && z >= 1 && x <= CHUNK && z <= CHUNK) rockColumn(p, x0 + x, z0 + z, r, out.rock[z - 1][x - 1]);   // Р77
             out.h[z][x] = r.height;
             out.water[z][x] = r.water;
             shore[z][x] = r.shore;
@@ -352,6 +351,12 @@ void columnHeights(const TerrainParams& p, int32_t chunkX, int32_t chunkZ, Colum
                     out.nearWater[z][x] = true;
                 }
     }
+    // Р79: разрез - один на кусок, в его середине (см. ColumnHeights::rock)
+    {
+        const int32_t mx = x0 + 1 + CHUNK / 2, mz = z0 + 1 + CHUNK / 2;
+        const Relief rm = reliefAt(p, mx, mz, slow.at(mx, mz), 0, &rivers);
+        rockColumn(p, mx, mz, rm, out.rock);
+    }
     // климат и покров - только своим столбцам, не кайме; у воды рек и озёр - песок (Р29)
     for (int z = 0; z < CHUNK; ++z)
         for (int x = 0; x < CHUNK; ++x)
@@ -377,7 +382,7 @@ void fillChunk(const ColumnHeights& heights, Chunk& c) {
         for (int x = 0; x < CHUNK; ++x)
             for (int y = 0; y < CHUNK; ++y)
                 c.at(x, y, z) = columnMaterial(heights.h[z + 1][x + 1], heights.cover[z][x], y0 + y, heights.water[z + 1][x + 1],
-                                               heights.rock[z][x], c.pos.x * CHUNK + x, c.pos.z * CHUNK + z);
+                                               heights.rock, c.pos.x * CHUNK + x, c.pos.z * CHUNK + z);
 }
 
 int32_t waterLevelAt(const TerrainParams&, const Relief& r) { return r.water; }
