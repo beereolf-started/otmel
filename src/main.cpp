@@ -532,6 +532,7 @@ int main(int argc, char** argv) {
     render::CommandList frame;
     render::FrameStats fs;
     FarTerrain::Stats farStats;
+    int64_t farBuiltTotal = 0;
     auto last = clock_t_::now(), titleAt = last;
     const auto startAt = last;
     // Р43: поле течений вокруг камеры - в фоне; пересчёт, когда камера ушла от центра поля на четверть
@@ -1383,6 +1384,7 @@ int main(int argc, char** argv) {
         for (const auto& [mesh, origin] : rulerMeshes) frame.drawChunk(mesh, origin);
         const auto tFar = clock_t_::now();
         farTerrain.frame(lod, eye, fr, voxels, frame, farStats);
+        farBuiltTotal += farStats.built;   // счёт за весь полёт: farStats.built обнуляется сводкой
         part[1] = std::max(part[1], msSince(tFar));
         lap(7);
         const auto tExe = clock_t_::now();
@@ -1433,6 +1435,8 @@ int main(int argc, char** argv) {
                     journal::info("окно", "худшее за кадр по частям: зона вокселей {:.2f} мс (сдвиг окна {:.2f}, очередь {:.2f}, выгрузка {:.2f}, маска {:.2f}), дальние плитки {:.2f} мс, отрисовка {:.2f} мс",
                                   part[0], voxels.stats().worstMs[0], voxels.stats().worstMs[1], voxels.stats().worstMs[2],
                                   voxels.stats().worstMs[3], part[1], part[2]);
+                    journal::info("окно", "плиток построено за полёт {}, подменено родителем {}, в кэше {}; столбцов построено {}",
+                                  farBuiltTotal, farStats.substituted, farStats.cached, voxels.stats().built);
                     running = false;
                 }
             }
