@@ -708,7 +708,7 @@ int main(int argc, char** argv) {
         const glm::mat4 viewProjGpu = proj * glm::lookAt(eye - originOld, eye - originOld + fwd, glm::vec3(0, 1, 0));
         lap(0);
         const auto tUpd = clock_t_::now();
-        voxels.update(eye, fr, 4.0);   // выгрузка готовых столбцов - не дольше 4 мс за кадр
+        voxels.update(eye, fwd, fr, 4.0);   // выгрузка готовых столбцов - не дольше 4 мс за кадр
         part[0] = std::max(part[0], msSince(tUpd));
         lap(1);
 

@@ -31,7 +31,8 @@ public:
     void releaseAll();
 
     // кадр: сдвиг окна за камерой, очередь, выгрузка готового (не дольше uploadBudgetMs), маска для шейдера
-    void update(glm::vec3 eye, const Frustum& fr, double uploadBudgetMs);
+    // forward - куда смотрит камера (единичный): за спиной грузим в последнюю очередь
+    void update(glm::vec3 eye, glm::vec3 forward, const Frustum& fr, double uploadBudgetMs);
     // куски готовых столбцов окна, видимые камере
     int draw(const Frustum& fr, render::CommandList& out) const;
     // прямоугольник в блоках целиком покрыт готовыми вокселями (таблица сумм по маске, 4 чтения)
@@ -49,7 +50,7 @@ private:
     static uint64_t key(int32_t cx, int32_t cz) { return uint64_t(uint32_t(cx)) << 32 | uint32_t(cz); }
     bool inWindow(int32_t cx, int32_t cz, int margin = 0) const;
     void moveWindow(int32_t ccx, int32_t ccz);
-    void reprioritize(glm::vec3 eye, const Frustum& fr);
+    void reprioritize(glm::vec3 eye, glm::vec3 forward, const Frustum& fr);
     void release(Column& c);
     void finishMask();
 

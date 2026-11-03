@@ -19,7 +19,13 @@ int32_t quantize(int32_t v) { return int32_t(std::floor(float(v) / UNDER_STEP)) 
 }  // namespace
 
 VoxelZone::VoxelZone(render::Backend& gpu, Builder& builder, int radiusColumns)
-    : gpu_(gpu), builder_(builder), radius_(std::max(1, radiusColumns)), side_(2 * std::max(1, radiusColumns)) {
+    : gpu_(gpu), builder_(builder), radius_(std::max(1, radiusColumns)),
+      // ОКНО СИММЕТРИЧНО ОТНОСИТЕЛЬНО ИГРОКА. Прежде оно шло от «столбец минус радиус» до «плюс
+      // радиус», НЕ включая последний: на запад и на север окно доставало на столбец дальше, чем
+      // на восток и юг. Из-за этого столбец, входящий в окно при движении на запад, всегда
+      // оказывался самым дальним из всех, стоял в очереди последним и не поспевал до следующего
+      // сдвига - отсюда и рывки в одну сторону. Нечётная сторона делает края равными.
+      side_(2 * std::max(1, radiusColumns) + 1) {
     mask_.assign(size_t(side_) * side_, 0);
     sat_.assign(size_t(side_ + 1) * (side_ + 1), 0);
 }
@@ -34,8 +40,8 @@ void VoxelZone::releaseAll() {
 }
 
 bool VoxelZone::inWindow(int32_t cx, int32_t cz, int margin) const {
-    return cx >= ccx_ - radius_ - margin && cx < ccx_ + radius_ + margin && cz >= ccz_ - radius_ - margin &&
-           cz < ccz_ + radius_ + margin;
+    return cx >= ccx_ - radius_ - margin && cx <= ccx_ + radius_ + margin && cz >= ccz_ - radius_ - margin &&
+           cz <= ccz_ + radius_ + margin;
 }
 
 void VoxelZone::release(Column& c) {
@@ -84,7 +90,7 @@ void VoxelZone::moveWindow(int32_t ccx, int32_t ccz) {
     maskDirty_ = true;
 }
 
-void VoxelZone::reprioritize(glm::vec3 eye, const Frustum& fr) {
+void VoxelZone::reprioritize(glm::vec3 eye, glm::vec3 forward, const Frustum& fr) {
     // ждущие столбцы окна - по весу: квадрат расстояния, вне взгляда - вчетверо дальше; ближние - в конец.
     // Готовые столбцы рядом с камерой, построенные мельче нужного (Р26: подземный ярус), - тоже в очередь.
     // Р27: и столбцы яруса, у которых сменились заглушки (был краем - стал серединой или наоборот).
@@ -105,10 +111,18 @@ void VoxelZone::reprioritize(glm::vec3 eye, const Frustum& fr) {
                 if (!shallow && !recap && !closed) continue;
             }
             const int64_t dx = cx - ccx_, dz = cz - ccz_;
+            const int64_t d2 = dx * dx + dz * dz;
+            // ШАР, А НЕ КОРОБКА: за кругом радиуса не строим ничего. Углы квадратного окна - это
+            // лишняя четверть всей работы, и именно они дальше всего от игрока. Там, где вокселей
+            // нет, рисуются сглаженные дальние куски местности - как и везде за пределами зоны.
+            if (d2 > int64_t(radius_) * radius_) continue;
             const float bx = float(cx * BLOCKS_PER_COLUMN), bz = float(cz * BLOCKS_PER_COLUMN);
             // высота столбца до постройки неизвестна - коробка по правдоподобным высотам рельефа
             const bool seen = fr.visible({bx, eye.y - 300.0f, bz}, {bx + BLOCKS_PER_COLUMN, eye.y + 300.0f, bz + BLOCKS_PER_COLUMN});
-            jobs.push_back({(dx * dx + dz * dz) * (seen ? 1 : 4), cx, cz, want, caps});
+            // Очередь: ближние раньше дальних, видимые раньше невидимых, а то, что за спиной, -
+            // в последнюю очередь: туда игрок не смотрит, и пока он не обернётся, эти столбцы ждут.
+            const bool behind = float(dx) * forward.x + float(dz) * forward.z < 0.0f;
+            jobs.push_back({d2 * (seen ? 1 : (behind ? 16 : 4)), cx, cz, want, caps});
         }
     std::sort(jobs.begin(), jobs.end(), [](const Job& a, const Job& b) { return a.w > b.w; });
     std::vector<Builder::ColumnJob> order;
@@ -118,7 +132,7 @@ void VoxelZone::reprioritize(glm::vec3 eye, const Frustum& fr) {
     sinceSort_ = 0;
 }
 
-void VoxelZone::update(glm::vec3 eye, const Frustum& fr, double uploadBudgetMs) {
+void VoxelZone::update(glm::vec3 eye, glm::vec3 forward, const Frustum& fr, double uploadBudgetMs) {
     const int32_t ccx = int32_t(std::floor(eye.x / BLOCKS_PER_COLUMN)), ccz = int32_t(std::floor(eye.z / BLOCKS_PER_COLUMN));
     const auto worst = [&](int i, clk::time_point t) { stats_.worstMs[i] = std::max(stats_.worstMs[i], msSince(t)); };
     // Р26: глубина подземного яруса - от куска камеры вниз, округлённо
@@ -136,11 +150,11 @@ void VoxelZone::update(glm::vec3 eye, const Frustum& fr, double uploadBudgetMs) 
         moveWindow(ccx, ccz);
         worst(0, t);
         t = clk::now();
-        reprioritize(eye, fr);
+        reprioritize(eye, forward, fr);
         worst(1, t);
     } else if (++sinceSort_ >= RESORT_FRAMES && stats_.pending > 0) {
         const auto t = clk::now();
-        reprioritize(eye, fr);
+        reprioritize(eye, forward, fr);
         worst(1, t);
     }
 
@@ -187,15 +201,17 @@ void VoxelZone::update(glm::vec3 eye, const Frustum& fr, double uploadBudgetMs) 
 void VoxelZone::finishMask() {
     // таблица сумм: S[z+1][x+1] = m + S[z][x+1] + S[z+1][x] - S[z][x]
     const int w = side_ + 1;
-    int ready = 0;
+    int ready = 0, wanted = 0;
     for (int z = 0; z < side_; ++z)
         for (int x = 0; x < side_; ++x) {
             const int m = mask_[size_t(z) * side_ + x];
-            ready += m;
+            // считаем только то, что вообще собирались строить: углы окна вне круга не наши
+            const int64_t dx = int64_t(x) - radius_, dz = int64_t(z) - radius_;
+            if (dx * dx + dz * dz <= int64_t(radius_) * radius_) { wanted += 1; ready += m; }
             sat_[size_t(z + 1) * w + x + 1] = m + sat_[size_t(z) * w + x + 1] + sat_[size_t(z + 1) * w + x] - sat_[size_t(z) * w + x];
         }
     stats_.ready = ready;
-    stats_.pending = side_ * side_ - ready;
+    stats_.pending = wanted - ready;
     gpu_.updateVoxelMask(side_, mask_);
     maskDirty_ = false;
 }
