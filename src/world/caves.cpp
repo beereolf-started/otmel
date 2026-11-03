@@ -13,7 +13,7 @@ constexpr int STEP = 1 << STEP_LOG2;
 constexpr int MAX_NODES = (CHUNK + 2) / STEP + 2;   // узлов по стороне на кусок с каймой: 7
 // По высоте узлов нужно больше: у куска под самой поверхностью кровля осыпается по пустоте,
 // лежащей ниже него, и поле приходится знать на полосу опоры глубже (5 блоков = 80 вокселей).
-constexpr int MAX_NODES_Y = (CHUNK + 2 + 4 * VOXELS_PER_BLOCK + 5 * VOXELS_PER_BLOCK) / STEP + 4;
+constexpr int MAX_NODES_Y = (CHUNK + 2 + 10 * VOXELS_PER_BLOCK) / STEP + 4;
 
 enum CaveLayer : int32_t { TUNNEL_A = 101, TUNNEL_B, HALL, HALL_FINE, GIANT, ENTRANCE };
 inline uint32_t caveSeed(uint32_t seed, CaveLayer l) { return gen::hash2(l, 0xCA7E, seed); }
@@ -95,12 +95,15 @@ bool caveAir(const TerrainParams& p, ChunkPos pos, const ColumnHeights& hm, uint
     // Полоса опоры задевает этот кусок: значит в нём может осыпаться кровля, а сама пустота под ней
     // лежит ниже, в соседнем куске снизу - узлы приходится считать с запасом вниз.
     const bool bandHere = minTop - ROOF_BAND <= y0 + CHUNK + 1;
-    const int32_t below = bandHere ? SOIL_DEPTH + SLUMP : 0;   // до самого низа, откуда ещё считается осыпание
+    const int32_t below = bandHere ? ROOF_BAND : 0;   // до самого низа, откуда ещё считается осыпание
+    // и ВВЕРХ на толщу земли: поверхность столбца может лежать выше верха куска, а значение поля на
+    // ней всё равно нужно - иначе обращение к узлам уйдёт за край массива и посчитается мусор
+    const int32_t above = bandHere ? SOIL_DEPTH : 0;
 
     // узлы каналов
     const int32_t nx0 = x0 >> STEP_LOG2, ny0 = (y0 - below) >> STEP_LOG2, nz0 = z0 >> STEP_LOG2;
     const int nx = ((x0 + CHUNK + 1) >> STEP_LOG2) - nx0 + 2;
-    const int ny = ((y0 + CHUNK + 1) >> STEP_LOG2) - ny0 + 2;
+    const int ny = ((y0 + CHUNK + 1 + above) >> STEP_LOG2) - ny0 + 2;
     const int nz = ((z0 + CHUNK + 1) >> STEP_LOG2) - nz0 + 2;
     static thread_local Node nodes[MAX_NODES][MAX_NODES_Y][MAX_NODES];
     fx::q16 maxT = INT32_MIN, maxH = INT32_MIN;
@@ -112,8 +115,11 @@ bool caveAir(const TerrainParams& p, ChunkPos pos, const ColumnHeights& hm, uint
                 maxT = std::max(maxT, n.tunnel);
                 maxH = std::max(maxH, n.hall);
             }
-    // Быстрый отказ 2: смешивание не выходит за пределы значений в узлах
-    if (maxT <= 0 && maxH <= 0) return false;
+    // Быстрый отказ 2: смешивание не выходит за пределы значений в узлах. Порог сдвинут на запас
+    // воронки: при значении выше -SLOPE земля ещё осыпается, пусть пустоты и нет, и отказывать
+    // тогда нельзя - иначе соседние куски разойдутся и над пустотой останется крышка.
+    const fx::q16 slopeMax = 3 * fx::mul(c.tunnelWidth, c.tunnelWidth);
+    if (maxT <= -slopeMax && maxH <= -slopeMax) return false;
 
     // по вокселям - только ниже поверхности своего столбца (выше и так воздух)
     constexpr int32_t mask = STEP - 1;
@@ -179,25 +185,31 @@ bool caveAir(const TerrainParams& p, ChunkPos pos, const ColumnHeights& hm, uint
             const auto field = [&](int32_t wy) {
                 const int32_t d = top - wy;
                 fx::q16 t = tri(wy, [](const Node& n) { return n.tunnel; });
+                // В полную силу гашение обязано перекрывать и запас воронки (SLOPE), иначе вдали от
+                // входа поле всё равно не дотягивало бы до нуля всего на две-три толщины хода, и
+                // земля снималась бы частично по всей округе - целыми пластами.
                 if (d < roofBand)
-                    t -= fx::mul(fx::q16(int64_t(w2) * (roofBand - d + VOXELS_PER_BLOCK) / VOXELS_PER_BLOCK), entranceDamp());
+                    t -= fx::mul(SLOPE + fx::q16(int64_t(w2) * (roofBand - d + VOXELS_PER_BLOCK) / VOXELS_PER_BLOCK),
+                                 entranceDamp());
+                // зал считаем тем же полем, иначе земля над залом осталась бы висеть: пустота есть,
+                // а величина, по которой решается осыпание, её не видит
+                // БЕЗ ОГЛЯДКИ НА maxH: это наибольшее по узлам ТЕКУЩЕГО куска, и если им здесь
+                // распоряжаться, один и тот же столбец в двух соседних кусках посчитается по-разному -
+                // в одном слагаемое зала войдёт, в другом нет. Тогда нижний кусок снимет землю, а
+                // верхний не снимет, и над пустотой останется крышка. Величина обязана зависеть
+                // только от координаты.
+                if (d >= c.hallDepth - 8 * VOXELS_PER_BLOCK) {
+                    fx::q16 h = tri(wy, [](const Node& n) { return n.hall; });
+                    // залы гаснут к верху на 8 блоках над hallDepth - потолок не плоский
+                    if (d < c.hallDepth) h -= fx::q16(int64_t(fx::ONE * 3 / 10) * (c.hallDepth - d) / (8 * VOXELS_PER_BLOCK));
+                    t = std::max(t, h);
+                }
                 return t;
             };
 
             // Пустота по самому полю: форму хода задаёт только шум, и ход идёт под тем углом, под
             // каким его провёл шум. Ничего вертикального здесь не прорезается.
-            const auto natural = [&](int32_t wy) {
-                const int32_t d = top - wy;   // глубина под поверхностью, воксели
-                bool open = false;
-                if (maxT > 0) open = field(wy) > 0;
-                if (!open && maxH > 0 && d >= c.hallDepth - 8 * VOXELS_PER_BLOCK) {
-                    fx::q16 h = tri(wy, [](const Node& n) { return n.hall; });
-                    // залы гаснут к верху на 8 блоках над hallDepth - потолок не плоский
-                    if (d < c.hallDepth) h -= fx::q16(int64_t(fx::ONE * 3 / 10) * (c.hallDepth - d) / (8 * VOXELS_PER_BLOCK));
-                    open = h > 0;
-                }
-                return open;
-            };
+            const auto natural = [&](int32_t wy) { return field(wy) > 0; };
 
             uint64_t bits = 0;
             for (int yi = 0; yi < CHUNK + 2; ++yi) {
@@ -234,11 +246,19 @@ bool caveAir(const TerrainParams& p, ChunkPos pos, const ColumnHeights& hm, uint
                 // меняется ровно, поэтому наибольшее достигается только в узле или на конце полосы.
                 // Значит эти точки и дают ТОЧНОЕ наибольшее, а не приближённое - мимо тонкой
                 // пустоты выборка промахнуться не может.
-                const int32_t lo = top - soil - SLUMP;
+                //
+                // Полоса кончается на два блока ниже подошвы земли - ровно там, где кончается её
+                // опора. Глубже заглядывать НЕЛЬЗЯ: там гашения у поверхности уже нет, и обычная
+                // пещера в пяти блоках под землёй, честно укрытая камнем, сносила бы весь покров
+                // над собой целым пластом.
+                const int32_t lo = top - soil - ROCK_ROOF;
                 fx::q16 tmax = std::max(field(top), field(lo));
                 for (int32_t wy = (top & ~int32_t(STEP - 1)); wy > lo; wy -= STEP) tmax = std::max(tmax, field(wy));
                 // Снимаем землю СВЕРХУ: сыплется то, что выше, а низ ложится на камень.
-                const int32_t keep = tmax >= 0 ? 0 : -tmax >= SLOPE ? soil : int32_t(int64_t(soil) * -tmax / SLOPE);
+                int32_t keep = tmax >= 0 ? 0 : -tmax >= SLOPE ? soil : int32_t(int64_t(soil) * -tmax / SLOPE);
+                // остаток тоньше полублока не держится: это те самые одинокие шипы земли в воксель
+                // толщиной, что торчали посреди обнажённого камня
+                if (keep < VOXELS_PER_BLOCK / 2) keep = 0;
                 for (int32_t wy = top - soil + 1 + keep; wy <= from; ++wy) take(wy);   // только земля
 
                 // Воронку рисовать не надо: там, где ход выходит пологим углом, её даёт сама
