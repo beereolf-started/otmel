@@ -80,10 +80,7 @@ constexpr int32_t SOIL_DEPTH = 3 * VOXELS_PER_BLOCK + 1;   // покров и п
 constexpr int32_t ROOF_BAND = SOIL_DEPTH + ROCK_ROOF;      // вся полоса опоры: пять блоков
 
 bool caveAir(const TerrainParams& p, ChunkPos pos, const ColumnHeights& hm, uint64_t air[CHUNK + 2][CHUNK + 2],
-             uint8_t (*cutOut)[CHUNK + 2]) {
-    if (cutOut)
-        for (int z = 0; z < CHUNK + 2; ++z)
-            for (int x = 0; x < CHUNK + 2; ++x) cutOut[z][x] = 0;
+             const uint8_t (*cut)[CHUNK + 2]) {
     const CaveParams& c = p.caves;
     const int32_t x0 = pos.x * CHUNK - 1, y0 = pos.y * CHUNK - 1, z0 = pos.z * CHUNK - 1;   // начало каймы
 
@@ -149,8 +146,12 @@ bool caveAir(const TerrainParams& p, ChunkPos pos, const ColumnHeights& hm, uint
             const int cvz = std::clamp(z - 1, 0, CHUNK - 1), cvx = std::clamp(x - 1, 0, CHUNK - 1);
             // толща земли этого столбца: ниже неё - порода
             const int32_t soil = hm.cover[cvz][cvx].soil;
-            // до какой глубины ход вообще может подняться вне входа (гашение ниже)
-            const int32_t roofBand = soil + ROCK_ROOF;
+            // До какой глубины ход гаснет у поверхности. Полоса ОДНА ДЛЯ ВСЕХ столбцов: своя толща
+            // земли у столбца заметно рябит от соседа к соседу (её задаёт уклон местности), и если
+            // подставить её сюда, рябь попадёт в само поле - а по нему считается срез. Тогда у
+            // одного столбца срез нулевой, у соседнего полный, и по склону встают столбы в один
+            // блок с нетронутым покровом наверху. Своя земля столбца только ограничивает срез.
+            constexpr int32_t roofBand = ROOF_BAND;
 
             // смешивание поля по трём осям: x, затем z, затем y
             const auto triAt = [&](int32_t wy, fx::q16 ux, fx::q16 uz, auto get) {
@@ -166,7 +167,10 @@ bool caveAir(const TerrainParams& p, ChunkPos pos, const ColumnHeights& hm, uint
             const fx::q16 w2 = fx::mul(c.tunnelWidth, c.tunnelWidth);   // толщина хода входит в поле квадратом
             // насколько поле должно не дотянуть до нуля, чтобы земля держалась вся: это и есть
             // ширина воронки - при трёх толщинах хода её край отходит примерно на две его ширины
-            const fx::q16 SLOPE = 3 * w2;
+            // Гашение вне входа обязано перекрывать ВСЮ ширину воронки (4 толщины хода), иначе в
+            // полностью погашенном месте срез выходит не нулевым, а в три четверти блока - и там,
+            // где постройщик кусков пещеры вообще не считает, соседи расходятся: дыры и столбы.
+            const fx::q16 SLOPE = 4 * w2;
             // Р79: ГАШЕНИЕ У ПОВЕРХНОСТИ - ПЛАВНОЕ, а не «вход или не вход». Признак был двоичный: в
             // одном столбце ход не гасился вовсе и выходил наружу, а в соседнем гасился полностью, и
             // под поверхностью не оставалось пустоты ни на одном уровне. Край отверстия выходил
@@ -233,54 +237,135 @@ bool caveAir(const TerrainParams& p, ChunkPos pos, const ColumnHeights& hm, uint
                 if (natural(wy)) bits |= uint64_t(1) << yi;
             }
 
-            // Р79: ВЫХОД ШАХТЫ НАРУЖУ.
-            //
-            // Ход - замкнутый контур. Его нижняя грань, выходя к поверхности, сама срезает землю, и
-            // делать для неё нечего. Над верхней гранью лежит либо камень - кровля держится на нём,
-            // - либо земля, а земля висеть не может: она осыпается, и на её месте остаётся
-            // отверстие. По краю отверстия земля сходит на нет воронкой, повторяющей форму самой
-            // шахты.
-            //
-            // Всё это задаёт ОДНА величина: наибольшее значение поля хода в столбце от поверхности
-            // до двух блоков ниже подошвы земли. Внутри хода оно больше нуля, у стенки - ноль,
-            // дальше убывает. Земли снимается тем больше, чем оно выше: при нуле и выше - вся, при
-            // недоборе в толщину хода - ничего, между - соразмерно.
-            //
-            // Величина эта непрерывна по месту, и в этом весь смысл: любой порог, любое деление на
-            // скачущую величину, любая оглядка на соседний кусок дают разрыв - а разрыв на земле
-            // выглядит отвесной стенкой, столбом в один блок или куском, висящим в воздухе. Здесь
-            // нет ни того, ни другого, ни третьего:
-            //   - полоса поиска одна для всех столбцов (постоянная толща земли, не своя);
-            //   - ширину воронки задаёт само значение поля, без деления на его уклон;
-            //   - снимается всегда верх столбца, поэтому остаток лежит на камне;
-            //   - вне входа поле погашено заведомо ниже порога, поэтому срез там строго нулевой -
-            //     и это согласовано с проверкой, по которой постройщик кусков решает, считать ли
-            //     здесь пещеры вообще (caveEntranceNear, тот же запас ENTRANCE_EDGE).
-            if (bandHere && soil > 0 && top >= y0 && top - (y0 + CHUNK + 1) < soil) {
+            // срез земли у выхода шахты - тоже пустота (soilCut)
+            if (cut && cut[z][x]) {
                 const int32_t from = std::min(top, y0 + CHUNK + 1);
-                const auto take = [&](int32_t wy) {
+                for (int32_t wy = top - cut[z][x] + 1; wy <= from; ++wy) {
                     const int yi = int(wy - y0);
                     if (yi >= 0 && yi < CHUNK + 2) bits |= uint64_t(1) << yi;
-                };
-                const int32_t lo = top - SOIL_DEPTH - ROCK_ROOF;
-                // вдоль высоты поле кусочно-линейно между узлами через 8 вокселей, поэтому
-                // наибольшее достигается только в узле или на конце полосы - выборка точная
-                fx::q16 tb = std::max(field(top), field(lo));
-                for (int32_t wy = (top & ~int32_t(STEP - 1)); wy > lo; wy -= STEP) tb = std::max(tb, field(wy));
-
-                int32_t cut = tb >= 0 ? soil
-                                      : std::min<int32_t>(soil, int32_t(std::max<int64_t>(
-                                            0, int64_t(SOIL_DEPTH) * (int64_t(w2) + tb) / w2)));
-                // стык с целой землёй - касательный: последний блок сводится к нулю по квадрату,
-                // иначе срез упирается в поверхность гранью и по краю идёт складка
-                if (cut > 0 && cut < VOXELS_PER_BLOCK) cut = cut * cut / VOXELS_PER_BLOCK;
-                if (cutOut) cutOut[z][x] = uint8_t(cut);   // покров ляжет на новый верх
-                for (int32_t wy = top - cut + 1; wy <= from; ++wy) take(wy);   // только земля
+                }
             }
             air[z][x] = bits;
             any |= bits != 0;
         }
     return any;
+}
+
+// ── Р79: срез земли у выхода шахты (см. caves.h) ───────────────────────────────────────────────
+//
+// Правило одно: НАД ПУСТОТОЙ ЛИБО КАМЕНЬ, ЛИБО НИЧЕГО. Нижняя грань хода, выходя к поверхности,
+// срезает землю сама; над верхней грань земля без камня под собой держаться не может и осыпается,
+// а по краю сходит на нет воронкой, повторяющей форму самой шахты.
+//
+// Задаёт всё это одна непрерывная величина: наибольшее значение поля хода в столбце от поверхности
+// до двух блоков ниже подошвы земли. При нуле и выше земли нет вовсе, при недоборе в ширину воронки
+// земля цела, между - соразмерно. Непрерывность тут - главное требование: любой порог, любое деление
+// на скачущую величину, любая оглядка на соседа дают разрыв, а разрыв на земле выглядит отвесной
+// стенкой, столбом в один блок или куском, висящим в воздухе.
+void soilCut(const TerrainParams& p, int32_t chunkX, int32_t chunkZ, const ColumnHeights& hm,
+             uint8_t cut[CHUNK + 2][CHUNK + 2]) {
+    const CaveParams& c = p.caves;
+    for (int z = 0; z < CHUNK + 2; ++z)
+        for (int x = 0; x < CHUNK + 2; ++x) cut[z][x] = 0;
+
+    const int32_t x0 = chunkX * CHUNK - 1, z0 = chunkZ * CHUNK - 1;
+    // Доля гашения у поверхности - СВОЯ У КАЖДОГО СТОЛБЦА, и считается она здесь, до всего
+    // остального. Проверять её в одной середине куска нельзя: сосед меряет в своей середине, и у
+    // общего пограничного столбца ответы расходятся - один кусок землю срезает, другой нет, а на
+    // стыке встаёт столб или зияет дыра. Заодно это и быстрый отказ: погашены все столбцы - считать
+    // нечего.
+    static thread_local fx::q16 dampCol[CHUNK + 2][CHUNK + 2];
+    bool anyOpen = false;
+    for (int z = 0; z < CHUNK + 2; ++z)
+        for (int x = 0; x < CHUNK + 2; ++x) {
+            fx::q16 v = fx::ONE;
+            if (!hm.nearWater[z][x]) {
+                const fx::q16 e = gen::simplex2(x0 + x, z0 + z, c.entranceCellLog2, caveSeed(p.seed, ENTRANCE));
+                if (e >= c.entranceFrom) v = 0;
+                else if (e > c.entranceFrom - ENTRANCE_EDGE)
+                    v = fx::q16(int64_t(c.entranceFrom - e) * fx::ONE / ENTRANCE_EDGE);
+            }
+            dampCol[z][x] = v;
+            anyOpen |= v < fx::ONE;
+        }
+    if (!anyOpen) return;
+    // полоса, в которой вообще может что-то срезаться: от низа самой низкой земли до верха самой высокой
+    const int32_t yLo = hm.minH - ROOF_BAND, yHi = hm.maxH;
+    constexpr int MAX_Y = 160;   // узлов по высоте: 1280 вокселей = 80 блоков перепада на столбец кусков
+    const int32_t nx0 = x0 >> STEP_LOG2, ny0 = yLo >> STEP_LOG2, nz0 = z0 >> STEP_LOG2;
+    const int nx = ((x0 + CHUNK + 1) >> STEP_LOG2) - nx0 + 2;
+    const int ny = (yHi >> STEP_LOG2) - ny0 + 2;
+    const int nz = ((z0 + CHUNK + 1) >> STEP_LOG2) - nz0 + 2;
+    if (ny > MAX_Y) return;   // непомерный перепад: воронку не рисуем, зато разнобоя не будет
+
+    static thread_local Node nodes[MAX_NODES][MAX_Y][MAX_NODES];
+    fx::q16 maxT = INT32_MIN;
+    for (int k = 0; k < nz; ++k)
+        for (int j = 0; j < ny; ++j)
+            for (int i = 0; i < nx; ++i) {
+                const Node n = caveNode(p, (nx0 + i) << STEP_LOG2, (ny0 + j) << STEP_LOG2, (nz0 + k) << STEP_LOG2);
+                nodes[k][j][i] = n;
+                maxT = std::max(maxT, n.tunnel);
+            }
+    const fx::q16 w2 = fx::mul(c.tunnelWidth, c.tunnelWidth);
+    const fx::q16 wide = 4 * w2;        // ширина воронки в значениях поля
+    const fx::q16 damp = wide + w2;     // гашение вне входа: заведомо перекрывает воронку
+    // Отказа по maxT здесь быть НЕ МОЖЕТ: это наибольшее по узлам ЭТОГО куска, а сосед берёт свои
+    // узлы и получает другое число. У общего пограничного столбца один сосчитал бы срез, а другой
+    // отказался - и на стыке опять столб или дыра. Пусть считается, это недорого.
+    (void)damp;
+
+    constexpr int32_t mask = STEP - 1;
+    constexpr int FR = fx::SHIFT - STEP_LOG2;
+    for (int z = 0; z < CHUNK + 2; ++z)
+        for (int x = 0; x < CHUNK + 2; ++x) {
+            const int32_t wx = x0 + x, wz = z0 + z, top = hm.h[z][x];
+            const int32_t soil = hm.soilThick[z][x];   // с каймой: одно число у обоих соседей
+            if (soil <= 0) continue;
+            const int ix = (wx >> STEP_LOG2) - nx0, iz = (wz >> STEP_LOG2) - nz0;
+            const fx::q16 fx_ = (wx & mask) << FR, fz = (wz & mask) << FR;
+            const fx::q16 dampK = dampCol[z][x];
+            if (dampK >= fx::ONE) continue;   // вне входа срез строго нулевой
+
+            const auto field = [&](int32_t wy) {
+                const int iy = (wy >> STEP_LOG2) - ny0;
+                const fx::q16 fy = (wy & mask) << FR;
+                const auto get = [](const Node& n) { return n.tunnel; };
+                const fx::q16 a = fx::lerp(get(nodes[iz][iy][ix]), get(nodes[iz][iy][ix + 1]), fx_);
+                const fx::q16 b = fx::lerp(get(nodes[iz + 1][iy][ix]), get(nodes[iz + 1][iy][ix + 1]), fx_);
+                const fx::q16 e = fx::lerp(get(nodes[iz][iy + 1][ix]), get(nodes[iz][iy + 1][ix + 1]), fx_);
+                const fx::q16 f = fx::lerp(get(nodes[iz + 1][iy + 1][ix]), get(nodes[iz + 1][iy + 1][ix + 1]), fx_);
+                fx::q16 t = fx::lerp(fx::lerp(a, b, fz), fx::lerp(e, f, fz), fy);
+                const int32_t d = top - wy;
+                if (d < ROOF_BAND)
+                    t -= fx::mul(damp + fx::q16(int64_t(w2) * (ROOF_BAND - d) / VOXELS_PER_BLOCK), dampK);
+                // зал - такая же пустота: без него земля над залом осталась бы висеть крышкой
+                if (d >= c.hallDepth - 8 * VOXELS_PER_BLOCK) {
+                    const auto geth = [](const Node& n) { return n.hall; };
+                    const fx::q16 ha = fx::lerp(geth(nodes[iz][iy][ix]), geth(nodes[iz][iy][ix + 1]), fx_);
+                    const fx::q16 hb = fx::lerp(geth(nodes[iz + 1][iy][ix]), geth(nodes[iz + 1][iy][ix + 1]), fx_);
+                    const fx::q16 he = fx::lerp(geth(nodes[iz][iy + 1][ix]), geth(nodes[iz][iy + 1][ix + 1]), fx_);
+                    const fx::q16 hf = fx::lerp(geth(nodes[iz + 1][iy + 1][ix]), geth(nodes[iz + 1][iy + 1][ix + 1]), fx_);
+                    fx::q16 h = fx::lerp(fx::lerp(ha, hb, fz), fx::lerp(he, hf, fz), fy);
+                    if (d < c.hallDepth) h -= fx::q16(int64_t(fx::ONE * 3 / 10) * (c.hallDepth - d) / (8 * VOXELS_PER_BLOCK));
+                    t = std::max(t, h);
+                }
+                return t;
+            };
+
+            // вдоль высоты поле кусочно-линейно между узлами, поэтому наибольшее достигается только
+            // в узле или на конце полосы - выборка точная
+            const int32_t lo = std::max(top - SOIL_DEPTH - ROCK_ROOF, yLo);
+            fx::q16 tb = std::max(field(top), field(lo));
+            for (int32_t wy = (top & ~int32_t(STEP - 1)); wy > lo; wy -= STEP) tb = std::max(tb, field(wy));
+
+            int32_t v = tb >= 0 ? soil
+                                : std::min<int32_t>(soil, int32_t(std::max<int64_t>(
+                                      0, int64_t(SOIL_DEPTH) * (int64_t(wide) + tb) / wide)));
+            // стык с целой землёй - касательный: последний блок сводится к нулю по квадрату
+            if (v > 0 && v < VOXELS_PER_BLOCK) v = v * v / VOXELS_PER_BLOCK;
+            cut[z][x] = uint8_t(v);
+        }
 }
 
 }  // namespace world

@@ -445,8 +445,10 @@ int main() {
                 world::columnHeights(tp, cx, cz, hm);
                 const int32_t cyTop = hm.maxH >> world::CHUNK_LOG2;
                 bool has[5];
+                static uint8_t cutCol[world::CHUNK + 2][world::CHUNK + 2];
+                world::soilCut(tp, cx, cz, hm, cutCol);
                 for (int k = 0; k < 5; ++k)
-                    has[k] = world::caveAir(tp, world::ChunkPos{cx, cyTop - k, cz}, hm, airs[k]);
+                    has[k] = world::caveAir(tp, world::ChunkPos{cx, cyTop - k, cz}, hm, airs[k], cutCol);
                 for (int lz = 0; lz < world::CHUNK; ++lz)
                     for (int lx = 0; lx < world::CHUNK; ++lx) {
                         const int32_t top = hm.h[lz + 1][lx + 1];
@@ -465,7 +467,7 @@ int main() {
                         if (ya >= top) { ++holes; continue; }   // пустота выходит наружу - над ней ничего
                         {
                             const int32_t y = ya + 1;   // что лежит прямо на своде: обязано быть камнем
-                            const world::Material m = world::columnMaterial(top, hm.cover[lz][lx], y,
+                            const world::Material m = world::columnMaterial(top - cutCol[lz + 1][lx + 1], hm.cover[lz][lx], y,
                                                                            hm.water[lz + 1][lx + 1], hm.rock, wx, wz);
                             if (isRock(m)) continue;
                             ++lids;

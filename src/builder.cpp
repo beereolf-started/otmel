@@ -153,19 +153,16 @@ void Builder::worker() {
                     if ((dx || dz) && hasCaves(col.cx + dx, col.cz + dz)) caveFloor = std::max(caveFloor, floorOf(col.cx + dx, col.cz + dz));
             cyShallow = std::min(cyLo, own >> world::CHUNK_LOG2);
         }
+        // Р79: срез земли у выхода шахты - ОДИН НА ВЕСЬ СТОЛБЕЦ КУСКОВ, до постройки. Пока он
+        // считался внутри куска, два куска одного столбца могли решить по-разному, и на стыке
+        // вставала стенка или повисал кусок земли.
+        if (shallowCaves) world::soilCut(tp_, col.cx, col.cz, hm, cut);
+        else for (int z = 0; z < world::CHUNK + 2; ++z)
+                 for (int x = 0; x < world::CHUNK + 2; ++x) cut[z][x] = 0;
         const int cyFrom = col.cyMin == NO_DEPTH ? cyShallow : std::max(std::min(cyLo, col.cyMin), WORLD_BOTTOM);
         for (int cy = cyFrom; cy <= cyHi; ++cy) {
             const world::ChunkPos pos{col.cx, cy, col.cz};
-            // Срез земли считается для всего столбца сразу и от маски пустот не зависит. Передавать
-            // его надо ВСЕГДА, когда он посчитан: маска ниже может обнулиться (пол пещеры, заглушки
-            // по краям), и тогда этот кусок рисовал бы землю несрезанной, а соседний - срезанной.
-            // Верх столбца оставался стоять шапкой на весу - это и были земляные столбы.
-            bool haveCut = false;
-            bool caves = false;
-            if (shallowCaves) {
-                caves = world::caveAir(tp_, pos, hm, air, cut);
-                haveCut = true;
-            }
+            bool caves = shallowCaves && world::caveAir(tp_, pos, hm, air, cut);
             if (caves && caveFloor != INT32_MIN) {   // Р39: ниже пола (с соседями) пещеры закрыты; заглушки у соседей без пещер
                 const int64_t n = std::clamp<int64_t>(int64_t(caveFloor) - (int64_t(cy) * world::CHUNK - 1), 0, 34);
                 const uint64_t keep = n >= 64 ? 0 : ~((uint64_t(1) << n) - 1);
@@ -202,7 +199,7 @@ void Builder::worker() {
             if (!caves && underground) continue;   // подземный и без пещер - сплошной камень
             // нетронутый кусок: сетка прямо от высот (и пещер), без заполнения вокселей (Р22)
             world::MeshStats ms;
-            world::buildMesh(pos, hm, verts, ms, caves ? air : nullptr, haveCut ? cut : nullptr);
+            world::buildMesh(pos, hm, verts, ms, caves ? air : nullptr, cut);
             if (verts.empty()) continue;
             r.chunks.push_back({{col.cx * world::CHUNK, cy * world::CHUNK, col.cz * world::CHUNK}, verts, ms.quads, ms.waterQuads, underground});
         }

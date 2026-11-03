@@ -358,6 +358,35 @@ void columnHeights(const TerrainParams& p, int32_t chunkX, int32_t chunkZ, Colum
             const Relief rm = reliefAt(p, mx, mz, slow.at(mx, mz), 0, &rivers);
             rockColumn(p, mx, mz, rm, out.rock[j][i]);
         }
+    // Р79: ТОЛЩИНА ЗЕМЛИ - ДЛЯ ВСЕХ СТОЛБЦОВ, ВКЛЮЧАЯ КАЙМУ.
+    //
+    // Уклон считается по восьми соседям, поэтому пограничному столбцу каймы нужен ещё один ряд
+    // высот за ней. Считаем это кольцо здесь же: 140 лишних точек рельефа на столбец кусков против
+    // 1156 своих. Зато число у общего столбца двух соседних кусков выходит одно и то же, и шва нет.
+    {
+        static thread_local int32_t hx[CHUNK + 4][CHUNK + 4];
+        for (int z = 0; z < CHUNK + 4; ++z)
+            for (int x = 0; x < CHUNK + 4; ++x) {
+                if (z >= 1 && z <= CHUNK + 2 && x >= 1 && x <= CHUNK + 2) {
+                    hx[z][x] = out.h[z - 1][x - 1];
+                    continue;
+                }
+                const int32_t wx = x0 - 1 + x, wz = z0 - 1 + z;
+                hx[z][x] = reliefAt(p, wx, wz, slow.at(wx, wz), 0, &rivers).height;
+            }
+        for (int z = 0; z < CHUNK + 2; ++z)
+            for (int x = 0; x < CHUNK + 2; ++x) {
+                const int32_t gx = (hx[z][x + 2] + 2 * hx[z + 1][x + 2] + hx[z + 2][x + 2]) -
+                                   (hx[z][x] + 2 * hx[z + 1][x] + hx[z + 2][x]);
+                const int32_t gz = (hx[z + 2][x] + 2 * hx[z + 2][x + 1] + hx[z + 2][x + 2]) -
+                                   (hx[z][x] + 2 * hx[z][x + 1] + hx[z][x + 2]);
+                const int32_t sl = std::max(std::abs(gx), std::abs(gz));
+                out.soilThick[z][x] = sl <= BARE_FROM      ? SOIL_FULL
+                                      : sl >= BARE_TO      ? int16_t(0)
+                                                           : int16_t(int32_t(SOIL_FULL) * (BARE_TO - sl) / (BARE_TO - BARE_FROM));
+            }
+    }
+
     // климат и покров - только своим столбцам, не кайме; у воды рек и озёр - песок (Р29)
     for (int z = 0; z < CHUNK; ++z)
         for (int x = 0; x < CHUNK; ++x)
@@ -377,12 +406,8 @@ void columnHeights(const TerrainParams& p, int32_t chunkX, int32_t chunkZ, Colum
                                (out.h[z][x] + 2 * out.h[z + 1][x] + out.h[z + 2][x]);
             const int32_t gz = (out.h[z + 2][x] + 2 * out.h[z + 2][x + 1] + out.h[z + 2][x + 2]) -
                                (out.h[z][x] + 2 * out.h[z][x + 1] + out.h[z][x + 2]);
-            // Сглаженный уклон в восьмых долях (8 - сорок пять градусов, 16 - шестьдесят три):
-            // до BARE_FROM земля лежит вся, к BARE_TO сходит в ноль, между - убывает ровно.
-            const int32_t s = std::max(std::abs(gx), std::abs(gz));
-            if (!shore[z + 1][x + 1] && s > BARE_FROM)
-                cv.soil = s >= BARE_TO ? int16_t(0)
-                                       : int16_t(int32_t(SOIL_FULL) * (BARE_TO - s) / (BARE_TO - BARE_FROM));
+            // толщина земли - из общего массива с каймой: одно число для обоих соседних кусков
+            if (!shore[z + 1][x + 1]) cv.soil = out.soilThick[z + 1][x + 1];
             out.cover[z][x] = cv;
         }
 }

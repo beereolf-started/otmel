@@ -198,10 +198,10 @@ void probe(const world::TerrainParams& p, int32_t bx, int32_t bz, int cols, bool
         const int32_t top = hm.h[lz + 1][lx + 1];
         const int32_t cyTop = top >= 0 ? top / world::CHUNK : -((-top + world::CHUNK - 1) / world::CHUNK);
         bool has[5];
-        static uint8_t cut[5][world::CHUNK + 2][world::CHUNK + 2];
-        for (int j = 0; j < 5; ++j) has[j] = world::caveAir(p, world::ChunkPos{cx, cyTop - j, cz}, hm, air[j], cut[j]);
-        int srez = 0;
-        for (int j = 0; j < 5; ++j) srez = std::max(srez, int(cut[j][lz + 1][lx + 1]));
+        static uint8_t cutCol[world::CHUNK + 2][world::CHUNK + 2];
+        for (int j = 0; j < 5; ++j) has[j] = world::caveAir(p, world::ChunkPos{cx, cyTop - j, cz}, hm, air[j]);
+        world::soilCut(p, cx, cz, hm, cutCol);
+        const int srez = cutCol[lz + 1][lx + 1];
         const world::Material deep = world::rockAt(hm.rock, vx, top - 10 * world::VOXELS_PER_BLOCK, vzk);
         std::printf("  %7.2f бл: верх %6.1f, земли %5.2f, срез %5.2f;", (alongZ ? vzk : vx) / 16.0, top / 16.0,
                     hm.cover[lz][lx].soil / 16.0, srez / 16.0);
@@ -235,7 +235,6 @@ void probe(const world::TerrainParams& p, int32_t bx, int32_t bz, int cols, bool
 void pillars(const world::TerrainParams& p, int32_t bx, int32_t bz, int sideBlocks) {
     static world::ColumnHeights hm;
     static uint64_t air[world::CHUNK + 2][world::CHUNK + 2];
-    static uint8_t cut[world::CHUNK + 2][world::CHUNK + 2];
     static uint64_t masks[6][world::CHUNK + 2][world::CHUNK + 2];
     static int32_t surf[world::CHUNK + 2][world::CHUNK + 2];
     static uint8_t best[world::CHUNK + 2][world::CHUNK + 2];
@@ -249,15 +248,11 @@ void pillars(const world::TerrainParams& p, int32_t bx, int32_t bz, int sideBloc
             const int32_t cx = cx0 + i, cz = cz0 + j;
             world::columnHeights(p, cx, cz, hm);
             const int32_t cyTop = hm.maxH / world::CHUNK;
-            for (int z = 0; z < world::CHUNK + 2; ++z)
-                for (int x = 0; x < world::CHUNK + 2; ++x) best[z][x] = 0;
+            world::soilCut(p, cx, cz, hm, best);
             for (int k = 0; k < 6; ++k) {
-                const bool ok = world::caveAir(p, world::ChunkPos{cx, cyTop - k, cz}, hm, air, cut);
+                const bool ok = world::caveAir(p, world::ChunkPos{cx, cyTop - k, cz}, hm, air);
                 for (int z = 0; z < world::CHUNK + 2; ++z)
-                    for (int x = 0; x < world::CHUNK + 2; ++x) {
-                        masks[k][z][x] = ok ? air[z][x] : 0;
-                        best[z][x] = std::max(best[z][x], cut[z][x]);
-                    }
+                    for (int x = 0; x < world::CHUNK + 2; ++x) masks[k][z][x] = ok ? air[z][x] : 0;
             }
             // верх столбца: высота минус срез земли, а затем вниз, пока воксель помечен пустотой
             for (int z = 0; z < world::CHUNK + 2; ++z)
@@ -297,7 +292,44 @@ void pillars(const world::TerrainParams& p, int32_t bx, int32_t bz, int sideBloc
     std::printf("  столбов %lld из %lld столбцов\n", (long long)found, (long long)looked);
 }
 
+
+/** Шов: один и тот же мировой столбец считают два соседних столбца кусков - сходятся ли срезы. */
+void seams(const world::TerrainParams& p, int32_t bx, int32_t bz, int sideBlocks) {
+    static world::ColumnHeights hmA, hmB;
+    static uint8_t cutA[world::CHUNK + 2][world::CHUNK + 2], cutB[world::CHUNK + 2][world::CHUNK + 2];
+    const int32_t cx0 = (bx * world::VOXELS_PER_BLOCK) / world::CHUNK;
+    const int32_t cz0 = (bz * world::VOXELS_PER_BLOCK) / world::CHUNK;
+    const int side = std::max(2, sideBlocks * world::VOXELS_PER_BLOCK / world::CHUNK);
+    int64_t bad = 0, looked = 0, worst = 0;
+    for (int j = 0; j < side; ++j)
+        for (int i = 0; i < side; ++i) {
+            const int32_t cx = cx0 + i, cz = cz0 + j;
+            world::columnHeights(p, cx, cz, hmA);
+            world::soilCut(p, cx, cz, hmA, cutA);
+            world::columnHeights(p, cx + 1, cz, hmB);
+            world::soilCut(p, cx + 1, cz, hmB, cutB);
+            // общий мировой столбец x = (cx+1)*CHUNK
+            for (int z = 1; z <= world::CHUNK; ++z) {
+                ++looked;
+                // у A это индекс CHUNK+1 (мировой x = (cx+1)*CHUNK), у B - индекс 1: кайма сдвинута
+                const int a = cutA[z][world::CHUNK + 1], b = cutB[z][1];
+                if (a == b) continue;
+                ++bad;
+                worst = std::max<int64_t>(worst, std::abs(a - b));
+                if (bad <= 5)
+                    std::printf("  шов: блок (%.2f, %.2f), срез у своего %.2f, у соседа %.2f\n",
+                                ((cx + 1) * world::CHUNK - 1) / 16.0, (cz * world::CHUNK + z - 1) / 16.0, a / 16.0, b / 16.0);
+            }
+        }
+    std::printf("швов %lld из %lld столбцов, наибольшее расхождение %.2f бл\n", (long long)bad, (long long)looked, worst / 16.0);
+}
+
 int main(int argc, char** argv) {
+    if (argc > 3 && std::string(argv[1]) == "--seam") {
+        world::TerrainParams tp;
+        seams(tp, atoi(argv[2]), atoi(argv[3]), argc > 4 ? std::max(4, atoi(argv[4])) : 24);
+        return 0;
+    }
     if (argc > 3 && std::string(argv[1]) == "--pillars") {
         world::TerrainParams tp;
         pillars(tp, atoi(argv[2]), atoi(argv[3]), argc > 4 ? std::max(4, atoi(argv[4])) : 32);
