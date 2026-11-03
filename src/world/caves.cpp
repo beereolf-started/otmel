@@ -123,7 +123,7 @@ bool caveAir(const TerrainParams& p, ChunkPos pos, const ColumnHeights& hm, uint
             const int cvz = std::clamp(z - 1, 0, CHUNK - 1), cvx = std::clamp(x - 1, 0, CHUNK - 1);
             // сколько опоры обязано быть над пустотой: вся толща земли и ещё два блока породы;
             // на круче и скале земли нет вовсе, там довольно самой породы
-            const int32_t roofBand = (hm.cover[cvz][cvx].bare ? 0 : SOIL_DEPTH) + ROCK_ROOF;
+            const int32_t roofBand = hm.cover[cvz][cvx].soil + ROCK_ROOF;
 
             // Пустота по самому полю: форму хода задаёт только шум, и ход идёт под тем углом, под
             // каким его провёл шум. Ничего вертикального здесь не прорезается.

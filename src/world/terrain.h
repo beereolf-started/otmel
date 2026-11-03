@@ -146,12 +146,21 @@ Climate climateAt(const TerrainParams& p, int32_t x, int32_t z);
 Climate climateAt(const TerrainParams& p, int32_t x, int32_t z, const SlowFields& slow);
 fx::q16 temperatureAt(const TerrainParams& p, const Climate& c, int32_t height);   // с поправкой на высоту
 
+// Вся толща земли на пологом месте: верхний воксель покрова и слой под ним в три блока
+constexpr int16_t SOIL_FULL = 3 * VOXELS_PER_BLOCK + 1;
+
 // Покров: верхний воксель и слой под ним (3 блока)
 struct Cover {
     Material top, under;
     // Р79: на крутизне покров не держится - осыпается, и наружу выходит сама порода. Отсюда скалы,
     // обрывы и омываемые рекой камни, а горы перестают быть земляными холмами.
-    bool bare = false;
+    //
+    // Толщина земли - ВЕЛИЧИНА, а не признак: чем круче, тем тоньше, и на обрыве она сходит в ноль.
+    // Признаком она быть не может: порог по уклону срабатывал бы через столбец и резал склон на
+    // вертикальные полосы земли и голого камня. Уровень камня так поднимается навстречу
+    // поверхности постепенно.
+    int16_t soil = SOIL_FULL;   // вокселей земли сверху: верхний воксель покрова и слой под ним
+    bool bare() const { return soil <= 0; }
 };
 Cover coverAt(const TerrainParams& p, const Climate& c, int32_t height);
 
@@ -182,9 +191,9 @@ Material rockAt(const RockColumn& c, int32_t x, int32_t y, int32_t z);
 constexpr int32_t NO_WATER = INT32_MIN;
 inline Material columnMaterial(int32_t top, Cover cv, int32_t wy, int32_t water, const RockColumn& rc, int32_t wx, int32_t wz) {
     if (wy > top) return wy <= water ? WATER : AIR;
-    if (cv.bare) return rockAt(rc, wx, wy, wz);     // Р79: крутизна - покрова нет вовсе, сразу порода
+    if (cv.soil <= 0) return rockAt(rc, wx, wy, wz);   // Р79: круча - земли нет вовсе, сразу порода
     if (wy == top) return cv.top;
-    if (wy >= top - 3 * VOXELS_PER_BLOCK) return cv.under;
+    if (wy > top - cv.soil) return cv.under;           // земли столько, сколько держит уклон
     return rockAt(rc, wx, wy, wz);
 }
 

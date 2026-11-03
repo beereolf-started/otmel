@@ -178,7 +178,56 @@ void caveStats(const world::TerrainParams& p, int32_t cx0, int32_t cz0, int cols
         std::printf("  высота %-12s %6.2f%%\n", NAME[i], 100.0 * double(runs[i]) / double(n ? n : 1));
 }
 
+
+/**
+ * Разбор места по вокселям: ряд соседних столбцов, и в каждом - где пустота, где земля, где порода.
+ * Нужен, чтобы судить о висящих слитках и обвалах числом, а не по картинке.
+ */
+void probe(const world::TerrainParams& p, int32_t bx, int32_t bz, int cols) {
+    static world::ColumnHeights hm;
+    static uint64_t air[5][world::CHUNK + 2][world::CHUNK + 2];
+    const int32_t vx0 = bx * world::VOXELS_PER_BLOCK, vz = bz * world::VOXELS_PER_BLOCK;
+    std::printf("разбор у блока (%d, %d), %d столбцов на восток\n", bx, bz, cols);
+    for (int k = 0; k < cols; ++k) {
+        const int32_t vx = vx0 + k;
+        const int32_t cx = vx >= 0 ? vx / world::CHUNK : -((-vx + world::CHUNK - 1) / world::CHUNK);
+        const int32_t cz = vz >= 0 ? vz / world::CHUNK : -((-vz + world::CHUNK - 1) / world::CHUNK);
+        world::columnHeights(p, cx, cz, hm);
+        const int lx = int(vx - cx * world::CHUNK), lz = int(vz - cz * world::CHUNK);
+        const int32_t top = hm.h[lz + 1][lx + 1];
+        const int32_t cyTop = top >= 0 ? top / world::CHUNK : -((-top + world::CHUNK - 1) / world::CHUNK);
+        bool has[5];
+        for (int j = 0; j < 5; ++j) has[j] = world::caveAir(p, world::ChunkPos{cx, cyTop - j, cz}, hm, air[j]);
+        std::printf("  x=%7.2f бл: верх %6.1f бл, земли %5.2f бл;", vx / 16.0, top / 16.0,
+                    hm.cover[lz][lx].soil / 16.0);
+        int runs = 0;
+        int32_t runFrom = INT32_MIN, prev = INT32_MIN;
+        for (int j = 0; j < 5; ++j) {
+            if (!has[j]) continue;
+            for (int y = world::CHUNK - 1; y >= 0; --y) {
+                if (!((air[j][lz + 1][lx + 1] >> (y + 1)) & 1)) continue;
+                const int32_t wy = (cyTop - j) * world::CHUNK + y;
+                if (wy > top) continue;
+                if (prev != wy + 1) {
+                    if (runFrom != INT32_MIN && runs < 4)
+                        std::printf(" пустота %.1f..%.1f бл;", prev / 16.0, runFrom / 16.0);
+                    if (runFrom != INT32_MIN) ++runs;
+                    runFrom = wy;
+                }
+                prev = wy;
+            }
+        }
+        if (runFrom != INT32_MIN && runs < 4) std::printf(" пустота %.1f..%.1f бл;", prev / 16.0, runFrom / 16.0);
+        std::printf("\n");
+    }
+}
+
 int main(int argc, char** argv) {
+    if (argc > 3 && std::string(argv[1]) == "--probe") {
+        world::TerrainParams tp;
+        probe(tp, atoi(argv[2]), atoi(argv[3]), argc > 4 ? std::max(2, atoi(argv[4])) : 24);
+        return 0;
+    }
     if (argc > 1 && std::string(argv[1]) == "--caves") {
         world::TerrainParams tp;
         caveStats(tp, -6225, 11780, argc > 2 ? std::max(4, atoi(argv[2])) : 24);
