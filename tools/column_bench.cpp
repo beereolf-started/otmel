@@ -271,19 +271,25 @@ void pillars(const world::TerrainParams& p, int32_t bx, int32_t bz, int sideBloc
             for (int z = 1; z <= world::CHUNK; ++z)
                 for (int x = 1; x <= world::CHUNK; ++x) {
                     ++looked;
-                    const int32_t hi = std::min(std::min(surf[z][x - 1], surf[z][x + 1]),
-                                                std::min(surf[z - 1][x], surf[z + 1][x]));
-                    if (hi - surf[z][x] < 2 * world::VOXELS_PER_BLOCK) continue;
+                    const int32_t lo4 = std::max(std::max(surf[z][x - 1], surf[z][x + 1]),
+                                                 std::max(surf[z - 1][x], surf[z + 1][x]));
+                    const int32_t hi4 = std::min(std::min(surf[z][x - 1], surf[z][x + 1]),
+                                                 std::min(surf[z - 1][x], surf[z + 1][x]));
+                    const bool pillar = surf[z][x] - lo4 >= 2 * world::VOXELS_PER_BLOCK;   // столб
+                    const bool pit = hi4 - surf[z][x] >= 2 * world::VOXELS_PER_BLOCK;      // яма
+                    if (!pillar && !pit) continue;
+                    const int32_t hi = pillar ? lo4 : hi4;
                     ++found;
                     if (found <= 8) {
-                        const world::Cover cv = hm.cover[std::min(z, world::CHUNK) - 1][std::min(x, world::CHUNK) - 1];
+                        world::Cover cv = hm.cover[std::min(z, world::CHUNK) - 1][std::min(x, world::CHUNK) - 1];
+                        cv.soil = int16_t(std::max(0, int(cv.soil) - int(best[z][x])));   // срез уменьшает толщу
                         const world::Material m = world::columnMaterial(hm.h[z][x] - best[z][x], cv, surf[z][x],
                                                                        hm.water[z][x], hm.rock,
                                                                        cx * world::CHUNK + x - 1, cz * world::CHUNK + z - 1);
-                        std::printf("  яма: блок (%.2f, %.2f, %.2f), соседи выше на %.2f, материал %d, "
+                        std::printf("  %s: блок (%.2f, %.2f, %.2f), соседи на %.2f, материал %d, "
                                     "срез свой %.2f, соседей %.2f %.2f %.2f %.2f, земли %.2f\n",
-                                    (cx * world::CHUNK + x - 1) / 16.0, surf[z][x] / 16.0,
-                                    (cz * world::CHUNK + z - 1) / 16.0, (hi - surf[z][x]) / 16.0, int(m),
+                                    pillar ? "столб" : "яма", (cx * world::CHUNK + x - 1) / 16.0, surf[z][x] / 16.0,
+                                    (cz * world::CHUNK + z - 1) / 16.0, std::abs(hi - surf[z][x]) / 16.0, int(m),
                                     best[z][x] / 16.0, best[z][x - 1] / 16.0, best[z][x + 1] / 16.0,
                                     best[z - 1][x] / 16.0, best[z + 1][x] / 16.0, cv.soil / 16.0);
                     }
