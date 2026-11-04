@@ -48,7 +48,7 @@ public:
     const Stats& stats() const { return stats_; }
 
 private:
-    struct ChunkMesh { glm::ivec3 origin; render::MeshId mesh; int quads; bool underground; };
+    struct ChunkMesh { glm::ivec3 origin; render::MeshId mesh; int quads; bool underground; bool fine; glm::ivec3 fineOff; };
     // готовый столбец: его куски, до какой глубины он построен (Builder::NO_DEPTH - только поверхность)
     // и с каких сторон его подземные куски закрыты заглушками (Р27)
     struct Column { std::vector<ChunkMesh> chunks; int32_t builtMin = Builder::NO_DEPTH; uint8_t caps = 0; };

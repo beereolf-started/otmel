@@ -20,7 +20,16 @@
 
 class Builder {
 public:
-    struct ChunkData { glm::ivec3 origin; std::vector<uint32_t> verts; int quads, waterQuads; bool underground; };
+    // Р88: fine - сетка МЕЛКИХ вокселей (1/16 блока): так рисуются рудные вкрапления. origin у
+    // такой сетки - блок-основа, fineOff - сдвиг от него в мелких вокселях.
+    struct ChunkData {
+        glm::ivec3 origin;
+        std::vector<uint32_t> verts;
+        int quads, waterQuads;
+        bool underground;
+        bool fine = false;
+        glm::ivec3 fineOff{0};
+    };
     // Заглушки пещер (Р27): с каких сторон подземные куски столбца закрыты каменной стенкой - край подземного
     // яруса, за которым ничего не построено (иначе сквозь тоннель видно небо)
     enum CapSide : uint8_t { CAP_NX = 1, CAP_PX = 2, CAP_NZ = 4, CAP_PZ = 8 };

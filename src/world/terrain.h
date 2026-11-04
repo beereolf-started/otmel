@@ -209,18 +209,13 @@ Material rockAt(const RockColumn (&c)[2][2], int32_t x, int32_t y, int32_t z);
 // сетке нетронутого куска массив вокселей не нужен вовсе - материал нужен только у видимых граней.
 // Р28: выше дна до уровня воды столбца (water - верхний воксель воды, NO_WATER - сухо) - вода.
 constexpr int32_t NO_WATER = INT32_MIN;
-Material oreAt(uint32_t seed, int32_t x, int32_t y, int32_t z, Material host, int32_t surface);
 inline Material columnMaterial(int32_t top, Cover cv, int32_t wy, int32_t water, const RockColumn (&rc)[2][2],
                                int32_t wx, int32_t wz) {
     if (wy > top) return wy <= water ? WATER : AIR;
     if (cv.soil <= 0) return rockAt(rc, wx, wy, wz);   // Р79: круча - земли нет вовсе, сразу порода
     if (wy == top) return cv.top;
     if (wy > top - cv.soil) return cv.under;           // земли столько, сколько держит уклон
-    const Material rock = rockAt(rc, wx, wy, wz);
-    // Р88: руда - вкрапления в породе. Глубину считаем от верха столбца: поясов глубины нет, руда
-    // там, где её создал процесс, а процесс привязан к породе вокруг и к тому, как глубоко мы.
-    const Material ore = oreAt(rc[0][0].seed, wx, wy, wz, rock, top);
-    return ore != AIR ? ore : rock;
+    return rockAt(rc, wx, wy, wz);
 }
 
 // Высоты столбцов куска С КАЙМОЙ в один воксель: [-1..32] по x и z, 34×34. Кайма нужна сетке: грань на краю

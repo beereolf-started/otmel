@@ -220,7 +220,7 @@ void VoxelZone::update(glm::vec3 eye, glm::vec3 forward, const Frustum& fr, doub
         c.builtMin = r.cyMin;
         c.caps = r.caps;
         for (const Builder::ChunkData& d : r.chunks) {
-            c.chunks.push_back({d.origin, gpu_.uploadChunkMesh(d.verts, d.waterQuads), d.quads, d.underground});
+            c.chunks.push_back({d.origin, gpu_.uploadChunkMesh(d.verts, d.waterQuads), d.quads, d.underground, d.fine, d.fineOff});
             ++stats_.chunks;
             stats_.quads += d.quads;
         }
@@ -284,8 +284,11 @@ int VoxelZone::draw(const Frustum& fr, render::CommandList& out) const {
             // Р39: у столбцов вне яруса подземные куски - мелкие пещеры (LOD), закрытые дном, - их рисуем
             if (m.underground && !under && c.builtMin != Builder::NO_DEPTH) continue;
             const glm::vec3 lo = glm::vec3(m.origin) / float(world::VOXELS_PER_BLOCK);
-            if (!fr.visible(lo, lo + glm::vec3(float(BLOCKS_PER_COLUMN)))) continue;
-            out.drawChunk(m.mesh, m.origin);
+            // Р88: рудная сетка мелкая - два блока на сторону, а не кусок
+            const float sideB = m.fine ? 2.0f : float(BLOCKS_PER_COLUMN);
+            if (!fr.visible(lo, lo + glm::vec3(sideB))) continue;
+            if (m.fine) out.drawFineChunk(m.mesh, m.origin, m.fineOff);
+            else out.drawChunk(m.mesh, m.origin);
             ++n;
         }
     }
