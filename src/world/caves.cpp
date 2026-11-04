@@ -294,8 +294,12 @@ void soilCut(const TerrainParams& p, int32_t chunkX, int32_t chunkZ, const Colum
     bool anyOpen = false;
     for (int z = 0; z < CHUNK + 2; ++z)
         for (int x = 0; x < CHUNK + 2; ++x) {
+            // Признак «рядом вода» здесь НЕ УЧАСТВУЕТ: он двоичный, и у кромки пруда в самой воронке
+            // срез выключался мгновенно - отсюда была отвесная стенка в три блока. Пустоту под водой
+            // не пускает гашение в маске пустот, а землю под водой снимать можно: под ней остаётся
+            // камень, и пруд просто становится глубже.
             fx::q16 v = fx::ONE;
-            if (!hm.nearWater[z][x]) {
+            {
                 const fx::q16 e = gen::simplex2(x0 + x, z0 + z, c.entranceCellLog2, caveSeed(p.seed, ENTRANCE));
                 if (e >= c.entranceFrom) v = 0;
                 else if (e > c.entranceFrom - ENTRANCE_EDGE)

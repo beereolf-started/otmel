@@ -183,15 +183,15 @@ void caveStats(const world::TerrainParams& p, int32_t cx0, int32_t cz0, int cols
  * Разбор места по вокселям: ряд соседних столбцов, и в каждом - где пустота, где земля, где порода.
  * Нужен, чтобы судить о висящих слитках и обвалах числом, а не по картинке.
  */
-void probe(const world::TerrainParams& p, int32_t bx, int32_t bz, int cols, bool alongZ = false) {
+void probe(const world::TerrainParams& p, int32_t bx, int32_t bz, int cols, bool alongZ = false, int stepVox = world::VOXELS_PER_BLOCK) {
     static world::ColumnHeights hm;
     static uint64_t air[5][world::CHUNK + 2][world::CHUNK + 2];
     const int32_t vx0 = bx * world::VOXELS_PER_BLOCK, vz = bz * world::VOXELS_PER_BLOCK;
     std::printf("разбор у блока (%d, %d), %d столбцов на восток\n", bx, bz, cols);
     for (int k = 0; k < cols; ++k) {
-        const int32_t vx = vx0 + (alongZ ? 0 : k * world::VOXELS_PER_BLOCK);   // шаг - блок, а не воксель
+        const int32_t vx = vx0 + (alongZ ? 0 : k * stepVox);
         const int32_t cx = vx >= 0 ? vx / world::CHUNK : -((-vx + world::CHUNK - 1) / world::CHUNK);
-        const int32_t vzk = vz + (alongZ ? k * world::VOXELS_PER_BLOCK : 0);
+        const int32_t vzk = vz + (alongZ ? k * stepVox : 0);
         const int32_t cz = vzk >= 0 ? vzk / world::CHUNK : -((-vzk + world::CHUNK - 1) / world::CHUNK);
         world::columnHeights(p, cx, cz, hm);
         const int lx = int(vx - cx * world::CHUNK), lz = int(vzk - cz * world::CHUNK);
@@ -338,7 +338,8 @@ void cuts(const world::TerrainParams& p, int32_t bx, int32_t bz, int sideBlocks)
     const int32_t cz0 = (bz * world::VOXELS_PER_BLOCK) / world::CHUNK;
     const int side = std::max(2, sideBlocks * world::VOXELS_PER_BLOCK / world::CHUNK);
     int64_t with = 0, looked = 0;
-    int shown = 0;
+    int shown = 0, worstStep = 0;
+    int32_t worstAt[2] = {};
     for (int j = 0; j < side; ++j)
         for (int i = 0; i < side; ++i) {
             const int32_t cx = cx0 + i, cz = cz0 + j;
@@ -350,6 +351,21 @@ void cuts(const world::TerrainParams& p, int32_t bx, int32_t bz, int sideBlocks)
                     ++looked;
                     if (cut[z][x]) ++with;
                     best = std::max(best, int(cut[z][x]));
+                    // ступенька среза к соседям: мера гладкости воронки. Большая ступенька и есть
+                    // отвесная стенка на земле.
+                    // ступенька на ПОВЕРХНОСТИ сверх той, что даёт сам рельеф: только она и видна
+                    const auto step1 = [&](int z2, int x2) {
+                        const int now = std::abs((int(hm.h[z][x]) - int(cut[z][x])) - (int(hm.h[z2][x2]) - int(cut[z2][x2])));
+                        const int raw = std::abs(int(hm.h[z][x]) - int(hm.h[z2][x2]));
+                        return now - raw;
+                    };
+                    const int st = std::max(std::max(step1(z, x - 1), step1(z, x + 1)),
+                                            std::max(step1(z - 1, x), step1(z + 1, x)));
+                    if (st > worstStep) {
+                        worstStep = st;
+                        worstAt[0] = cx * world::CHUNK + x - 1;
+                        worstAt[1] = cz * world::CHUNK + z - 1;
+                    }
                 }
             if (best >= world::VOXELS_PER_BLOCK && shown < 8) {
                 ++shown;
@@ -357,6 +373,24 @@ void cuts(const world::TerrainParams& p, int32_t bx, int32_t bz, int sideBlocks)
                             cz * world::CHUNK / 16, best / 16.0);
             }
         }
+    if (worstStep > 0) {
+        // окрестность худшей ступеньки по вокселям: видно, стенка это или ровный скат
+        const int32_t cx = worstAt[0] >= 0 ? worstAt[0] / world::CHUNK : -((-worstAt[0] + world::CHUNK - 1) / world::CHUNK);
+        const int32_t cz = worstAt[1] >= 0 ? worstAt[1] / world::CHUNK : -((-worstAt[1] + world::CHUNK - 1) / world::CHUNK);
+        world::columnHeights(p, cx, cz, hm);
+        world::soilCut(p, cx, cz, hm, cut);
+        const int lx = int(worstAt[0] - cx * world::CHUNK) + 1, lz = int(worstAt[1] - cz * world::CHUNK) + 1;
+        for (int dz = -3; dz <= 3; ++dz) {
+            std::printf("    ");
+            for (int dx = -3; dx <= 3; ++dx) {
+                const int z = std::clamp(lz + dz, 0, world::CHUNK + 1), x = std::clamp(lx + dx, 0, world::CHUNK + 1);
+                std::printf("%5.2f ", cut[z][x] / 16.0);
+            }
+            std::printf("\n");
+        }
+    }
+    std::printf("  наибольшая ступенька среза между соседями %.2f бл у блока (%d, %d)\n", worstStep / 16.0,
+                worstAt[0] / 16, worstAt[1] / 16);
     std::printf("срез есть у %lld столбцов из %lld (%.3f%%)\n", (long long)with, (long long)looked,
                 100.0 * double(with) / double(looked ? looked : 1));
 }
@@ -446,7 +480,8 @@ int main(int argc, char** argv) {
     }
     if (argc > 3 && std::string(argv[1]) == "--probe") {
         world::TerrainParams tp;
-        probe(tp, atoi(argv[2]), atoi(argv[3]), argc > 4 ? std::max(2, atoi(argv[4])) : 24, argc > 5);
+        probe(tp, atoi(argv[2]), atoi(argv[3]), argc > 4 ? std::max(2, atoi(argv[4])) : 24, argc > 5,
+              argc > 6 ? std::max(1, atoi(argv[6])) : world::VOXELS_PER_BLOCK);
         return 0;
     }
     if (argc > 1 && std::string(argv[1]) == "--caves") {
