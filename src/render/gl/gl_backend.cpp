@@ -217,6 +217,34 @@ public:
         glTextureSubImage2D(maskTex_, 0, 0, 0, side, side, GL_RED_INTEGER, GL_UNSIGNED_BYTE, mask.data());
     }
 
+    // Р80: атлас текстур блоков рядом с игрой (assets/atlas.bin: ширина, высота, затем RGBA).
+    // Сырые точки, а не PNG: разбирать картинки движку незачем, собирает атлас tools/atlas.py.
+    void ensureAtlas() {
+        if (atlasTex_) return;
+        atlasTex_ = ~0u;   // второй раз не пытаться, даже если не вышло
+        const std::string path = std::string(SDL_GetBasePath()) + "assets/atlas.bin";
+        std::ifstream f(path, std::ios::binary);
+        std::vector<char> raw((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+        if (raw.size() < 4) { journal::error("opengl", "нет атласа {}", path); atlasTex_ = 0; return; }
+        const int w = int(uint8_t(raw[0])) | int(uint8_t(raw[1])) << 8;
+        const int h = int(uint8_t(raw[2])) | int(uint8_t(raw[3])) << 8;
+        if (w <= 0 || h <= 0 || raw.size() < size_t(4) + size_t(w) * h * 4) {
+            journal::error("opengl", "атлас испорчен: {}×{}, {} байт", w, h, raw.size());
+            atlasTex_ = 0;
+            return;
+        }
+        glCreateTextures(GL_TEXTURE_2D, 1, &atlasTex_);
+        glTextureStorage2D(atlasTex_, 1, GL_RGBA8, w, h);
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+        glTextureSubImage2D(atlasTex_, 0, 0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, raw.data() + 4);
+        // ближайшая точка: рисунок блочный, сглаживание размыло бы его и смешало соседние клетки
+        glTextureParameteri(atlasTex_, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTextureParameteri(atlasTex_, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glTextureParameteri(atlasTex_, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTextureParameteri(atlasTex_, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        journal::info("opengl", "атлас текстур: {}×{} точек", w, h);
+    }
+
     void updateFlowField(int side, std::span<const float> v) override {
         if (side != flowSide_) {
             if (flowTex_) glDeleteTextures(1, &flowTex_);
@@ -308,7 +336,13 @@ public:
             } else if (auto* d = std::get_if<CmdDrawChunk>(&cmd)) {
                 const Mesh& m = meshes_[d->mesh];
                 if (!m.vbo) continue;
-                if (current != program_) { glUseProgram(program_); glBindVertexArray(vao_); current = program_; }
+                if (current != program_) {
+                    glUseProgram(program_);
+                    glBindVertexArray(vao_);
+                    ensureAtlas();
+                    glBindTextureUnit(6, atlasTex_);   // Р80: атлас текстур блоков
+                    current = program_;
+                }
                 if (m.water) water_.push_back(&cmd);
                 stats.quads += m.quads;
                 if (m.quads == m.water) continue;
@@ -569,6 +603,7 @@ private:
     GLuint overlayProgram_ = 0, overlayTex_ = 0, emptyVao_ = 0;   // панель отладки
     int overlayW_ = 0, overlayH_ = 0;
     GLuint fbo_ = 0, colorRb_ = 0, depthRb_ = 0, maskTex_ = 0, flowTex_ = 0;
+    GLuint atlasTex_ = 0;   // Р80: атлас текстур блоков, 8×6 клеток по 16 точек
     GLuint depthFbo_ = 0, depthTex_ = 0;   // Р51: копия глубины сцены для воды
     GLuint dynProgram_ = 0, dynVao_ = 0, dynVbo_ = 0;   // Р45: вода автомата
     GLuint fineProgram_ = 0, fineVao_ = 0, fineSsbo_ = 0, fineTex_ = 0, fineMask_ = 0;   // Р58: мелкая вода

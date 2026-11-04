@@ -35,6 +35,8 @@ layout(location = 1) out vec3 vWorld;          // Р43: точка в мире, 
 layout(location = 2) flat out uint vNormal;    // Р43: 0 +X, 1 -X, 2 +Y, 3 -Y, 4 +Z, 5 -Z
 layout(location = 3) flat out uint vWater;     // Р43: 1 - вода
 layout(location = 4) out float vFoam;          // Р59: пена (мелкая вода у водопадов)
+layout(location = 5) flat out uint vMat;       // Р80: материал - по нему берётся клетка атласа
+layout(location = 6) out float vLight;         // Р80: свет отдельно, чтобы красить им текстуру
 
 // цвета материалов, пока без текстур: 0 воздух, 1 камень, 2 земля, 3 трава, 4 песок, 5 снег, 6 вода (Р28)
 // Р53: 7 кора, 8 древесина, 9 листва, 10 листва светлее; Р71: кора серо-бурая, 11 - кора в трещине
@@ -88,6 +90,8 @@ void main() {
     // свет: рассеянный по нормали плюс постоянная подсветка неба
     float light = 0.35 + 0.65 * max(dot(NORMALS[normal], normalize(sunDir.xyz)), 0.0);
     vColor = vec4(COLORS[min(material, 47u)] * light, material == 6u ? WATER_ALPHA : 1.0);
+    vMat = min(material, 47u);
+    vLight = light;
     vWorld = world;
     vNormal = normal;
     vFoam = 0.0;

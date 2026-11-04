@@ -9,6 +9,8 @@ layout(location = 1) in vec3 vWorld;
 layout(location = 2) flat in uint vNormal;
 layout(location = 3) flat in uint vWater;
 layout(location = 4) in float vFoam;   // Р59: пена мелкой воды
+layout(location = 5) flat in uint vMat;
+layout(location = 6) in float vLight;
 layout(location = 0) out vec4 outColor;
 
 layout(std140, binding = 0) uniform Frame {
@@ -28,6 +30,34 @@ layout(std140, binding = 0) uniform Frame {
 layout(binding = 1) uniform sampler2D uFlow;         // Р43: скорость воды, блоки/с (x, z)
 layout(binding = 2) uniform sampler2D uSceneDepth;   // Р51: глубина сцены без воды
 layout(binding = 5) uniform usampler2D uFineMask;   // Р58: 1 - блок рисуется мелкой водой (зона - simArea)
+#ifndef VULKAN
+// Р80: атлас текстур блоков - 8×6 клеток по 16 точек (tools/atlas.py); клетка = номер материала.
+layout(binding = 6) uniform sampler2D uAtlas;
+#endif
+
+// Р80: цвет грунта. Мир здесь в блоках, поэтому дробная часть двух поперечных нормали координат -
+// это и есть место внутри блока; прямоугольники склеены из многих блоков, и такой счёт сам
+// повторяет рисунок на каждом из них, без лишних чисел в вершине.
+//
+// Дальше половины дальности видимости текстура не берётся: там она не читается, а цена есть.
+// Переход плавный, на четверти дальности, иначе по кольцу пошла бы заметная черта.
+vec4 groundColor() {
+#ifdef VULKAN
+    return vColor;
+#else
+    // Листва текстуру пока не берёт: у неё свой принцип, это отдельная работа.
+    if (vMat == 9u || vMat == 10u) return vColor;
+    // Р54: vWorld - в прежних мерах, единица = 16 блоков мира; в блоках - vWorld * 16
+    vec3 wb = vWorld * 16.0;
+    vec2 uv = fract(vNormal < 2u ? wb.zy : (vNormal < 4u ? wb.xz : wb.xy));
+    const vec2 CELLS = vec2(8.0, 6.0);
+    vec2 cell = vec2(float(vMat % 8u), float(vMat / 8u));
+    vec3 rgb = texture(uAtlas, (cell + uv) / CELLS).rgb * vLight;
+    float far = max(fade.y, 64.0);
+    float t = clamp((distance(vWorld, eye.xyz) - 0.5 * far) / (0.25 * far), 0.0, 1.0);   // far - в тех же мерах
+    return vec4(mix(rgb, vColor.rgb, t), vColor.a);
+#endif
+}
 
 // шум для ряби: значения в узлах решётки, между ними - плавно
 // Р55: хеш - целочисленный: sin от мировых координат (сотни тысяч блоков, Р54) теряет точность - рябь
@@ -76,7 +106,7 @@ const vec3 DEEP = vec3(0.015, 0.07, 0.10);
 const float ABSORB = 0.32;   // на блок толщины по лучу
 
 void main() {
-    if (vWater == 0u) { outColor = vColor; return; }   // грунт - как был
+    if (vWater == 0u) { outColor = groundColor(); return; }   // Р80: грунт - текстурой из атласа
     if (vWater == 3u) { outColor = vColor; return; }   // Р52: брызги - белые воксели как есть
     // Р55 (Р54: воксель = блок мира): вода детальнее блока - рябь, блики, пена и полосы считаются по сетке
     // ТЕКСЕЛЕЙ (1/16 блока), время - кадрами по 1/8 с: блик перескакивает с текселя на тексель. wb - точка в блоках

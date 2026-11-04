@@ -88,6 +88,15 @@ foreach(S ${SHADERS})
     list(APPEND SPV_FILES ${OUTVK})
     list(APPEND SPV_FILES ${OUT})
 endforeach()
+# Р80: атлас текстур блоков - рядом с программой (собирается tools/atlas.py из образцов сборки)
+add_custom_command(OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/assets/atlas.bin
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_CURRENT_BINARY_DIR}/assets
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${CMAKE_CURRENT_SOURCE_DIR}/assets/atlas.bin
+            ${CMAKE_CURRENT_BINARY_DIR}/assets/atlas.bin
+    DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/assets/atlas.bin
+    COMMENT "атлас текстур")
+list(APPEND SPV_FILES ${CMAKE_CURRENT_BINARY_DIR}/assets/atlas.bin)
+
 add_custom_target(otmel_shaders ALL DEPENDS ${SPV_FILES})
 add_dependencies(otmel otmel_shaders)
 
