@@ -198,10 +198,16 @@ void meshImpl(ChunkPos pos, const Chunk* vox, const ColumnHeights& hm, const uin
 
     // ─── 2-4. Грани грунта, затем воды: вода - в конце сетки (stats.waterQuads) ──
     emitFaces(col, nullptr, [&](int x, int y, int z) {
-        // верх столбца берём с учётом среза земли: поверхность опустилась, и покров должен лечь на
-        // новый верх, иначе по откосу воронки видна голая земля вместо дёрна или снега
-        const int32_t topEff = hm.h[z + 1][x + 1] - (cut ? int32_t(cut[z + 1][x + 1]) : 0);
-        return vox ? vox->at(x, y, z) : columnMaterial(topEff, hm.cover[z][x], y0 + y, hm.water[z + 1][x + 1],
+        // Верх столбца - с учётом среза земли у выхода шахты: поверхность опустилась, и покров
+        // должен лечь на новый верх, иначе по откосу воронки видна голая земля вместо дёрна.
+        //
+        // ПОДОШВА ЗЕМЛИ ПРИ ЭТОМ ОСТАЁТСЯ НА МЕСТЕ: срез уменьшает толщину земли, а не двигает её
+        // вниз. Иначе слой земли съезжал бы вслед за поверхностью, влезал в пустоту, которая лежит
+        // ниже его прежней подошвы, и повисал над ней - а заодно подменял бы собой камень.
+        const int32_t vcut = cut ? int32_t(cut[z + 1][x + 1]) : 0;
+        Cover cv = hm.cover[z][x];
+        cv.soil = int16_t(std::max(0, int(cv.soil) - vcut));
+        return vox ? vox->at(x, y, z) : columnMaterial(hm.h[z + 1][x + 1] - vcut, cv, y0 + y, hm.water[z + 1][x + 1],
                                                        hm.rock, x0w + x, z0w + z);
     }, out, stats.quads);
     if (!anyWater) return;

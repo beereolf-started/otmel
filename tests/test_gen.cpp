@@ -467,7 +467,9 @@ int main() {
                         if (ya >= top) { ++holes; continue; }   // пустота выходит наружу - над ней ничего
                         {
                             const int32_t y = ya + 1;   // что лежит прямо на своде: обязано быть камнем
-                            const world::Material m = world::columnMaterial(top - cutCol[lz + 1][lx + 1], hm.cover[lz][lx], y,
+                            world::Cover cvEff = hm.cover[lz][lx];
+                            cvEff.soil = int16_t(std::max(0, int(cvEff.soil) - int(cutCol[lz + 1][lx + 1])));
+                            const world::Material m = world::columnMaterial(top - cutCol[lz + 1][lx + 1], cvEff, y,
                                                                            hm.water[lz + 1][lx + 1], hm.rock, wx, wz);
                             if (isRock(m)) continue;
                             ++lids;

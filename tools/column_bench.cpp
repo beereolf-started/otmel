@@ -355,7 +355,74 @@ void cuts(const world::TerrainParams& p, int32_t bx, int32_t bz, int sideBlocks)
                 100.0 * double(with) / double(looked ? looked : 1));
 }
 
+
+/**
+ * Висящая земля: воксель земли, под которым пустота. Это и навес, и столб, и крышка над пещерой -
+ * всё, что запрещено правилом «над пустотой либо камень, либо ничего». Должно быть НОЛЬ.
+ */
+void hanging(const world::TerrainParams& p, int32_t bx, int32_t bz, int sideBlocks) {
+    static world::ColumnHeights hm;
+    static uint64_t air[world::CHUNK + 2][world::CHUNK + 2];
+    static uint8_t cut[world::CHUNK + 2][world::CHUNK + 2];
+    static uint64_t masks[8][world::CHUNK + 2][world::CHUNK + 2];
+    const int32_t cx0 = (bx * world::VOXELS_PER_BLOCK) / world::CHUNK;
+    const int32_t cz0 = (bz * world::VOXELS_PER_BLOCK) / world::CHUNK;
+    const int side = std::max(2, sideBlocks * world::VOXELS_PER_BLOCK / world::CHUNK);
+    int64_t bad = 0, looked = 0;
+    int shown = 0;
+    const auto isSoil = [](world::Material m) {
+        return m == world::DIRT || m == world::GRASS || m == world::SAND || m == world::SNOW;
+    };
+    for (int j = 0; j < side; ++j)
+        for (int i = 0; i < side; ++i) {
+            const int32_t cx = cx0 + i, cz = cz0 + j;
+            world::columnHeights(p, cx, cz, hm);
+            world::soilCut(p, cx, cz, hm, cut);
+            const int32_t cyTop = hm.maxH / world::CHUNK;
+            for (int k = 0; k < 8; ++k) {
+                const bool ok = world::caveAir(p, world::ChunkPos{cx, cyTop - k, cz}, hm, air, cut);
+                for (int z = 0; z < world::CHUNK + 2; ++z)
+                    for (int x = 0; x < world::CHUNK + 2; ++x) masks[k][z][x] = ok ? air[z][x] : 0;
+            }
+            const auto isAir = [&](int z, int x, int32_t wy) {
+                const int32_t cy = wy >= 0 ? wy / world::CHUNK : -((-wy + world::CHUNK - 1) / world::CHUNK);
+                const int k = int(cyTop - cy);
+                if (k < 0 || k >= 8) return false;
+                const int yi = int(wy - (cy * world::CHUNK - 1));
+                return yi >= 0 && yi < world::CHUNK + 2 && ((masks[k][z][x] >> yi) & 1) != 0;
+            };
+            for (int z = 1; z <= world::CHUNK; ++z)
+                for (int x = 1; x <= world::CHUNK; ++x) {
+                    const int32_t top = hm.h[z][x] - cut[z][x];
+                    const world::Cover cv = hm.cover[z - 1][x - 1];
+                    const int32_t wx = cx * world::CHUNK + x - 1, wz = cz * world::CHUNK + z - 1;
+                    for (int32_t wy = top; wy > top - 8 * world::VOXELS_PER_BLOCK; --wy) {
+                        ++looked;
+                        if (isAir(z, x, wy)) continue;
+                        world::Cover cvEff = cv;
+                        cvEff.soil = int16_t(std::max(0, int(cv.soil) - int(cut[z][x])));
+                        const world::Material m =
+                            world::columnMaterial(top, cvEff, wy, hm.water[z][x], hm.rock, wx, wz);
+                        if (!isSoil(m)) continue;
+                        if (!isAir(z, x, wy - 1)) continue;
+                        ++bad;
+                        if (shown < 8) {
+                            ++shown;
+                            std::printf("  висит: блок (%.2f, %.2f, %.2f), материал %d, верх %.2f, срез %.2f\n",
+                                        wx / 16.0, wy / 16.0, wz / 16.0, int(m), top / 16.0, cut[z][x] / 16.0);
+                        }
+                    }
+                }
+        }
+    std::printf("висящей земли %lld вокселей из %lld проверенных\n", (long long)bad, (long long)looked);
+}
+
 int main(int argc, char** argv) {
+    if (argc > 3 && std::string(argv[1]) == "--hang") {
+        world::TerrainParams tp;
+        hanging(tp, atoi(argv[2]), atoi(argv[3]), argc > 4 ? std::max(4, atoi(argv[4])) : 32);
+        return 0;
+    }
     if (argc > 3 && std::string(argv[1]) == "--cuts") {
         world::TerrainParams tp;
         cuts(tp, atoi(argv[2]), atoi(argv[3]), argc > 4 ? std::max(4, atoi(argv[4])) : 32);
