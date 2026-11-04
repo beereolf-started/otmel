@@ -29,7 +29,8 @@ enum : Material { AIR = 0, STONE = 1, DIRT = 2, GRASS = 3, SAND = 4, SNOW = 5, W
                     SOIL_FIRST = 50, SOIL_LAST = 58,
                     // Р88: рудные минералы (world::ores) - материал = ORE_FIRST + номер. Руда не
                     // отдельный блок, а вкрапления в породе: рисунок - накладка поверх камня.
-                    ORE_FIRST = 59, ORE_LAST = 78,
+                    // Р88: на минерал по три оттенка палитры - тёмный, основной и блестящий
+                    ORE_FIRST = 59, ORE_LAST = 118,
                     MATERIAL_COUNT };
 
 struct ChunkPos { int32_t x, y, z; };

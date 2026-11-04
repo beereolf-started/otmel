@@ -285,7 +285,7 @@ int VoxelZone::draw(const Frustum& fr, render::CommandList& out) const {
             if (m.underground && !under && c.builtMin != Builder::NO_DEPTH) continue;
             const glm::vec3 lo = glm::vec3(m.origin) / float(world::VOXELS_PER_BLOCK);
             // Р88: рудная сетка мелкая - два блока на сторону, а не кусок
-            const float sideB = m.fine ? 2.0f : float(BLOCKS_PER_COLUMN);
+            const float sideB = m.fine ? 4.0f : float(BLOCKS_PER_COLUMN);
             if (!fr.visible(lo, lo + glm::vec3(sideB))) continue;
             if (m.fine) out.drawFineChunk(m.mesh, m.origin, m.fineOff);
             else out.drawChunk(m.mesh, m.origin);

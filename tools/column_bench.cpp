@@ -467,34 +467,46 @@ void hanging(const world::TerrainParams& p, int32_t bx, int32_t bz, int sideBloc
 }
 
 int main(int argc, char** argv) {
-    // Р88: сколько и какой руды в объёме - проверка, что тела вообще кладутся
+    // Р88: где лежат рудные тела и из чего они. Печатает самородки - по ним удобно смотреть глазами.
     if (argc > 3 && std::string(argv[1]) == "--ores") {
         world::TerrainParams tp;
         const int32_t bx = atoi(argv[2]), bz = atoi(argv[3]);
-        const int n = argc > 4 ? std::max(1, atoi(argv[4])) : 8;   // столбцов кусков по стороне
+        const int n = argc > 4 ? std::max(1, atoi(argv[4])) : 4;   // кусков по стороне
+        std::vector<world::OreSpeck> sp;
         std::vector<int64_t> cnt(world::ORE_COUNT, 0);
-        int64_t rock = 0;
         static world::ColumnHeights hm;
+        int shown = 0;
         for (int cz = 0; cz < n; ++cz)
             for (int cx = 0; cx < n; ++cx) {
                 const int32_t ccx = bx / world::CHUNK + cx, ccz = bz / world::CHUNK + cz;
                 world::columnHeights(tp, ccx, ccz, hm);
-                for (int lz = 0; lz < world::CHUNK; ++lz)
-                    for (int lx = 0; lx < world::CHUNK; ++lx) {
+                for (int32_t by = hm.minH - 160; by < hm.maxH; by += world::CHUNK) {
+                    world::oreSpecks(tp.seed, ccx * world::CHUNK, by, ccz * world::CHUNK, world::CHUNK, sp);
+                    for (const world::OreSpeck& s2 : sp) {
+                        const auto fd = [](int32_t a, int32_t b) { return a >= 0 ? a / b : -((-a + b - 1) / b); };
+                        const int32_t bxx = fd(s2.x, world::FINE), byy = fd(s2.y, world::FINE), bzz = fd(s2.z, world::FINE);
+                        if (bxx < ccx * world::CHUNK || bxx >= ccx * world::CHUNK + world::CHUNK) continue;
+                        if (bzz < ccz * world::CHUNK || bzz >= ccz * world::CHUNK + world::CHUNK) continue;
+                        if (byy < by || byy >= by + world::CHUNK) continue;
+                        const int lx = bxx - ccx * world::CHUNK, lz = bzz - ccz * world::CHUNK;
                         const int32_t top = hm.h[lz + 1][lx + 1];
-                        const int32_t wx = ccx * world::CHUNK + lx, wz = ccz * world::CHUNK + lz;
-                        for (int32_t y = top - 5; y > top - 160; --y) {
-                            const world::Material m = world::columnMaterial(top, hm.cover[lz][lx], y,
-                                                                           hm.water[lz + 1][lx + 1], hm.rock, wx, wz);
-                            if (m >= world::ORE_FIRST && m <= world::ORE_LAST) ++cnt[m - world::ORE_FIRST];
-                            else if (m >= world::ROCK_FIRST && m <= world::ROCK_LAST) ++rock;
+                        const world::Material host = world::columnMaterial(top, hm.cover[lz][lx], byy,
+                                                                          hm.water[lz + 1][lx + 1], hm.rock, bxx, bzz);
+                        if (host < world::ROCK_FIRST || host > world::ROCK_LAST) continue;
+                        const int ore = world::pickOre(host, top - byy, s2.roll);
+                        ++cnt[ore];
+                        if (s2.a >= 5 && shown < 10) {
+                            std::printf("  самородок %-18s в %s: блок (%d, %d, %d), полуоси %d/%d/%d\n",
+                                        world::oreDef(ore).name, world::rockDef(int(host) - world::ROCK_FIRST).name,
+                                        bxx, byy, bzz, int(s2.a), int(s2.b), int(s2.c));
+                            ++shown;
                         }
                     }
+                }
             }
         int64_t all = 0;
         for (int64_t c : cnt) all += c;
-        std::printf("руда: %lld вокселей из %lld породы (%.3f%%)\n", (long long)all, (long long)(all + rock),
-                    100.0 * double(all) / double(all + rock ? all + rock : 1));
+        std::printf("вкраплений %lld\n", (long long)all);
         for (int i = 0; i < world::ORE_COUNT; ++i)
             if (cnt[i]) std::printf("  %-20s %lld\n", world::oreDef(i).name, (long long)cnt[i]);
         return 0;

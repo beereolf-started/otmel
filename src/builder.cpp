@@ -16,30 +16,63 @@
 namespace {
 using clk = std::chrono::steady_clock;
 
-// Р88: кубик вкрапления - шесть граней по четыре вершины. Склеивать нечего: вкрапления мелкие и
-// разрозненные, а соседние грани двух кубиков друг друга всё равно не закрывают.
-void addBox(std::vector<uint32_t>& out, int x, int y, int z, int s, world::Material m) {
-    const auto pack = [m](int px, int py, int pz, int normal) {
-        return uint32_t(px) | uint32_t(py) << 6 | uint32_t(pz) << 12 | uint32_t(normal) << 18 | uint32_t(m) << 21;
-    };
-    // оси граней те же, что в мешере: для оси d плоскость - (u, v), обход против часовой снаружи
-    static const int AX[3][3] = {{0, 1, 2}, {1, 2, 0}, {2, 0, 1}};
-    const int lo[3] = {x, y, z};
-    for (int ai = 0; ai < 3; ++ai)
-        for (int sign = 0; sign < 2; ++sign) {
-            const int d = AX[ai][0], u = AX[ai][1], v = AX[ai][2];
-            int p[4][3];
-            for (int k = 0; k < 4; ++k) {
-                p[k][d] = lo[d] + (sign == 0 ? s : 0);
-                p[k][u] = lo[u] + ((k == 1 || k == 2) ? s : 0);
-                p[k][v] = lo[v] + (k >= 2 ? s : 0);
-            }
-            const int order0[4] = {0, 1, 2, 3}, order1[4] = {0, 3, 2, 1};
-            const int* o = sign == 0 ? order0 : order1;
-            for (int k = 0; k < 4; ++k) out.push_back(pack(p[o[k]][0], p[o[k]][1], p[o[k]][2], ai * 2 + sign));
-        }
-}
 double msSince(clk::time_point t) { return std::chrono::duration<double, std::milli>(clk::now() - t).count(); }
+
+// Р88: КАМУШЕК ВКРАПЛЕНИЯ. Не кубик: форма такая же неправильная, как у кроны дерева, но
+// вытянутая вдоль складки - полуось a идёт по направлению dir, b поперёк, c по вертикали и самая
+// малая. Края рваные: порог сравнения качается своим хешем на каждый мелкий воксель.
+//
+// Грани ставятся только там, где соседний мелкий воксель пуст, - внутренних граней у камушка нет.
+void addSpeck(std::vector<uint32_t>& out, int lx, int ly, int lz, const world::OreSpeck& sp, int ore, int& quads) {
+    const float ang = float(sp.dir) * 0.39269908f;   // 2π / 16
+    const float ca = std::cos(ang), sa = std::sin(ang);
+    const float ia = 1.0f / float(sp.a), ib = 1.0f / float(sp.b), ic = 1.0f / float(sp.c);
+    const auto h1 = [&](int dx, int dy, int dz) {
+        uint32_t h = uint32_t(sp.x + dx) * 0x8DA6B343u ^ uint32_t(sp.y + dy) * 0xD8163841u ^
+                     uint32_t(sp.z + dz) * 0xCB1AB31Fu ^ sp.roll;
+        h ^= h >> 15; h *= 0x2C1B3C6Du; h ^= h >> 12; h *= 0x297A2D39u; h ^= h >> 15;
+        return h;
+    };
+    const auto inside = [&](int dx, int dy, int dz) {
+        if (!sp.a) return dx == 0 && dy == 0 && dz == 0;   // крупинка - один мелкий воксель
+        const float u = float(dx) * ca + float(dz) * sa, v = -float(dx) * sa + float(dz) * ca;
+        const float r = u * ia * u * ia + v * ib * v * ib + float(dy) * ic * float(dy) * ic;
+        const float jit = float(h1(dx, dy, dz) & 1023u) / 1023.0f;
+        return r <= 1.0f + 0.6f * (jit - 0.5f);
+    };
+    const int ra = sp.a ? int(sp.a) + 1 : 0, rc = sp.c ? int(sp.c) + 1 : 0;
+    static const int AX[3][3] = {{0, 1, 2}, {1, 2, 0}, {2, 0, 1}};
+    for (int dz = -ra; dz <= ra; ++dz)
+        for (int dy = -rc; dy <= rc; ++dy)
+            for (int dx = -ra; dx <= ra; ++dx) {
+                if (!inside(dx, dy, dz)) continue;
+                // оттенок палитры: основной чаще всего, блестящий - редкость, он и оживляет камушек
+                const uint32_t t = h1(dx, dy, dz) >> 11 & 7u;
+                const int shade = t < 4u ? 1 : (t < 7u ? 0 : 2);
+                const uint32_t m = uint32_t(world::ORE_FIRST + ore * world::ORE_SHADES + shade);
+                const int lo[3] = {lx + dx, ly + dy, lz + dz};
+                const int nb[6][3] = {{1, 0, 0}, {-1, 0, 0}, {0, 1, 0}, {0, -1, 0}, {0, 0, 1}, {0, 0, -1}};
+                for (int ai = 0; ai < 3; ++ai)
+                    for (int sign = 0; sign < 2; ++sign) {
+                        const int f = ai * 2 + sign;
+                        if (inside(dx + nb[f][0], dy + nb[f][1], dz + nb[f][2])) continue;   // грань внутри тельца
+                        const int d = AX[ai][0], u = AX[ai][1], v = AX[ai][2];
+                        int p[4][3];
+                        for (int k = 0; k < 4; ++k) {
+                            p[k][d] = lo[d] + (sign == 0 ? 1 : 0);
+                            p[k][u] = lo[u] + ((k == 1 || k == 2) ? 1 : 0);
+                            p[k][v] = lo[v] + (k >= 2 ? 1 : 0);
+                        }
+                        const int o0[4] = {0, 1, 2, 3}, o1[4] = {0, 3, 2, 1};
+                        const int* o = sign == 0 ? o0 : o1;
+                        for (int k = 0; k < 4; ++k)
+                            out.push_back(uint32_t(p[o[k]][0]) | uint32_t(p[o[k]][1]) << 6 |
+                                          uint32_t(p[o[k]][2]) << 12 | uint32_t(f) << 18 | m << 21);
+                        ++quads;
+                    }
+            }
+}
+
 }  // namespace
 
 Builder::Builder(const world::TerrainParams& tp) : tp_(tp) {
@@ -211,9 +244,42 @@ void Builder::worker() {
         // считался внутри куска, два куска одного столбца могли решить по-разному, и на стыке
         // вставала стенка или повисал кусок земли.
         const int cyFrom = col.cyMin == NO_DEPTH ? cyShallow : std::max(std::min(cyLo, col.cyMin), WORLD_BOTTOM);
+        // Р88: вкрапления руды собираются по кускам (здесь же известна пустота пещер) и
+        // выкладываются мелкими сетками уже после цикла.
+        static thread_local std::vector<world::OreSpeck> specks;
+        static thread_local std::unordered_map<uint64_t, std::vector<std::pair<world::OreSpeck, uint8_t>>> cells;
+        cells.clear();
+        const auto fd = [](int32_t a, int32_t b) { return a >= 0 ? a / b : -((-a + b - 1) / b); };
         for (int cy = cyFrom; cy <= cyHi; ++cy) {
             const world::ChunkPos pos{col.cx, cy, col.cz};
             bool caves = shallowCaves && world::caveAir(tp_, pos, hm, air, cut);
+            {   // Р88: руда этого куска. Берётся ЗДЕСЬ, пока маска пустоты не правлена под LOD:
+                // руда сидит в камне и в полостях висеть не должна.
+                const int32_t bx0 = col.cx * world::CHUNK, bz0 = col.cz * world::CHUNK, by0 = cy * world::CHUNK;
+                world::oreSpecks(tp_.seed, bx0, by0, bz0, world::CHUNK, specks);
+                for (const world::OreSpeck& sp : specks) {
+                    const int32_t bx = fd(sp.x, world::FINE), by = fd(sp.y, world::FINE), bz = fd(sp.z, world::FINE);
+                    // Хозяин вкрапления - свой столбец и свой кусок: иначе одно и то же тело выложат
+                    // оба соседа, и грани встанут друг в друга.
+                    if (bx < bx0 || bx >= bx0 + world::CHUNK || bz < bz0 || bz >= bz0 + world::CHUNK) continue;
+                    if (by < by0 || by >= by0 + world::CHUNK) continue;
+                    const int lx = bx - bx0, lz = bz - bz0;
+                    if (caves && ((air[lz + 1][lx + 1] >> (by - by0 + 1)) & 1)) continue;   // здесь пустота
+                    const int32_t vcut = cut[lz + 1][lx + 1];
+                    const int32_t top = hm.h[lz + 1][lx + 1] - vcut;
+                    world::Cover cv = hm.cover[lz][lx];
+                    cv.soil = int16_t(std::max(0, int(cv.soil) - vcut));
+                    const world::Material host =
+                        world::columnMaterial(top, cv, by, hm.water[lz + 1][lx + 1], hm.rock, bx, bz);
+                    if (host < world::ROCK_FIRST || host > world::ROCK_LAST) continue;   // руда сидит в камне
+                    const uint8_t ore = uint8_t(world::pickOre(host, top - by, sp.roll));
+                    const int32_t mnx = sp.x - sp.a - 1, mny = sp.y - sp.c - 1, mnz = sp.z - sp.a - 1;
+                    const int32_t c[3] = {fd(mnx, 40), fd(mny, 40), fd(mnz, 40)};
+                    const uint64_t key = uint64_t(uint32_t(c[0])) << 42 ^ uint64_t(uint32_t(c[1]) & 0x3FFFFF) << 21 ^
+                                         uint64_t(uint32_t(c[2]) & 0x1FFFFF);
+                    cells[key].push_back({sp, ore});
+                }
+            }
             if (caves && caveFloor != INT32_MIN) {   // Р39: ниже пола (с соседями) пещеры закрыты; заглушки у соседей без пещер
                 const int64_t n = std::clamp<int64_t>(int64_t(caveFloor) - (int64_t(cy) * world::CHUNK - 1), 0, 34);
                 const uint64_t keep = n >= 64 ? 0 : ~((uint64_t(1) << n) - 1);
@@ -256,55 +322,20 @@ void Builder::worker() {
             if (verts.empty()) continue;
             r.chunks.push_back({{col.cx * world::CHUNK, cy * world::CHUNK, col.cz * world::CHUNK}, verts, ms.quads, ms.waterQuads, underground});
         }
-        // ─── Р88: РУДА. Отдельный слой МЕЛКИХ сеток: вкрапление - кубик в 1/16 блока, блочной
-        // сетке оно не подчиняется и может лежать на стыке блоков. Внутри камня его не видно само
-        // собой, глубинной проверкой; видно там, где камень снят или не построен.
+        // ─── Р88: РУДА - отдельный слой мелких сеток (собрана выше, по кускам)
         {
-            static thread_local std::vector<world::OreSpeck> specks;
-            static thread_local std::unordered_map<uint64_t, std::vector<std::pair<world::OreSpeck, uint8_t>>> cells;
-            cells.clear();
-            const int32_t bx0 = col.cx * world::CHUNK, bz0 = col.cz * world::CHUNK;
-            for (int cy = cyFrom; cy <= cyHi; ++cy) {
-                const int32_t by0 = cy * world::CHUNK;
-                world::oreSpecks(tp_.seed, bx0, by0, bz0, world::CHUNK, specks);
-                for (const world::OreSpeck& sp : specks) {
-                    const auto fd = [](int32_t a, int32_t b) { return a >= 0 ? a / b : -((-a + b - 1) / b); };
-                    const int32_t bx = fd(sp.x, world::FINE), by = fd(sp.y, world::FINE), bz = fd(sp.z, world::FINE);
-                    // Хозяин вкрапления - свой столбец и свой кусок: иначе одно и то же тело выложат
-                    // оба соседа, и грани встанут друг в друга.
-                    if (bx < bx0 || bx >= bx0 + world::CHUNK || bz < bz0 || bz >= bz0 + world::CHUNK) continue;
-                    if (by < by0 || by >= by0 + world::CHUNK) continue;
-                    const int lx = bx - bx0, lz = bz - bz0;
-                    const int32_t vcut = cut[lz + 1][lx + 1];
-                    const int32_t top = hm.h[lz + 1][lx + 1] - vcut;
-                    world::Cover cv = hm.cover[lz][lx];
-                    cv.soil = int16_t(std::max(0, int(cv.soil) - vcut));
-                    const world::Material host =
-                        world::columnMaterial(top, cv, by, hm.water[lz + 1][lx + 1], hm.rock, bx, bz);
-                    if (host < world::ROCK_FIRST || host > world::ROCK_LAST) continue;   // руда сидит в камне
-                    const uint8_t ore = uint8_t(world::pickOre(host, top - by, sp.roll));
-                    // Сетки собираем ячейками по 56 мелких вокселей. Шестибитное поле положения
-                    // вершины (Р17) держит 0..63, а вкрапление вылезает за край ячейки на свою
-                    // сторону - до восьми: 55 + 8 = 63, ровно впритык. Ячейки в два блока давали
-                    // вчетверо больше сеток и столько же лишних вызовов отрисовки.
-                    const int32_t c[3] = {fd(sp.x, 56), fd(sp.y, 56), fd(sp.z, 56)};
-                    const uint64_t key = uint64_t(uint32_t(c[0])) << 42 ^ uint64_t(uint32_t(c[1]) & 0x3FFFFF) << 21 ^
-                                         uint64_t(uint32_t(c[2]) & 0x1FFFFF);
-                    cells[key].push_back({sp, ore});
-                }
-            }
             for (auto& [key, list] : cells) {
                 const auto fd = [](int32_t a, int32_t b) { return a >= 0 ? a / b : -((-a + b - 1) / b); };
-                const int32_t c0 = fd(list[0].first.x, 56) * 56, c1 = fd(list[0].first.y, 56) * 56,
-                              c2 = fd(list[0].first.z, 56) * 56;
+                const world::OreSpeck& f0 = list[0].first;
+                const int32_t c0 = fd(f0.x - f0.a - 1, 40) * 40, c1 = fd(f0.y - f0.c - 1, 40) * 40,
+                              c2 = fd(f0.z - f0.a - 1, 40) * 40;
                 // основа сетки - блок, а остаток до начала ячейки уходит в сдвиг мелких вокселей
                 const int32_t b0 = fd(c0, 16), b1 = fd(c1, 16), b2 = fd(c2, 16);
                 verts.clear();
                 int quads = 0;
                 for (const auto& [sp, ore] : list) {
                     const int lx = int(sp.x - c0), ly = int(sp.y - c1), lz = int(sp.z - c2);
-                    addBox(verts, lx, ly, lz, int(sp.size), world::Material(world::ORE_FIRST + ore));
-                    quads += 6;
+                    addSpeck(verts, lx, ly, lz, sp, ore, quads);
                 }
                 if (verts.empty()) continue;
                 r.chunks.push_back({{b0, b1, b2}, verts, quads, 0, false, true,

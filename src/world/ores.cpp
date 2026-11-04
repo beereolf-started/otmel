@@ -95,34 +95,40 @@ void oreSpecks(uint32_t seed, int32_t bx, int32_t by, int32_t bz, int side, std:
             for (int32_t cx = c0x; cx <= c1x; ++cx) {
                 const uint32_t h = hash3(cx, cy, cz, seed ^ 0x0E5A1u);
                 if ((h & 255u) >= 30u) continue;   // тело примерно в одной ячейке из девяти
-                // Тело: середина в ячейке, протяжённость вдоль слоёв больше, чем поперёк - рудные
-                // залежи вытянуты по напластованию, а не шарообразны.
+                // Тело раскатано по напластованию: поперёк слоёв широкое, по вертикали тонкое.
                 const int32_t mx = cx * CELL * FINE + int32_t((h >> 8) % uint32_t(CELL * FINE));
                 const int32_t my = cy * CELL * FINE + int32_t((h >> 14) % uint32_t(CELL * FINE));
                 const int32_t mz = cz * CELL * FINE + int32_t((h >> 20) % uint32_t(CELL * FINE));
                 const int32_t rH = 16 + int32_t((h >> 3) % 56u);    // поперёк слоёв - от блока до четырёх
-                const int32_t rV = 6 + int32_t((h >> 26) % 20u);    // вдоль вертикали - тоньше
+                const int32_t rV = 6 + int32_t((h >> 26) % 20u);    // по вертикали - тоньше
                 const int n = 40 + int((h >> 11) % 220u);           // сколько вкраплений в теле
+                // Складка: у всего тела одно направление, и вдоль него вытянуты и само тело, и
+                // каждый камушек в нём. Иначе вытянутость была бы у каждого своя, и вместо жилы
+                // получилась бы каша.
+                const uint8_t dir = uint8_t((h >> 18) & 15u);
                 for (int k = 0; k < n; ++k) {
                     const uint32_t s = mix(h ^ (uint32_t(k) * 0x9E3779B1u));
-                    // ПЛОСКОСТИ НАПЛАСТОВАНИЯ: высота вкрапления прижата к слою, и только внутри
-                    // слоя есть малый разброс. Отсюда прожилки, а не равномерный крап.
+                    // ПЛОСКОСТИ НАПЛАСТОВАНИЯ: высота прижата к слою, разброс остаётся внутри слоя.
                     const int lay = int((s >> 2) % uint32_t(2 * rV / LAYER + 1)) - rV / LAYER;
                     const int32_t dy = lay * LAYER + int32_t((s >> 9) % 2u);
-                    // по слою - свободно, но к краю тела реже: радиус берём с уклоном к середине
-                    const uint32_t a = (s >> 11) % 1024u;
-                    const float ang = float(a) * 0.0061359231f;
-                    const uint32_t rr = (s >> 21) % 1024u;
-                    const float rad = float(rH) * float(rr) / 1024.0f;
+                    const float ang = float((s >> 11) % 1024u) * 0.0061359231f;
+                    const float rad = float(rH) * float((s >> 21) % 1024u) / 1024.0f;
                     const int32_t dx = int32_t(rad * std::cos(ang)), dz = int32_t(rad * std::sin(ang));
-                    // размер: почти всегда крупинка, изредка самородок в несколько кубов
+                    // Размер: почти всегда крупинка, изредка самородок. Полуось вдоль слоя больше
+                    // поперечной, а вертикальная - самая малая.
                     const uint32_t sz = s & 255u;
-                    const uint8_t size = sz < 200u ? uint8_t(1 + (sz & 1u)) : (sz < 250u ? 3 : uint8_t(5 + (sz & 3u)));
+                    uint8_t a, b, c;
+                    // Крупинка - РОВНО один мелкий воксель: их больше всего, и если каждой дать
+                    // тельце, вся геометрия мира уходит в рудную пыль.
+                    if (sz < 205u) { a = 0; b = 0; c = 0; }
+                    else if (sz < 248u) { a = 3; b = 2; c = 1; }
+                    else { a = uint8_t(5 + (sz & 3u)); b = uint8_t(3 + (sz & 1u)); c = 2; }
                     const int32_t x = mx + dx, y = my + dy, z = mz + dz;
-                    if (x + size <= f0x || x >= f0x + fside || y + size <= f0y || y >= f0y + fside ||
-                        z + size <= f0z || z >= f0z + fside)
+                    const int32_t reach = int32_t(a) + 1;
+                    if (x + reach <= f0x || x - reach >= f0x + fside || y + reach <= f0y || y - reach >= f0y + fside ||
+                        z + reach <= f0z || z - reach >= f0z + fside)
                         continue;
-                    out.push_back({x, y, z, size, h});
+                    out.push_back({x, y, z, a, b, c, dir, h});
                 }
             }
 }
