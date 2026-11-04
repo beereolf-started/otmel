@@ -1,6 +1,7 @@
 #include "world/caves.h"
 
 #include <algorithm>
+#include <cstdio>
 
 #include "gen/hash.h"
 #include "gen/noise.h"
@@ -61,6 +62,10 @@ bool caveMouth(const TerrainParams& p, int32_t x, int32_t z, int32_t top, int32_
 constexpr fx::q16 ENTRANCE_EDGE = fx::ONE / 4;
 
 bool caveEntranceNear(const TerrainParams& p, int32_t cx, int32_t cz);
+
+fx::q16 entranceNoise(const TerrainParams& p, int32_t x, int32_t z) {
+    return gen::simplex2(x, z, p.caves.entranceCellLog2, caveSeed(p.seed, ENTRANCE));
+}
 
 bool cavesHere(const TerrainParams& p, int32_t cx, int32_t cz) {
     for (int dz = -1; dz <= 1; ++dz)
@@ -219,6 +224,11 @@ bool caveAir(const TerrainParams& p, ChunkPos pos, const ColumnHeights& hm, uint
                 if (d < roofBand)
                     t -= fx::mul(SLOPE + fx::q16(int64_t(w2) * (roofBand - d + VOXELS_PER_BLOCK) / VOXELS_PER_BLOCK),
                                  entranceDamp());
+                // Р79: ХОД СУЖАЕТСЯ К ПОВЕРХНОСТИ, и это НЕ зависит от входа. Толщина входит в поле
+                // квадратом, поэтому вычесть долю квадрата - значит сузить ход: у самой поверхности
+                // он вдвое уже, к низу полосы опоры расширяется до своей толщины. Иначе устье шахты
+                // выходит такой же ширины, как весь ход, и зияет.
+                if (d < ROOF_BAND) t -= fx::q16(int64_t(w2) * 3 / 4 * (ROOF_BAND - d) / ROOF_BAND);
                 // зал считаем тем же полем, иначе земля над залом осталась бы висеть: пустота есть,
                 // а величина, по которой решается осыпание, её не видит
                 // Отсечка по наибольшему значению в узлах точна: смешивание за их пределы не
@@ -360,8 +370,14 @@ void soilCut(const TerrainParams& p, int32_t chunkX, int32_t chunkZ, const Colum
                 const fx::q16 f = fx::lerp(get(nodes[iz + 1][iy + 1][ix]), get(nodes[iz + 1][iy + 1][ix + 1]), fx_);
                 fx::q16 t = fx::lerp(fx::lerp(a, b, fz), fx::lerp(e, f, fz), fy);
                 const int32_t d = top - wy;
-                if (d < ROOF_BAND)
+                // Гашение действует на ВСЮ полосу, включая её нижнюю точку (d == ROOF_BAND). Пока
+                // оно обрывалось на d < ROOF_BAND, в самой нижней точке поле бралось сырым - и при
+                // почти полном гашении срез всё равно выходил полным, а у соседа с гашением ровно
+                // единица столбец пропускался вовсе. По этой черте и вставала отвесная стена.
+                if (d <= ROOF_BAND) {
                     t -= fx::mul(damp + fx::q16(int64_t(w2) * (ROOF_BAND - d) / VOXELS_PER_BLOCK), dampK);
+                    t -= fx::q16(int64_t(w2) * 3 / 4 * (ROOF_BAND - d) / ROOF_BAND);   // сужение у поверхности
+                }
                 // зал - такая же пустота: без него земля над залом осталась бы висеть крышкой
                 if (maxH > 0 && d >= c.hallDepth - 8 * VOXELS_PER_BLOCK) {
                     const auto geth = [](const Node& n) { return n.hall; };

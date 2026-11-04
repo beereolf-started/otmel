@@ -113,9 +113,21 @@ void Builder::worker() {
         }
         ColumnResult r{col.cx, col.cz, col.cyMin, col.caps, {}, 0};
         world::columnHeights(tp_, col.cx, col.cz, hm);
+        // Срез земли у выхода шахты - ДО выбора кусков: он опускает поверхность до трёх блоков, и
+        // нижний строящийся кусок надо выбирать уже по сниженной высоте. Иначе срез уводит
+        // поверхность в кусок, который не строится вовсе, и под срезанной землёй остаётся
+        // непостроенная пустота - обрубок земли, сквозь который видно небо.
+        //
+        // Считается для ВСЕХ столбцов кусков, а не только там, где рядом вход: иначе сосед без входа
+        // среза не знает, считает пограничный столбец полной высоты и не рисует его боковую грань.
+        // Где гашение полное во всех столбцах, расчёт выходит сразу и ничего не стоит.
+        world::soilCut(tp_, col.cx, col.cz, hm, cut);
+        int32_t maxCut = 0;
+        for (int z = 0; z < world::CHUNK + 2; ++z)
+            for (int x = 0; x < world::CHUNK + 2; ++x) maxCut = std::max<int32_t>(maxCut, cut[z][x]);
         // по высоте - куски, через которые проходит поверхность (с каймой), Р2; рядом с камерой - и ниже, до cyMin:
         // там строятся только куски с пещерами (сплошной камень граней не даёт), Р26
-        const int cyLo = (hm.minH - 1) >> world::CHUNK_LOG2, cyHi = hm.maxH >> world::CHUNK_LOG2;
+        const int cyLo = (hm.minH - maxCut - 1) >> world::CHUNK_LOG2, cyHi = hm.maxH >> world::CHUNK_LOG2;
         constexpr int32_t WORLD_BOTTOM = -500 * world::VOXELS_PER_BLOCK / world::CHUNK;   // Р10
         // Р39: LOD пещер. Вне ближнего яруса - пещеры с входами до SHALLOW вглубь, ниже - закрыты дном (вход виден
         // провалом с дном, а не дырой в пустоту). Пол столбца - гладко по рельефу (без рек, крупными формами)
@@ -151,9 +163,6 @@ void Builder::worker() {
         // Р79: срез земли у выхода шахты - ОДИН НА ВЕСЬ СТОЛБЕЦ КУСКОВ, до постройки. Пока он
         // считался внутри куска, два куска одного столбца могли решить по-разному, и на стыке
         // вставала стенка или повисал кусок земли.
-        if (shallowCaves) world::soilCut(tp_, col.cx, col.cz, hm, cut);
-        else for (int z = 0; z < world::CHUNK + 2; ++z)
-                 for (int x = 0; x < world::CHUNK + 2; ++x) cut[z][x] = 0;
         const int cyFrom = col.cyMin == NO_DEPTH ? cyShallow : std::max(std::min(cyLo, col.cyMin), WORLD_BOTTOM);
         for (int cy = cyFrom; cy <= cyHi; ++cy) {
             const world::ChunkPos pos{col.cx, cy, col.cz};

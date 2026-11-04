@@ -203,8 +203,9 @@ void probe(const world::TerrainParams& p, int32_t bx, int32_t bz, int cols, bool
         world::soilCut(p, cx, cz, hm, cutCol);
         const int srez = cutCol[lz + 1][lx + 1];
         const world::Material deep = world::rockAt(hm.rock, vx, top - 10 * world::VOXELS_PER_BLOCK, vzk);
-        std::printf("  %7.2f бл: верх %6.1f, земли %5.2f, срез %5.2f;", (alongZ ? vzk : vx) / 16.0, top / 16.0,
-                    hm.cover[lz][lx].soil / 16.0, srez / 16.0);
+        std::printf("  %7.2f бл: верх %6.1f, земли %5.2f/%5.2f, срез %5.2f;", (alongZ ? vzk : vx) / 16.0, top / 16.0,
+                    hm.cover[lz][lx].soil / 16.0, hm.soilThick[lz + 1][lx + 1] / 16.0, srez / 16.0);
+        std::printf(" вход %+.4f;", world::entranceNoise(p, vx, vzk) / 65536.0);
         int runs = 0;
         int32_t runFrom = INT32_MIN, prev = INT32_MIN;
         for (int j = 0; j < 5; ++j) {

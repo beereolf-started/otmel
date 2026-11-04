@@ -39,6 +39,9 @@ void soilCut(const TerrainParams& p, int32_t chunkX, int32_t chunkZ, const Colum
 // ли caveAir и soilCut, а расчёт столбцов - считать ли лишнее кольцо высот для толщины земли.
 bool cavesHere(const TerrainParams& p, int32_t cx, int32_t cz);
 
+// Шум входов в точке (воксели) - для разведки: по нему решается, гасится ли ход у поверхности.
+fx::q16 entranceNoise(const TerrainParams& p, int32_t x, int32_t z);
+
 // Р39: может ли у столбца кусков (cx, cz) быть вход в пещеру (шум входов у центра - с запасом, как в быстром отказе)
 bool caveEntranceNear(const TerrainParams& p, int32_t cx, int32_t cz);
 
