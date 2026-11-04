@@ -217,32 +217,44 @@ public:
         glTextureSubImage2D(maskTex_, 0, 0, 0, side, side, GL_RED_INTEGER, GL_UNSIGNED_BYTE, mask.data());
     }
 
-    // Р80: атлас текстур блоков рядом с игрой (assets/atlas.bin: ширина, высота, затем RGBA).
-    // Сырые точки, а не PNG: разбирать картинки движку незачем, собирает атлас tools/atlas.py.
+    // Р80: текстуры блоков рядом с игрой (assets/atlas.bin: сторона, слоёв, уровней, затем RGBA
+    // уровень за уровнем, внутри уровня слой за слоем). Собирает их tools/atlas.py.
     void ensureAtlas() {
         if (atlasTex_) return;
         atlasTex_ = ~0u;   // второй раз не пытаться, даже если не вышло
         const std::string path = std::string(SDL_GetBasePath()) + "assets/atlas.bin";
         std::ifstream f(path, std::ios::binary);
         std::vector<char> raw((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
-        if (raw.size() < 4) { journal::error("opengl", "нет атласа {}", path); atlasTex_ = 0; return; }
-        const int w = int(uint8_t(raw[0])) | int(uint8_t(raw[1])) << 8;
-        const int h = int(uint8_t(raw[2])) | int(uint8_t(raw[3])) << 8;
-        if (w <= 0 || h <= 0 || raw.size() < size_t(4) + size_t(w) * h * 4) {
-            journal::error("opengl", "атлас испорчен: {}×{}, {} байт", w, h, raw.size());
+        if (raw.size() < 6) { journal::error("opengl", "нет текстур блоков {}", path); atlasTex_ = 0; return; }
+        const auto u16 = [&](size_t i) { return int(uint8_t(raw[i])) | int(uint8_t(raw[i + 1])) << 8; };
+        const int tile = u16(0), layers = u16(2), mips = u16(4);
+        size_t need = 6;
+        if (tile > 0 && layers > 0 && mips > 0 && mips < 16)
+            for (int m = 0; m < mips; ++m) need += size_t(layers) * (tile >> m) * (tile >> m) * 4;
+        if (need == 6 || raw.size() < need) {
+            journal::error("opengl", "текстуры блоков испорчены: {} точек, {} слоёв, {} уровней, {} байт",
+                           tile, layers, mips, raw.size());
             atlasTex_ = 0;
             return;
         }
-        glCreateTextures(GL_TEXTURE_2D, 1, &atlasTex_);
-        glTextureStorage2D(atlasTex_, 1, GL_RGBA8, w, h);
+        glCreateTextures(GL_TEXTURE_2D_ARRAY, 1, &atlasTex_);
+        glTextureStorage3D(atlasTex_, mips, GL_RGBA8, tile, tile, layers);
         glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
-        glTextureSubImage2D(atlasTex_, 0, 0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, raw.data() + 4);
-        // ближайшая точка: рисунок блочный, сглаживание размыло бы его и смешало соседние клетки
-        glTextureParameteri(atlasTex_, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        size_t at = 6;
+        for (int m = 0; m < mips; ++m) {
+            const int side = tile >> m;
+            glTextureSubImage3D(atlasTex_, m, 0, 0, 0, side, side, layers, GL_RGBA, GL_UNSIGNED_BYTE, raw.data() + at);
+            at += size_t(layers) * side * side * 4;
+        }
+        // вблизи - точка в точку (рисунок 16×16 должен быть виден точками), вдали - уменьшенные
+        // копии с плавным переходом, иначе земля рассыпается в полосы; края сомкнуты - рисунок
+        // повторяется на каждом блоке
+        glTextureParameteri(atlasTex_, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
         glTextureParameteri(atlasTex_, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-        glTextureParameteri(atlasTex_, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        glTextureParameteri(atlasTex_, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-        journal::info("opengl", "атлас текстур: {}×{} точек", w, h);
+        glTextureParameteri(atlasTex_, GL_TEXTURE_WRAP_S, GL_REPEAT);
+        glTextureParameteri(atlasTex_, GL_TEXTURE_WRAP_T, GL_REPEAT);
+        glTextureParameterf(atlasTex_, GL_TEXTURE_MAX_ANISOTROPY, 8.0f);
+        journal::info("opengl", "текстуры блоков: {} слоёв по {} точек, уровней {}", layers, tile, mips);
     }
 
     void updateFlowField(int side, std::span<const float> v) override {
@@ -340,7 +352,7 @@ public:
                     glUseProgram(program_);
                     glBindVertexArray(vao_);
                     ensureAtlas();
-                    glBindTextureUnit(6, atlasTex_);   // Р80: атлас текстур блоков
+                    glBindTextureUnit(7, atlasTex_);   // Р80: атлас текстур блоков
                     current = program_;
                 }
                 if (m.water) water_.push_back(&cmd);

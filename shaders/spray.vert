@@ -29,6 +29,7 @@ layout(location = 3) flat out uint vWater;
 layout(location = 4) out float vFoam;
 layout(location = 5) flat out uint vMat;    // Р80: 6 - вода, текстуры не берёт
 layout(location = 6) out float vLight;
+layout(location = 7) out vec3 vBlock;   // Р80: вода текстуры не берёт
 
 const vec3 NORMALS[6] = vec3[](vec3(1, 0, 0), vec3(-1, 0, 0), vec3(0, 1, 0), vec3(0, -1, 0), vec3(0, 0, 1), vec3(0, 0, -1));
 
@@ -58,4 +59,5 @@ void main() {
     vFoam = 0.0;
     vMat = 6u;
     vLight = 1.0;
+    vBlock = vec3(0.0);
 }

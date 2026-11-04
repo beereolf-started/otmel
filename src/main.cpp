@@ -36,6 +36,7 @@
 #include "world/lod.h"
 #include "world/mesher.h"
 #include "world/oak.h"
+#include "world/spawn.h"
 #include "world/water_sim.h"
 #include "world/terrain.h"
 #ifndef NOMINMAX
@@ -361,7 +362,16 @@ int main(int argc, char** argv) {
 
     // Камера: в блоках. Мышь - взгляд, WASD - движение, пробел/Ctrl - вверх/вниз, Shift - быстрее,
     // колесо - скорость, L - раскраска дальних уровней, Esc - выход. Старт - в 48 блоках мира над землёй (Р54: 3 прежних).
-    const float ground = float(world::reliefAt(tp, int32_t(atX * 16), int32_t(atZ * 16)).height) / world::VOXELS_PER_BLOCK;
+    // Р81: точка старта - на суше и на настоящей поверхности (world/spawn.h), а не на высоте
+    // исходного рельефа: над ним бывает вода, а у выхода шахты земля срезана (Р79).
+    const world::Spawn spawn = world::findSpawn(tp, atX, atZ);
+    if (spawn.moved)
+        journal::info("мир", "в точке {:.0f}, {:.0f} вода - старт перенесён на сушу: {:.0f}, {:.0f}", atX, atZ, spawn.x, spawn.z);
+    else if (!spawn.dry)
+        journal::warn("мир", "вокруг {:.0f}, {:.0f} суши нет - старт над водой", atX, atZ);
+    atX = float(spawn.x);
+    atZ = float(spawn.z);
+    const float ground = float(spawn.ground);
     // ПОЛОЖЕНИЕ КАМЕРЫ - С ДВОЙНОЙ ТОЧНОСТЬЮ (Р79).
     //
     // Числом одинарной точности на удалении в сто тысяч блоков шаг представимости около 0.008 блока,
@@ -369,7 +379,7 @@ int main(int argc, char** argv) {
     // шага: прибавка по одной оси копилась и срывалась скачком, по другой - вдвое реже и вдвое крупнее.
     // Отсюда были рывки и ощущение, что по одной оси тянет охотнее, чем по другой. Копим в double,
     // а в отрисовку отдаём уже разность с началом координат - она мала, и точности хватает с запасом.
-    glm::dvec3 eye(atX, ground + 3.0f, atZ);
+    glm::dvec3 eye(atX, ground + 2.0, atZ);   // Р81: глаза чуть выше поверхности, а не в её толще
     const auto eyeF = [&eye] { return glm::vec3(eye); };
     float yaw = -0.6f, pitch = -0.35f, speedScale = 1.0f;
     // Подсказки разработчика (devinfo.h): что под прицелом и переход по координатам

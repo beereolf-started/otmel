@@ -7,6 +7,11 @@
 # На выходе два файла рядом с игрой: assets/atlas.png (посмотреть глазами) и assets/atlas.bin
 # (сырые RGBA, по ним игра и грузит - чтобы не тащить в движок разбор PNG).
 #
+# В atlas.bin клетки лежат не сеткой, а СЛОЯМИ: каждый материал - свой слой набора картинок. Сетка
+# не годится, потому что вдали нужны уменьшенные копии (без них рисунок на земле рассыпается в
+# полосы), а уменьшение сетки смешивает соседние клетки между собой. Порядок: заголовок
+# <сторона, слоёв, уровней>, затем уровень за уровнем, внутри уровня слой за слоем, RGBA.
+#
 #   python tools/atlas.py
 #
 # Текстуры не наши: см. assets/ТЕКСТУРЫ.md.
@@ -163,14 +168,36 @@ def main():
             for x in range(TILE):
                 px[(ty + y) * W + tx + x] = t[y * TILE + x]
 
+    # уровни уменьшения: 16, 8, 4, 2, 1 - усреднением четвёрок, с учётом прозрачности
+    def shrink(t, n):
+        out = []
+        for y in range(n // 2):
+            for x in range(n // 2):
+                q = [t[(2 * y + dy) * n + 2 * x + dx] for dy in (0, 1) for dx in (0, 1)]
+                a = sum(c[3] for c in q)
+                if a:
+                    out.append(tuple(sum(c[i] * c[3] for c in q) // a for i in range(3)) + (a // 4,))
+                else:
+                    out.append((0, 0, 0, 0))
+        return out
+
+    levels, cur, n = [], tiles, TILE
+    while True:
+        levels.append(cur)
+        if n == 1: break
+        cur = [shrink(t, n) for t in cur]
+        n //= 2
+
     here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     out = os.path.join(here, "assets")
     os.makedirs(out, exist_ok=True)
     png_write(os.path.join(out, "atlas.png"), W, H, px)
     with open(os.path.join(out, "atlas.bin"), "wb") as f:
-        f.write(struct.pack("<HH", W, H))
-        f.write(bytes(v for p in px for v in p))
-    print("atlas: %d x %d px, tile %d, tiles %d" % (W, H, TILE, COLS * ROWS))
+        f.write(struct.pack("<HHH", TILE, len(tiles), len(levels)))
+        for lv in levels:
+            for t in lv:
+                f.write(bytes(v for p in t for v in p))
+    print("atlas: клеток %d по %d точек, уровней %d; картинка %d x %d" % (len(tiles), TILE, len(levels), W, H))
 
 
 if __name__ == "__main__":

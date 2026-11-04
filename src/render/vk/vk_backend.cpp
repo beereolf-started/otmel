@@ -131,6 +131,16 @@ public:
         vkCreateSampler(dev_, &smp, nullptr, &linear_);
         smp.magFilter = smp.minFilter = VK_FILTER_NEAREST;
         vkCreateSampler(dev_, &smp, nullptr, &nearest_);
+        // Р80: текстуры блоков. Вблизи - точка в точку (рисунок 16×16 должен быть виден точками),
+        // вдали - уменьшенные копии с плавным переходом, иначе земля рассыпается в полосы.
+        // Края сомкнуты: рисунок повторяется на каждом блоке, долю блока не отрезаем.
+        smp.magFilter = VK_FILTER_NEAREST;
+        smp.minFilter = VK_FILTER_LINEAR;
+        smp.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+        smp.addressModeU = smp.addressModeV = smp.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        smp.maxLod = VK_LOD_CLAMP_NONE;
+        if (anisotropy_ > 1.0f) { smp.anisotropyEnable = VK_TRUE; smp.maxAnisotropy = anisotropy_; }
+        vkCreateSampler(dev_, &smp, nullptr, &atlasSmp_);
 
         ensureFrame();
         // Индексы общие для всех кусков: прямоугольник k - вершины 4k..4k+3, два треугольника
@@ -189,6 +199,91 @@ public:
 
     void setDebug(int mode) override { debug_ = mode; }
     void setVsync(bool on) override { if (vsync_ != on) { vsync_ = on; swapDirty_ = true; } }
+
+    // Р80: текстуры блоков рядом с игрой (assets/atlas.bin: сторона, слоёв, уровней, затем RGBA
+    // уровень за уровнем, внутри уровня слой за слоем). Сырые точки, а не PNG: разбирать картинки
+    // движку незачем, собирает их tools/atlas.py.
+    //
+    // Набор слоёв, а не одна сетка клеток: вдали нужны уменьшенные копии, иначе рисунок на земле
+    // рассыпается в полосы, - а уменьшение сетки смешивало бы соседние клетки между собой.
+    void ensureAtlas() {
+        if (atlasTried_) return;
+        atlasTried_ = true;
+        const std::string path = std::string(SDL_GetBasePath()) + "assets/atlas.bin";
+        std::ifstream f(path, std::ios::binary);
+        std::vector<char> raw((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+        if (raw.size() < 6) { journal::error("vulkan", "нет текстур блоков {}", path); return; }
+        const auto u16 = [&](size_t i) { return int(uint8_t(raw[i])) | int(uint8_t(raw[i + 1])) << 8; };
+        const int tile = u16(0), layers = u16(2), mips = u16(4);
+        size_t need = 6;
+        if (tile > 0 && layers > 0 && mips > 0 && mips < 16)
+            for (int m = 0; m < mips; ++m) need += size_t(layers) * (tile >> m) * (tile >> m) * 4;
+        if (need == 6 || raw.size() < need) {
+            journal::error("vulkan", "текстуры блоков испорчены: {} точек, {} слоёв, {} уровней, {} байт",
+                           tile, layers, mips, raw.size());
+            return;
+        }
+        Image& im = atlasTex_;
+        im.w = im.h = tile;
+        VkImageCreateInfo ci{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+        ci.imageType = VK_IMAGE_TYPE_2D;
+        ci.format = VK_FORMAT_R8G8B8A8_UNORM;
+        ci.extent = {uint32_t(tile), uint32_t(tile), 1};
+        ci.mipLevels = uint32_t(mips);
+        ci.arrayLayers = uint32_t(layers);
+        ci.samples = VK_SAMPLE_COUNT_1_BIT;
+        ci.tiling = VK_IMAGE_TILING_OPTIMAL;
+        ci.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+        ci.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        if (!vkOk(vkCreateImage(dev_, &ci, nullptr, &im.img), "vkCreateImage (текстуры блоков)")) return;
+        VkMemoryRequirements req;
+        vkGetImageMemoryRequirements(dev_, im.img, &req);
+        VkMemoryAllocateInfo mai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+        mai.allocationSize = req.size;
+        mai.memoryTypeIndex = memoryType(req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        vkOk(vkAllocateMemory(dev_, &mai, nullptr, &im.mem), "vkAllocateMemory (текстуры блоков)");
+        vkBindImageMemory(dev_, im.img, im.mem, 0);
+        VkImageViewCreateInfo vci{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+        vci.image = im.img;
+        vci.viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
+        vci.format = ci.format;
+        vci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, uint32_t(mips), 0, uint32_t(layers)};
+        vkCreateImageView(dev_, &vci, nullptr, &im.view);
+
+        ensureFrame();
+        const auto [buf, off] = stage(raw.data() + 6, need - 6);
+        const VkCommandBuffer c = slots_[slot_].cmd;
+        const VkImageSubresourceRange all{VK_IMAGE_ASPECT_COLOR_BIT, 0, uint32_t(mips), 0, uint32_t(layers)};
+        const auto barrier = [&](VkImageLayout from, VkImageLayout to, VkPipelineStageFlags2 ss, VkAccessFlags2 sa,
+                                 VkPipelineStageFlags2 ds, VkAccessFlags2 da) {
+            VkImageMemoryBarrier2 b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
+            b.srcStageMask = ss; b.srcAccessMask = sa; b.dstStageMask = ds; b.dstAccessMask = da;
+            b.oldLayout = from; b.newLayout = to;
+            b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            b.image = im.img;
+            b.subresourceRange = all;
+            VkDependencyInfo di{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+            di.imageMemoryBarrierCount = 1;
+            di.pImageMemoryBarriers = &b;
+            vkCmdPipelineBarrier2(c, &di);
+        };
+        barrier(VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, 0,
+                VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
+        std::vector<VkBufferImageCopy> cp(static_cast<size_t>(mips));   // слои одного уровня лежат подряд - одна запись на уровень
+        VkDeviceSize at = off;
+        for (int m = 0; m < mips; ++m) {
+            const uint32_t side = uint32_t(tile >> m);
+            cp[m] = {};
+            cp[m].bufferOffset = at;
+            cp[m].imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, uint32_t(m), 0, uint32_t(layers)};
+            cp[m].imageExtent = {side, side, 1};
+            at += VkDeviceSize(layers) * side * side * 4;
+        }
+        vkCmdCopyBufferToImage(c, buf, im.img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, uint32_t(mips), cp.data());
+        barrier(VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+        journal::info("vulkan", "текстуры блоков: {} слоёв по {} точек, уровней {}", layers, tile, mips);
+    }
 
     void updateVoxelMask(int side, std::span<const uint8_t> mask) override {
         ensureFrame();
@@ -568,6 +663,12 @@ private:
         f13.shaderDemoteToHelperInvocation = VK_TRUE;   // discard в шейдерах Vulkan 1.3 - «понижение до помощника»   // выборка за краем маски - ноль, как у OpenGL без текстуры
         VkPhysicalDeviceFeatures2 f2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
         f2.pNext = &f13;
+        // Р80: косая выборка текстур - земля под ногами уходит к горизонту почти вдоль взгляда, и без
+        // неё уменьшенные копии съедают рисунок задолго до того, как он перестаёт читаться
+        if (has.features.samplerAnisotropy) {
+            f2.features.samplerAnisotropy = VK_TRUE;
+            anisotropy_ = std::min(8.0f, props.limits.maxSamplerAnisotropy);
+        }
         const float prio = 1.0f;
         VkDeviceQueueCreateInfo qci{VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO};
         qci.queueFamilyIndex = family_;
@@ -747,10 +848,11 @@ private:
 
     // наборы привязок кадра: в непрозрачном проходе на месте глубины сцены - заглушка (копия ещё пишется)
     void writeSets(Slot& s) {
+        ensureAtlas();   // Р80: атлас текстур блоков - один раз за запуск
         VkDescriptorBufferInfo ubo{s.ubo.buf, 0, sizeof(FrameUbo)};
         VkDescriptorBufferInfo ssbo{fineBlocks_.per[slot_].buf, 0, VK_WHOLE_SIZE};
-        VkWriteDescriptorSet w[14];
-        VkDescriptorImageInfo img[2][5];
+        VkWriteDescriptorSet w[16];
+        VkDescriptorImageInfo img[2][6];
         for (int k = 0; k < 2; ++k) {
             const VkDescriptorSet set = k ? s.setWater : s.setOpaque;
             const VkImageLayout ro = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
@@ -759,19 +861,20 @@ private:
             img[k][2] = {nearest_, fineSide_ ? fineTex_.view : dummyFloat_.view, ro};
             img[k][3] = {nearest_, fineSide_ ? fineMask_.view : dummyUint_.view, ro};
             img[k][4] = {nearest_, maskTex_.view, ro};
-            const uint32_t imgBinding[5] = {1, 2, 4, 5, 6};
-            VkWriteDescriptorSet* o = &w[k * 7];
-            for (int i = 0; i < 7; ++i) o[i] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+            img[k][5] = {atlasSmp_, atlasTex_.img ? atlasTex_.view : dummyFloat_.view, ro};   // Р80
+            const uint32_t imgBinding[6] = {1, 2, 4, 5, 6, 7};
+            VkWriteDescriptorSet* o = &w[k * 8];
+            for (int i = 0; i < 8; ++i) o[i] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
             o[0].dstSet = set; o[0].dstBinding = 0; o[0].descriptorCount = 1;
             o[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; o[0].pBufferInfo = &ubo;
             o[1].dstSet = set; o[1].dstBinding = 3; o[1].descriptorCount = 1;
             o[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; o[1].pBufferInfo = &ssbo;
-            for (int i = 0; i < 5; ++i) {
+            for (int i = 0; i < 6; ++i) {
                 o[2 + i].dstSet = set; o[2 + i].dstBinding = imgBinding[i]; o[2 + i].descriptorCount = 1;
                 o[2 + i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; o[2 + i].pImageInfo = &img[k][i];
             }
         }
-        vkUpdateDescriptorSets(dev_, 14, w, 0, nullptr);
+        vkUpdateDescriptorSets(dev_, 16, w, 0, nullptr);
     }
 
     void beginRendering(VkCommandBuffer c, const VkRenderingAttachmentInfo& col, const VkRenderingAttachmentInfo& dep) {
@@ -1061,8 +1164,9 @@ private:
     // ---------- конвейеры ----------
     bool createLayouts() {
         const VkShaderStageFlags st = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
-        // 0 кадр, 1 течения, 2 глубина сцены, 3 блоки мелкой воды, 4 мелкая вода, 5 её маска, 6 маска вокселей
-        VkDescriptorSetLayoutBinding b[7] = {
+        // 0 кадр, 1 течения, 2 глубина сцены, 3 блоки мелкой воды, 4 мелкая вода, 5 её маска,
+        // 6 маска вокселей, 7 атлас текстур блоков (Р80)
+        VkDescriptorSetLayoutBinding b[8] = {
             {0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, st, nullptr},
             {1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, st, nullptr},
             {2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, st, nullptr},
@@ -1070,9 +1174,10 @@ private:
             {4, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, st, nullptr},
             {5, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, st, nullptr},
             {6, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, st, nullptr},
+            {7, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, st, nullptr},
         };
         VkDescriptorSetLayoutCreateInfo lci{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-        lci.bindingCount = 7;
+        lci.bindingCount = 8;
         lci.pBindings = b;
         if (!vkOk(vkCreateDescriptorSetLayout(dev_, &lci, nullptr, &setLayout_), "vkCreateDescriptorSetLayout")) return false;
         const VkPushConstantRange pr{PUSH_STAGES, 0, PUSH_BYTES};
@@ -1083,7 +1188,7 @@ private:
         plci.pPushConstantRanges = &pr;
         if (!vkOk(vkCreatePipelineLayout(dev_, &plci, nullptr, &layout_), "vkCreatePipelineLayout")) return false;
         const VkDescriptorPoolSize sizes[3] = {{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, FRAMES * 2},
-                                               {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, FRAMES * 2 * 5},
+                                               {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, FRAMES * 2 * 6},
                                                {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, FRAMES * 2}};
         VkDescriptorPoolCreateInfo dpci{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
         dpci.maxSets = FRAMES * 2;
@@ -1217,7 +1322,7 @@ private:
             for (HostBuf& b : d->per) destroyHost(b);
         destroyHost(readback_);
         for (Block& b : blocks_) { vkDestroyBuffer(dev_, b.buf, nullptr); vkFreeMemory(dev_, b.mem, nullptr); }
-        for (Image* im : {&maskTex_, &flowTex_, &fineTex_, &fineMask_, &dummyFloat_, &dummyUint_}) destroyImage(*im);
+        for (Image* im : {&maskTex_, &flowTex_, &fineTex_, &fineMask_, &dummyFloat_, &dummyUint_, &atlasTex_}) destroyImage(*im);
         destroySwapchainParts();
         if (swapchain_) vkDestroySwapchainKHR(dev_, swapchain_, nullptr);
         for (VkPipeline p : {pTerrain_, pTerrainWater_, pTile_, pTileWater_, pTree_, pFine_, pSpray_, pDyn_})
@@ -1227,6 +1332,7 @@ private:
         if (setLayout_) vkDestroyDescriptorSetLayout(dev_, setLayout_, nullptr);
         if (linear_) vkDestroySampler(dev_, linear_, nullptr);
         if (nearest_) vkDestroySampler(dev_, nearest_, nullptr);
+        if (atlasSmp_) vkDestroySampler(dev_, atlasSmp_, nullptr);
         vkDestroyDevice(dev_, nullptr);
         vkDestroySurfaceKHR(instance_, surface_, nullptr);
         if (messenger_) {
@@ -1255,9 +1361,11 @@ private:
     std::vector<VkSemaphore> renderDone_;   // по изображению окна: показ ждёт отрисовку
     bool vsync_ = true, swapDirty_ = false;
     Image msaaColor_, msaaDepth_, depthCopy_;
-    Image maskTex_, flowTex_, fineTex_, fineMask_, dummyFloat_, dummyUint_;
+    Image maskTex_, flowTex_, fineTex_, fineMask_, dummyFloat_, dummyUint_, atlasTex_;
+    bool atlasTried_ = false;
     int maskSide_ = 0, flowSide_ = 0, fineSide_ = 0;
-    VkSampler linear_ = VK_NULL_HANDLE, nearest_ = VK_NULL_HANDLE;
+    VkSampler linear_ = VK_NULL_HANDLE, nearest_ = VK_NULL_HANDLE, atlasSmp_ = VK_NULL_HANDLE;
+    float anisotropy_ = 1.0f;   // Р80: сколько даёт видеокарта, не больше 8
     VkDescriptorSetLayout setLayout_ = VK_NULL_HANDLE;
     VkPipelineLayout layout_ = VK_NULL_HANDLE;
     VkDescriptorPool descPool_ = VK_NULL_HANDLE;

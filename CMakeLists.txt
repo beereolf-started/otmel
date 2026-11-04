@@ -37,6 +37,7 @@ add_library(otmel_world STATIC
     src/world/forest.cpp
     src/world/rocks.cpp
     src/world/rock_table.cpp
+    src/world/spawn.cpp
 )
 target_include_directories(otmel_world PUBLIC src)
 
