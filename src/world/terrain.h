@@ -176,6 +176,10 @@ struct Cover {
     bool bare() const { return soil <= 0; }
 };
 Cover coverAt(const TerrainParams& p, const Climate& c, int32_t height);
+// Р79: толщина земли по сглаженному уклону. Уклон - в восьмых долях тангенса (8 - сорок пять
+// градусов). Нужна и дальним плиткам (Р86): без неё дальний обрыв оставался зелёным, а вблизи был
+// каменным, и на кольце перехода стояла черта.
+int16_t soilFromSlope(int32_t slope8);
 
 // Р77: породы (набор TFC/TFG, world/rocks.cpp) и разрез столбца: до 5 слоёв сверху вниз
 enum Rock : uint8_t { GRANITE, DIORITE, GABBRO, RHYOLITE, BASALT, ANDESITE, DACITE, SHALE, CLAYSTONE, LIMESTONE,

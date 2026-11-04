@@ -1242,8 +1242,8 @@ private:
         switch (input) {
             case NONE: break;
             case CHUNK: bind.stride = 4; attr[0] = {0, 0, VK_FORMAT_R32_UINT, 0}; attrs = 1; break;   // вершина куска - одно целое
-            case TILE_IN:   // узел плитки - пять целых: четыре - рельеф, пятое - вода (Р34)
-                bind.stride = 20; attr[0] = {0, 0, VK_FORMAT_R32G32B32A32_UINT, 0}; attr[1] = {1, 0, VK_FORMAT_R32_UINT, 16}; attrs = 2; break;
+            case TILE_IN:   // узел плитки - шесть целых: четыре рельефа, вода (Р34) и покров с породой (Р86)
+                bind.stride = 24; attr[0] = {0, 0, VK_FORMAT_R32G32B32A32_UINT, 0}; attr[1] = {1, 0, VK_FORMAT_R32G32_UINT, 16}; attrs = 2; break;
             case INSTANCED:   // брызги и спрайты: по экземпляру два vec4
                 bind.stride = 32; bind.inputRate = VK_VERTEX_INPUT_RATE_INSTANCE;
                 attr[0] = {0, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 0}; attr[1] = {1, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 16}; attrs = 2; break;

@@ -58,6 +58,8 @@ void buildTile(const TerrainParams& p, TileKey k, TileMesh& out) {
     // прозрачным); покров дна - как у вокселей: у воды рек и озёр - песок (Р29), иначе по климату
     static thread_local int32_t hf[TILE_VERTS + 2][TILE_VERTS + 2], wf[TILE_VERTS + 2][TILE_VERTS + 2];
     static thread_local bool wetF[TILE_VERTS + 2][TILE_VERTS + 2], shoreF[TILE_VERTS + 2][TILE_VERTS + 2];
+    // Р86: форма рельефа узла нужна дальше - по ней берётся порода, когда крутизна снимает покров
+    static thread_local Relief rfF[TILE_VERTS + 2][TILE_VERTS + 2];
     for (int j = -1; j <= TILE_VERTS; ++j)
         for (int i = -1; i <= TILE_VERTS; ++i) {
             const int64_t x = x0 + i * step, z = z0 + j * step;
@@ -67,11 +69,13 @@ void buildTile(const TerrainParams& p, TileKey k, TileMesh& out) {
             wf[j + 1][i + 1] = w;
             wetF[j + 1][i + 1] = w > r.height;
             shoreF[j + 1][i + 1] = r.shore;
+            rfF[j + 1][i + 1] = r;
         }
     // высоты уровня L+1 в чётных узлах (шаг вдвое крупнее) с каймой: [-1..17]
     constexpr int CV = TILE / 2 + 1;
     static thread_local int32_t hc[CV + 2][CV + 2], wc[CV + 2][CV + 2];
     static thread_local bool wetC[CV + 2][CV + 2], shoreC[CV + 2][CV + 2];
+    static thread_local Relief rfC[CV + 2][CV + 2];
     for (int j = -1; j <= CV; ++j)
         for (int i = -1; i <= CV; ++i) {
             const int32_t cx = int32_t(x0 + i * 2 * step), cz = int32_t(z0 + j * 2 * step);
@@ -81,7 +85,25 @@ void buildTile(const TerrainParams& p, TileKey k, TileMesh& out) {
             wc[j + 1][i + 1] = w;
             wetC[j + 1][i + 1] = w > r.height;
             shoreC[j + 1][i + 1] = r.shore;
+            rfC[j + 1][i + 1] = r;
         }
+    // Р86: ПОРОДА НА ПЛИТКЕ. Вблизи крутизна снимает покров и наружу выходит сама порода (Р79).
+    // Вдали этого не было вовсе: обрыв оставался зелёным, и на кольце перехода к вокселям стояла
+    // черта, а пласты и рудные выходы не было видно дальше нескольких блоков - проверять нечем.
+    //
+    // Уклон приводим к тем же восьмым долям тангенса, что и у вокселей: перепад к соседям через
+    // два шага сетки.
+    const auto bareRock = [&](const Relief& r, int32_t h, int32_t dx, int32_t dz, int32_t sp,
+                              int32_t wx, int32_t wz, Cover& c) {
+        const int32_t slope = std::max(std::abs(4 * dx / sp), std::abs(4 * dz / sp));
+        if (soilFromSlope(slope) > 0) return;
+        RockColumn rc;
+        rockColumn(p, wx, wz, r, rc);
+        const RockColumn four[2][2] = {{rc, rc}, {rc, rc}};
+        c.top = rockAt(four, wx, h, wz);
+        c.under = rockAt(four, wx, h - 1, wz);
+    };
+
     // наклон и покров уровня L+1 - в чётных узлах
     static thread_local uint32_t coarseGrad[CV][CV], coarseCover[CV][CV];
     for (int j = 0; j < CV; ++j)
@@ -96,7 +118,10 @@ void buildTile(const TerrainParams& p, TileKey k, TileMesh& out) {
             // Р41: устье пещеры - бурым пятном (вдали пещер нет - только метка); шаг грубой сетки - вдвое
             if (!shoreC[j + 1][i + 1] && !wetC[j + 1][i + 1] && caveMouth(p, wx, wz, hc[j + 1][i + 1], int32_t(2 * step / VOXELS_PER_BLOCK)))
                 c = Cover{DIRT, DIRT};
-            coarseCover[j][i] = uint32_t(c.top) | uint32_t(c.under) << 4;
+            else if (!shoreC[j + 1][i + 1] && !wetC[j + 1][i + 1])
+                bareRock(rfC[j + 1][i + 1], hc[j + 1][i + 1], hc[j + 1][i + 2] - hc[j + 1][i],
+                         hc[j + 2][i + 1] - hc[j][i + 1], int32_t(2 * step), wx, wz, c);
+            coarseCover[j][i] = uint32_t(c.top) | uint32_t(c.under) << 6;
         }
 
     static thread_local int32_t sf[TILE_VERTS + 2][TILE_VERTS + 2], sc[CV + 2][CV + 2];
@@ -127,11 +152,17 @@ void buildTile(const TerrainParams& p, TileKey k, TileMesh& out) {
             if (!shoreF[j + 1][i + 1] && !wetF[j + 1][i + 1] &&
                 caveMouth(p, int32_t(x0 + i * step), int32_t(z0 + j * step), h, int32_t(step / VOXELS_PER_BLOCK)))
                 c = Cover{DIRT, DIRT};
+            else if (!shoreF[j + 1][i + 1] && !wetF[j + 1][i + 1])
+                bareRock(rfF[j + 1][i + 1], h, hf[j + 1][i + 2] - hf[j + 1][i], hf[j + 2][i + 1] - hf[j][i + 1],
+                         int32_t(step), int32_t(x0 + i * step), int32_t(z0 + j * step), c);
             uint32_t* w = &out.data[(size_t(j) * TILE_VERTS + i) * TILE_WORDS];
             w[0] = h16(h) | h16(hcT) << 16;
             w[1] = slope256(hf[j + 1][i + 2] - hf[j + 1][i], step) | slope256(hf[j + 2][i + 1] - hf[j][i + 1], step) << 16;
             w[2] = coarseGrad[cj][ci];
-            w[3] = uint32_t(c.top) | uint32_t(c.under) << 4 | coarseCover[cj][ci] << 8 | uint32_t(std::lround(forest * 255.0f)) << 16;
+            w[3] = uint32_t(std::lround(forest * 255.0f)) << 16;
+            // Р86: покров - в своём слове: на материал шесть бит вместо четырёх (породы 12..47).
+            // Свои верх и низ, затем верх и низ соседней сетки уровня L+1.
+            w[5] = uint32_t(c.top) | uint32_t(c.under) << 6 | coarseCover[cj][ci] << 12;
             const int32_t s = sf[j + 1][i + 1], scT = sc[cj + 1][ci + 1];
             // Р75: течение у мокрого узла - чтобы и вдали было видно, куда и как быстро течёт река; перепад глади к
             // самому низкому мокрому соседу - пена у падения и места брызг вдали

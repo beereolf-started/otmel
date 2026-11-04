@@ -153,7 +153,7 @@ public:
         glVertexArrayAttribIFormat(tileVao_, 0, 4, GL_UNSIGNED_INT, 0);
         glVertexArrayAttribBinding(tileVao_, 0, 0);
         glEnableVertexArrayAttrib(tileVao_, 1);
-        glVertexArrayAttribIFormat(tileVao_, 1, 1, GL_UNSIGNED_INT, 16);
+        glVertexArrayAttribIFormat(tileVao_, 1, 2, GL_UNSIGNED_INT, 16);   // Р86: вода и покров с породой
         glVertexArrayAttribBinding(tileVao_, 1, 0);
         // Индексы плитки общие, по четвертям подряд: четверть q - отрезок [q·1536, (q+1)·1536). Диагональ
         // квадрата везде одна, (i, j)-(i+1, j+1): тогда сползшая плитка складывается в грубую с той же диагональю.
@@ -477,7 +477,7 @@ private:
         glProgramUniform1i(tileProgram_, 1, t.spacing);
         glProgramUniform2f(tileProgram_, 2, t.morphStart, t.morphEnd);
         glProgramUniform1i(tileProgram_, 3, t.level);
-        glVertexArrayVertexBuffer(tileVao_, 0, m.vbo, 0, 20);
+        glVertexArrayVertexBuffer(tileVao_, 0, m.vbo, 0, 24);
         if (t.quadrants == 0xF) {
             glDrawElements(GL_TRIANGLES, 4 * QUAD_INDICES, GL_UNSIGNED_SHORT, nullptr);
             ++stats.drawCalls;
