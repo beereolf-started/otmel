@@ -63,6 +63,7 @@ struct ChunkCache {
     const world::TerrainParams& p;
     world::ColumnHeights hm{};
     uint64_t air[CHUNK + 2][CHUNK + 2]{};
+    uint8_t cut[CHUNK + 2][CHUNK + 2]{};   // Р79: срез земли у выхода шахты
     int32_t cx = INT32_MIN, cz = INT32_MIN, cy = INT32_MIN;
     bool caves = false;
     int built = 0;
@@ -75,6 +76,7 @@ struct ChunkCache {
         if (ncx != cx || ncz != cz) {
             if (built >= maxChunks) return world::AIR;
             world::columnHeights(p, ncx, ncz, hm);
+            world::soilCut(p, ncx, ncz, hm, cut);
             cx = ncx;
             cz = ncz;
             cy = INT32_MIN;
@@ -82,10 +84,14 @@ struct ChunkCache {
         }
         if (ncy != cy) {
             cy = ncy;
-            caves = world::caveAir(p, world::ChunkPos{cx, cy, cz}, hm, air);
+            caves = world::caveAir(p, world::ChunkPos{cx, cy, cz}, hm, air, cut);
         }
         const int lx = vx - cx * CHUNK, lz = vz - cz * CHUNK, ly = vy - cy * CHUNK;
-        const world::Material m = world::columnMaterial(hm.h[lz + 1][lx + 1], hm.cover[lz][lx], vy,
+        // Р79: верх с учётом среза, а подошва земли на месте - как и в сетке
+        world::Cover cv = hm.cover[lz][lx];
+        const int vcut = cut[lz + 1][lx + 1];
+        cv.soil = int16_t(std::max(0, int(cv.soil) - vcut));
+        const world::Material m = world::columnMaterial(hm.h[lz + 1][lx + 1] - vcut, cv, vy,
                                                         hm.water[lz + 1][lx + 1], hm.rock, vx, vz);
         if (caves && ly >= 0 && ly < 64 && ((air[lz + 1][lx + 1] >> ly) & 1)) return world::AIR;
         return m;
@@ -99,7 +105,10 @@ float groundAt(const world::TerrainParams& p, float x, float z) {
     const int32_t vx = int32_t(std::lround(x * VOXELS_PER_BLOCK)), vz = int32_t(std::lround(z * VOXELS_PER_BLOCK));
     world::columnHeights(p, floorDiv(vx, CHUNK), floorDiv(vz, CHUNK), hm);
     const int lx = vx - floorDiv(vx, CHUNK) * CHUNK, lz = vz - floorDiv(vz, CHUNK) * CHUNK;
-    const int32_t h = std::max(hm.h[lz + 1][lx + 1], hm.water[lz + 1][lx + 1] == world::NO_WATER
+    // Р79: поверхность с учётом среза земли у выхода шахты
+    static uint8_t cut[CHUNK + 2][CHUNK + 2];
+    world::soilCut(p, floorDiv(vx, CHUNK), floorDiv(vz, CHUNK), hm, cut);
+    const int32_t h = std::max(hm.h[lz + 1][lx + 1] - cut[lz + 1][lx + 1], hm.water[lz + 1][lx + 1] == world::NO_WATER
                                                          ? INT32_MIN
                                                          : hm.water[lz + 1][lx + 1]);
     return float(h) / float(VOXELS_PER_BLOCK);
