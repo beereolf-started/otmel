@@ -297,16 +297,17 @@ public:
         uploadImage(maskTex_, mask.data(), static_cast<size_t>(side) * side);
     }
 
-    // Р85: карта верхних высот для теней. Целое со знаком: высоты бывают и ниже нуля.
-    void setSkyTop(int side, std::span<const int16_t> top) override {
+    // Р85: карта теневых высот. Дробные числа и сглаженная выборка: от ступенчатой карты тени
+    // шли бы зубцами по блокам.
+    void setSkyTop(int side, std::span<const float> top) override {
         ensureFrame();
         if (side != skySide_) {
             drop(skyTex_);
-            skyTex_ = makeImage(side, side, VK_FORMAT_R16_SINT, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+            skyTex_ = makeImage(side, side, VK_FORMAT_R32_SFLOAT, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
                                 VK_SAMPLE_COUNT_1_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
             skySide_ = side;
         }
-        uploadImage(skyTex_, top.data(), static_cast<size_t>(side) * side * 2);
+        uploadImage(skyTex_, top.data(), static_cast<size_t>(side) * side * 4);
     }
 
     void updateFlowField(int side, std::span<const float> v) override {
@@ -876,7 +877,7 @@ private:
             img[k][3] = {nearest_, fineSide_ ? fineMask_.view : dummyUint_.view, ro};
             img[k][4] = {nearest_, maskTex_.view, ro};
             img[k][5] = {atlasSmp_, atlasTex_.img ? atlasTex_.view : dummyFloat_.view, ro};   // Р80
-            img[k][6] = {nearest_, skyTex_.img ? skyTex_.view : dummyUint_.view, ro};   // Р85
+            img[k][6] = {linear_, skyTex_.img ? skyTex_.view : dummyFloat_.view, ro};   // Р85
             const uint32_t imgBinding[7] = {1, 2, 4, 5, 6, 7, 8};
             VkWriteDescriptorSet* o = &w[k * 9];
             for (int i = 0; i < 9; ++i) o[i] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};

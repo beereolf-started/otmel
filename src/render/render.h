@@ -74,9 +74,9 @@ public:
     virtual void destroyMesh(MeshId id) = 0;
     // маска готовых столбцов вокселей (Р21): side×side байт, строка - по z; над единицами плитки не рисуются
     virtual void updateVoxelMask(int side, std::span<const uint8_t> mask) = 0;
-    // Р85: карта верхних высот вокруг игрока (блоки): высота самого верхнего, что закрывает небо -
-    // земля, снег, крона. По ней фрагментный обработчик и строит тени.
-    virtual void setSkyTop(int side, std::span<const int16_t> top) = 0;
+    // Р85: карта теневых высот вокруг игрока (блоки): ниже этой высоты солнце до столбца не
+    // достаёт. Сглаженная выборка, поэтому дробные числа.
+    virtual void setSkyTop(int side, std::span<const float> top) = 0;
     // Р43: поле течений side×side блоков, 2 числа на блок (скорость x, z, блоки/с)
     virtual void updateFlowField(int side, std::span<const float> velocity) = 0;
     // Р45: вода автомата - треугольники, на вершину 4 числа: x, y, z (блоки), нормаль 0..5

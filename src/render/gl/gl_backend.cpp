@@ -218,18 +218,20 @@ public:
         glTextureSubImage2D(maskTex_, 0, 0, 0, side, side, GL_RED_INTEGER, GL_UNSIGNED_BYTE, mask.data());
     }
 
-    // Р85: карта верхних высот для теней
-    void setSkyTop(int side, std::span<const int16_t> top) override {
+    // Р85: карта теневых высот (дробные числа, сглаженная выборка)
+    void setSkyTop(int side, std::span<const float> top) override {
         if (side != skySide_) {
             if (skyTex_) glDeleteTextures(1, &skyTex_);
             glCreateTextures(GL_TEXTURE_2D, 1, &skyTex_);
-            glTextureStorage2D(skyTex_, 1, GL_R16I, side, side);
-            glTextureParameteri(skyTex_, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-            glTextureParameteri(skyTex_, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+            glTextureStorage2D(skyTex_, 1, GL_R32F, side, side);
+            glTextureParameteri(skyTex_, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            glTextureParameteri(skyTex_, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            glTextureParameteri(skyTex_, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            glTextureParameteri(skyTex_, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
             skySide_ = side;
         }
-        glPixelStorei(GL_UNPACK_ALIGNMENT, 2);
-        glTextureSubImage2D(skyTex_, 0, 0, 0, side, side, GL_RED_INTEGER, GL_SHORT, top.data());
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+        glTextureSubImage2D(skyTex_, 0, 0, 0, side, side, GL_RED, GL_FLOAT, top.data());
         glBindTextureUnit(8, skyTex_);
     }
 

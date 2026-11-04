@@ -615,7 +615,7 @@ int main(int argc, char** argv) {
     glm::ivec2 lipAt(INT32_MIN / 2);
     // Р62: лес в генерации - зона 7×7 кусков (224 блока) вокруг куска камеры; места - в фоне, деревья - в фоне по 6
     struct ForestSpot { uint64_t key; glm::ivec3 base; glm::ivec3 shift; uint32_t seed; };
-    struct ForestZone { glm::ivec2 origin; int side; std::shared_ptr<std::vector<int32_t>> ground; std::vector<int16_t> skyTop; std::vector<ForestSpot> spots; int nWet = 0, nSteep = 0, nSnow = 0, nSparse = 0, nCave = 0; float rainSum = 0, groveSum = 0; int nC = 0; };
+    struct ForestZone { glm::ivec2 origin; int side; std::shared_ptr<std::vector<int32_t>> ground; std::vector<float> skyTop; std::vector<ForestSpot> spots; int nWet = 0, nSteep = 0, nSnow = 0, nSparse = 0, nCave = 0; float rainSum = 0, groveSum = 0; int nC = 0; };
     struct ForestBuilt { uint64_t key; int level; glm::ivec3 base; std::vector<OakChunk> chunks; };
     // Р63: дерево леса - текущий уровень детализации (-1 - нет), какой строится, его сетки
     struct ForestTree { ForestSpot spot; int level = -1, building = -1; std::vector<OakMesh> meshes; };
@@ -1269,24 +1269,43 @@ int main(int argc, char** argv) {
                             for (const auto [dx, dy] : {std::pair{0, 0}, {1, 0}, {0, 1}, {1, 1}}) g0 = std::min(g0, H(x + dx, y + dy));
                             z->spots.push_back({(uint64_t(uint32_t(ci)) << 32) | uint32_t(cj), glm::ivec3(x, g0 + 1, y), glm::ivec3(tc.fx, 0, tc.fz), tc.seed});
                         }
-                    // Р85: КАРТА ВЕРХНИХ ВЫСОТ - для теней. На каждый столбец - высота того, что
-                    // закрывает небо: земля, а под кроной - её верх. Дерева в блочной маске нет, оно
-                    // живёт отдельной сеткой, поэтому крону рисуем сюда кружком: иначе тени под
-                    // деревьями не будет вовсе, а она и нужна больше всего.
-                    z->skyTop.assign(size_t(S) * S, 0);
-                    for (size_t i = 0; i < z->skyTop.size(); ++i) z->skyTop[i] = int16_t((*g)[i]);
+                    // Р85: КАРТА ТЕНЕВЫХ ВЫСОТ. Сперва верхи: на каждый столбец высота того, что
+                    // закрывает небо. Дерева в блочной маске нет, оно живёт отдельной сеткой,
+                    // поэтому крону рисуем сюда кружком: иначе тени под деревьями не будет вовсе, а
+                    // она и нужна больше всего.
+                    std::vector<float> top(size_t(S) * S);
+                    for (size_t i = 0; i < top.size(); ++i) top[i] = float((*g)[i]);
                     for (const ForestSpot& sp : z->spots) {
                         const int cxp = sp.base.x - z->origin.x, czp = sp.base.z - z->origin.y;
-                        const int top = sp.base.y + 10, r = 4;   // крона примерно там же, где у спрайта
+                        const int canopy = sp.base.y + 10, r = 4;   // крона примерно там же, где у спрайта
                         for (int dz = -r; dz <= r; ++dz)
                             for (int dx = -r; dx <= r; ++dx) {
                                 if (dx * dx + dz * dz > r * r) continue;
                                 const int px = cxp + dx, pz = czp + dz;
                                 if (px < 0 || pz < 0 || px >= S || pz >= S) continue;
-                                int16_t& v = z->skyTop[size_t(pz) * S + px];
-                                v = std::max<int16_t>(v, int16_t(top));
+                                float& v = top[size_t(pz) * S + px];
+                                v = std::max(v, float(canopy));
                             }
                     }
+                    // Затем сама тень: идём от столбца к солнцу по верхам и запоминаем, до какой
+                    // высоты солнце не достаёт. Считать это ЗАРАНЕЕ, а не лучом в обработчике
+                    // фрагментов, - единственный способ получить ровную тень: у луча шаг крупный,
+                    // набор отсчётов у каждой точки экрана свой, и тени рвались и мерцали от любого
+                    // смещения камеры.
+                    const glm::vec3 sun = glm::normalize(glm::vec3(0.4f, 1.0f, 0.25f));
+                    const glm::vec2 d(sun.x / sun.y, sun.z / sun.y);   // блоков вбок на блок вверх
+                    z->skyTop.assign(size_t(S) * S, 0.0f);
+                    constexpr int REACH = 40;   // насколько высоко прослеживаем помеху (блоки)
+                    for (int j = 0; j < S; ++j)
+                        for (int i = 0; i < S; ++i) {
+                            float sh = top[size_t(j) * S + i];
+                            for (int k = 1; k <= REACH; ++k) {
+                                const int px = i + int(d.x * float(k) + 0.5f), pz = j + int(d.y * float(k) + 0.5f);
+                                if (px < 0 || pz < 0 || px >= S || pz >= S) break;
+                                sh = std::max(sh, top[size_t(pz) * S + px] - float(k));
+                            }
+                            z->skyTop[size_t(j) * S + i] = sh;
+                        }
                     return z;
                 });
             }
