@@ -30,6 +30,11 @@ bool caveAir(const TerrainParams& p, ChunkPos pos, const ColumnHeights& hm, uint
 void soilCut(const TerrainParams& p, int32_t chunkX, int32_t chunkZ, const ColumnHeights& hm,
              uint8_t cut[CHUNK + 2][CHUNK + 2]);
 
+// Считать ли в столбце кусков (cx, cz) пещеры у поверхности и срез земли у выхода: вход в самом
+// столбце или у любого из восьми соседей. ОДНА проверка на всех - по ней постройщик решает, звать
+// ли caveAir и soilCut, а расчёт столбцов - считать ли лишнее кольцо высот для толщины земли.
+bool cavesHere(const TerrainParams& p, int32_t cx, int32_t cz);
+
 // Р39: может ли у столбца кусков (cx, cz) быть вход в пещеру (шум входов у центра - с запасом, как в быстром отказе)
 bool caveEntranceNear(const TerrainParams& p, int32_t cx, int32_t cz);
 

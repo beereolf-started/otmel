@@ -324,7 +324,43 @@ void seams(const world::TerrainParams& p, int32_t bx, int32_t bz, int sideBlocks
     std::printf("швов %lld из %lld столбцов, наибольшее расхождение %.2f бл\n", (long long)bad, (long long)looked, worst / 16.0);
 }
 
+/** Где воронка вообще есть: ищем столбцы с ненулевым срезом земли. */
+void cuts(const world::TerrainParams& p, int32_t bx, int32_t bz, int sideBlocks) {
+    static world::ColumnHeights hm;
+    static uint8_t cut[world::CHUNK + 2][world::CHUNK + 2];
+    const int32_t cx0 = (bx * world::VOXELS_PER_BLOCK) / world::CHUNK;
+    const int32_t cz0 = (bz * world::VOXELS_PER_BLOCK) / world::CHUNK;
+    const int side = std::max(2, sideBlocks * world::VOXELS_PER_BLOCK / world::CHUNK);
+    int64_t with = 0, looked = 0;
+    int shown = 0;
+    for (int j = 0; j < side; ++j)
+        for (int i = 0; i < side; ++i) {
+            const int32_t cx = cx0 + i, cz = cz0 + j;
+            world::columnHeights(p, cx, cz, hm);
+            world::soilCut(p, cx, cz, hm, cut);
+            int best = 0;
+            for (int z = 1; z <= world::CHUNK; ++z)
+                for (int x = 1; x <= world::CHUNK; ++x) {
+                    ++looked;
+                    if (cut[z][x]) ++with;
+                    best = std::max(best, int(cut[z][x]));
+                }
+            if (best >= world::VOXELS_PER_BLOCK && shown < 8) {
+                ++shown;
+                std::printf("  воронка: блоки %d %d, наибольший срез %.2f бл\n", cx * world::CHUNK / 16,
+                            cz * world::CHUNK / 16, best / 16.0);
+            }
+        }
+    std::printf("срез есть у %lld столбцов из %lld (%.3f%%)\n", (long long)with, (long long)looked,
+                100.0 * double(with) / double(looked ? looked : 1));
+}
+
 int main(int argc, char** argv) {
+    if (argc > 3 && std::string(argv[1]) == "--cuts") {
+        world::TerrainParams tp;
+        cuts(tp, atoi(argv[2]), atoi(argv[3]), argc > 4 ? std::max(4, atoi(argv[4])) : 32);
+        return 0;
+    }
     if (argc > 3 && std::string(argv[1]) == "--seam") {
         world::TerrainParams tp;
         seams(tp, atoi(argv[2]), atoi(argv[3]), argc > 4 ? std::max(4, atoi(argv[4])) : 24);

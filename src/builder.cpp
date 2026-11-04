@@ -127,12 +127,7 @@ void Builder::worker() {
         // закрытые тоннели без входа сверху не видны - вне ближнего яруса пещеры только у столбцов рядом со входом
         // (вход в столбце или у соседа); со стороны соседа без пещер - заглушка: у границы пещера закрыта своей
         // стенкой (у соседа там сплошной камень без граней - иначе пустота видна насквозь)
-        const auto hasCaves = [&](int32_t cx, int32_t cz) {
-            for (int dz = -1; dz <= 1; ++dz)
-                for (int dx = -1; dx <= 1; ++dx)
-                    if (world::caveEntranceNear(tp_, cx + dx, cz + dz)) return true;
-            return false;
-        };
+        const auto hasCaves = [&](int32_t cx, int32_t cz) { return world::cavesHere(tp_, cx, cz); };
         bool shallowCaves = true;
         uint8_t shallowCaps = 0;
         if (col.cyMin == NO_DEPTH) {

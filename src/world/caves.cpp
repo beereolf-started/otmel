@@ -60,6 +60,15 @@ bool caveMouth(const TerrainParams& p, int32_t x, int32_t z, int32_t top, int32_
 // края отверстия: в середине входа гашения нет, за этой полосой оно полное.
 constexpr fx::q16 ENTRANCE_EDGE = fx::ONE / 4;
 
+bool caveEntranceNear(const TerrainParams& p, int32_t cx, int32_t cz);
+
+bool cavesHere(const TerrainParams& p, int32_t cx, int32_t cz) {
+    for (int dz = -1; dz <= 1; ++dz)
+        for (int dx = -1; dx <= 1; ++dx)
+            if (caveEntranceNear(p, cx + dx, cz + dz)) return true;
+    return false;
+}
+
 bool caveEntranceNear(const TerrainParams& p, int32_t cx, int32_t cz) {
     const CaveParams& c = p.caves;
     // Запас ТОТ ЖЕ, что у гашения хода у поверхности (ENTRANCE_EDGE). Пока здесь стояла одна
@@ -212,12 +221,10 @@ bool caveAir(const TerrainParams& p, ChunkPos pos, const ColumnHeights& hm, uint
                                  entranceDamp());
                 // зал считаем тем же полем, иначе земля над залом осталась бы висеть: пустота есть,
                 // а величина, по которой решается осыпание, её не видит
-                // БЕЗ ОГЛЯДКИ НА maxH: это наибольшее по узлам ТЕКУЩЕГО куска, и если им здесь
-                // распоряжаться, один и тот же столбец в двух соседних кусках посчитается по-разному -
-                // в одном слагаемое зала войдёт, в другом нет. Тогда нижний кусок снимет землю, а
-                // верхний не снимет, и над пустотой останется крышка. Величина обязана зависеть
-                // только от координаты.
-                if (d >= c.hallDepth - 8 * VOXELS_PER_BLOCK) {
+                // Отсечка по наибольшему значению в узлах точна: смешивание за их пределы не
+                // выходит, поэтому при maxH <= 0 зала в этом куске нет нигде. Срез земли считается
+                // не здесь, а в soilCut, поэтому на согласие соседних кусков это не влияет.
+                if (maxH > 0 && d >= c.hallDepth - 8 * VOXELS_PER_BLOCK) {
                     fx::q16 h = tri(wy, [](const Node& n) { return n.hall; });
                     // залы гаснут к верху на 8 блоках над hallDepth - потолок не плоский
                     if (d < c.hallDepth) h -= fx::q16(int64_t(fx::ONE * 3 / 10) * (c.hallDepth - d) / (8 * VOXELS_PER_BLOCK));
@@ -299,13 +306,14 @@ void soilCut(const TerrainParams& p, int32_t chunkX, int32_t chunkZ, const Colum
     if (ny > MAX_Y) return;   // непомерный перепад: воронку не рисуем, зато разнобоя не будет
 
     static thread_local Node nodes[MAX_NODES][MAX_Y][MAX_NODES];
-    fx::q16 maxT = INT32_MIN;
+    fx::q16 maxT = INT32_MIN, maxH = INT32_MIN;
     for (int k = 0; k < nz; ++k)
         for (int j = 0; j < ny; ++j)
             for (int i = 0; i < nx; ++i) {
                 const Node n = caveNode(p, (nx0 + i) << STEP_LOG2, (ny0 + j) << STEP_LOG2, (nz0 + k) << STEP_LOG2);
                 nodes[k][j][i] = n;
                 maxT = std::max(maxT, n.tunnel);
+                maxH = std::max(maxH, n.hall);
             }
     const fx::q16 w2 = fx::mul(c.tunnelWidth, c.tunnelWidth);
     const fx::q16 wide = 4 * w2;        // ширина воронки в значениях поля
@@ -340,7 +348,7 @@ void soilCut(const TerrainParams& p, int32_t chunkX, int32_t chunkZ, const Colum
                 if (d < ROOF_BAND)
                     t -= fx::mul(damp + fx::q16(int64_t(w2) * (ROOF_BAND - d) / VOXELS_PER_BLOCK), dampK);
                 // зал - такая же пустота: без него земля над залом осталась бы висеть крышкой
-                if (d >= c.hallDepth - 8 * VOXELS_PER_BLOCK) {
+                if (maxH > 0 && d >= c.hallDepth - 8 * VOXELS_PER_BLOCK) {
                     const auto geth = [](const Node& n) { return n.hall; };
                     const fx::q16 ha = fx::lerp(geth(nodes[iz][iy][ix]), geth(nodes[iz][iy][ix + 1]), fx_);
                     const fx::q16 hb = fx::lerp(geth(nodes[iz + 1][iy][ix]), geth(nodes[iz + 1][iy][ix + 1]), fx_);

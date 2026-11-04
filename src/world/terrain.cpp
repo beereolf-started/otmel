@@ -1,5 +1,7 @@
 #include "world/terrain.h"
 
+#include "world/caves.h"
+
 #include <algorithm>
 #include <cmath>
 
@@ -212,6 +214,13 @@ fx::q16 temperatureAt(const TerrainParams& p, const Climate& c, int32_t height) 
 // обрывах, гребнях и стенках ущелий её нет совсем и наружу выходит порода.
 constexpr int32_t BARE_FROM = 6, BARE_TO = 16;
 
+/** Толщина земли по сглаженному уклону: до BARE_FROM вся, к BARE_TO - ноль, между - ровно. */
+int16_t soilFromSlope(int32_t sl) {
+    if (sl <= BARE_FROM) return SOIL_FULL;
+    if (sl >= BARE_TO) return 0;
+    return int16_t(int32_t(SOIL_FULL) * (BARE_TO - sl) / (BARE_TO - BARE_FROM));
+}
+
 Cover coverAt(const TerrainParams& p, const Climate& c, int32_t height) {
     // Р25: дно и берег - песок (до 2 блоков над водой)
     if (height < p.seaLevel + 2 * VOXELS_PER_BLOCK) return {SAND, SAND};
@@ -225,10 +234,15 @@ void columnHeights(const TerrainParams& p, int32_t chunkX, int32_t chunkZ, Colum
     const int32_t x0 = chunkX * CHUNK - 1, z0 = chunkZ * CHUNK - 1;
     // медленные поля - по узлам сетки: на столбец с каймой (34×34 вокселя) - 2-3 узла по стороне вместо 1156
     static thread_local SlowGrid slow;
-    slow.build(p, x0, z0, x0 + CHUNK + 1, z0 + CHUNK + 1);
+    // На воксель шире каймы - но ТОЛЬКО там, где считается кольцо высот (Р79, толщина земли для
+    // пограничных столбцов): SlowGrid::at берёт узлы без проверки границ, и вне собранного
+    // прямоугольника это чтение за краем массива. Расширять везде нельзя: лишний ряд узлов рек
+    // дорог, а нужен он одному столбцу кусков из сотни.
+    const int32_t ring = cavesHere(p, chunkX, chunkZ) ? 1 : 0;
+    slow.build(p, x0 - ring, z0 - ring, x0 + CHUNK + 1 + ring, z0 + CHUNK + 1 + ring);
     // Р29: звенья рек и озёра, задевающие кусок, - один раз на кусок
     static thread_local RiverSet rivers;
-    rivers.build(p, x0, z0, x0 + CHUNK + 1, z0 + CHUNK + 1);
+    rivers.build(p, x0 - ring, z0 - ring, x0 + CHUNK + 1 + ring, z0 + CHUNK + 1 + ring);
     static thread_local bool shore[CHUNK + 2][CHUNK + 2], genWet[CHUNK + 2][CHUNK + 2];
     out.minH = INT32_MAX;
     out.maxH = INT32_MIN;
@@ -363,7 +377,7 @@ void columnHeights(const TerrainParams& p, int32_t chunkX, int32_t chunkZ, Colum
     // Уклон считается по восьми соседям, поэтому пограничному столбцу каймы нужен ещё один ряд
     // высот за ней. Считаем это кольцо здесь же: 140 лишних точек рельефа на столбец кусков против
     // 1156 своих. Зато число у общего столбца двух соседних кусков выходит одно и то же, и шва нет.
-    {
+    if (ring) {
         static thread_local int32_t hx[CHUNK + 4][CHUNK + 4];
         for (int z = 0; z < CHUNK + 4; ++z)
             for (int x = 0; x < CHUNK + 4; ++x) {
@@ -380,10 +394,19 @@ void columnHeights(const TerrainParams& p, int32_t chunkX, int32_t chunkZ, Colum
                                    (hx[z][x] + 2 * hx[z + 1][x] + hx[z + 2][x]);
                 const int32_t gz = (hx[z + 2][x] + 2 * hx[z + 2][x + 1] + hx[z + 2][x + 2]) -
                                    (hx[z][x] + 2 * hx[z][x + 1] + hx[z][x + 2]);
-                const int32_t sl = std::max(std::abs(gx), std::abs(gz));
-                out.soilThick[z][x] = sl <= BARE_FROM      ? SOIL_FULL
-                                      : sl >= BARE_TO      ? int16_t(0)
-                                                           : int16_t(int32_t(SOIL_FULL) * (BARE_TO - sl) / (BARE_TO - BARE_FROM));
+                out.soilThick[z][x] = soilFromSlope(std::max(std::abs(gx), std::abs(gz)));
+            }
+    } else {
+        // Вне мест с выходом кольцо не нужно: толщина земли идёт только в покров своих столбцов, а
+        // кайма никому не видна. Считаем по своей же карте высот, без лишних точек рельефа.
+        for (int z = 0; z < CHUNK + 2; ++z)
+            for (int x = 0; x < CHUNK + 2; ++x) {
+                const int zc = std::clamp(z, 1, CHUNK), xc = std::clamp(x, 1, CHUNK);
+                const int32_t gx = (out.h[zc - 1][xc + 1] + 2 * out.h[zc][xc + 1] + out.h[zc + 1][xc + 1]) -
+                                   (out.h[zc - 1][xc - 1] + 2 * out.h[zc][xc - 1] + out.h[zc + 1][xc - 1]);
+                const int32_t gz = (out.h[zc + 1][xc - 1] + 2 * out.h[zc + 1][xc] + out.h[zc + 1][xc + 1]) -
+                                   (out.h[zc - 1][xc - 1] + 2 * out.h[zc - 1][xc] + out.h[zc - 1][xc + 1]);
+                out.soilThick[z][x] = soilFromSlope(std::max(std::abs(gx), std::abs(gz)));
             }
     }
 
