@@ -27,6 +27,9 @@ enum : Material { AIR = 0, STONE = 1, DIRT = 2, GRASS = 3, SAND = 4, SNOW = 5, W
                     // или снег, а вот чем именно сложена толща - песком, суглинком, глиной, торфом -
                     // видно в обрыве и в выкопанной яме.
                     SOIL_FIRST = 50, SOIL_LAST = 58,
+                    // Р88: рудные минералы (world::ores) - материал = ORE_FIRST + номер. Руда не
+                    // отдельный блок, а вкрапления в породе: рисунок - накладка поверх камня.
+                    ORE_FIRST = 59, ORE_LAST = 78,
                     MATERIAL_COUNT };
 
 struct ChunkPos { int32_t x, y, z; };

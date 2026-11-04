@@ -27,8 +27,8 @@ TFC = os.path.join(GAME, "mods", "TerraFirmaCraft-Forge-1.20.1-3.2.21.jar")
 VANILLA = os.path.join(GAME, "versions", "Forge 1.20.1", "Forge 1.20.1.jar")
 
 TILE = 16          # сторона рисунка, точек
-LAYERS = 59        # материалы 0..58 (world/chunk.h)
-COLS, ROWS = 8, 8  # раскладка только для картинки-образца atlas.png
+LAYERS = 79        # материалы 0..78 (world/chunk.h)
+COLS, ROWS = 8, 10  # раскладка только для картинки-образца atlas.png
 
 # ── чтение PNG без сторонних библиотек: нам нужны только 16×16 RGBA и палитровые ────────────────
 
@@ -126,6 +126,12 @@ MIXED = [("granite", (0.67, 0.63, 0.60)), ("diorite", (0.70, 0.66, 0.60)), ("gab
 # листва, листва светлее, кора в трещине
 GRASS_RGB = (0.36, 0.58, 0.25)   # тот же цвет, что в shaders/terrain.vert
 # Р87: почвы по номерам SOIL_FIRST.. - порядок ровно как в src/world/soil_table.cpp
+# Р88: руды по номерам ORE_FIRST.. - порядок ровно как в src/world/ores.cpp
+ORES = ["normal_malachite", "normal_native_copper", "pyrite", "normal_tetrahedrite", "normal_limonite",
+        "normal_hematite", "normal_magnetite", "normal_cassiterite", "normal_sphalerite",
+        "normal_bismuthinite", "normal_native_gold", "normal_native_silver", "rich_bismuthinite",
+        "normal_garnierite", "bituminous_coal", "lignite", "gypsum", "halite", "sulfur", "graphite"]
+ORES = ["tfc:block/ore/" + o for o in ORES]
 SOILS = ["tfc:block/sand/yellow", "tfc:block/dirt/sandy_loam", "tfc:block/dirt/loam",
          "tfc:block/dirt/silty_loam", "tfc:block/dirt/silt", "tfc:block/clay/loam",
          "tfc:block/clay/silty_loam", "tfc:block/mud/silt", "tfc:block/peat"]
@@ -182,6 +188,10 @@ def main():
     # Р87: именованные почвы - порядок ровно как в src/world/soil_table.cpp
     for i, ref in enumerate(SOILS):
         tiles[50 + i] = load(ref)
+    # Р88: руды - накладка поверх камня. Порода-хозяин у вокселя своя, а рисунок пока один и тот же,
+    # на граните: отдельная клетка на каждую пару «порода + руда» - это под тысячу клеток.
+    for i, ref in enumerate(ORES):
+        tiles[59 + i] = over(load(ref), tiles[12])
 
     W, H = COLS * TILE, ROWS * TILE
     px = [(0, 0, 0, 0)] * (W * H)

@@ -48,6 +48,7 @@ float unit(fx::q16 v) { return float(v) / float(fx::ONE); }   // [-1, 1]
 }  // namespace
 
 void rockColumn(const TerrainParams& p, int32_t x, int32_t z, const Relief& r, RockColumn& out) {
+    out.seed = p.seed;   // Р88: по нему columnMaterial кладёт руды
     const uint32_t s = p.seed ^ ROCK_SEED;
     const float land = unit(r.land), mount = unit(r.wMount) * land;
     const float volc = unit(gen::value2(x, z, 13, gen::hash2(1, 0, s)));

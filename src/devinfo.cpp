@@ -9,6 +9,7 @@
 #include "world/caves.h"
 #include "world/chunk.h"
 #include "world/rock_table.h"
+#include "world/ores.h"
 #include "world/soil_table.h"
 #include "world/terrain.h"
 
@@ -40,6 +41,7 @@ const char* plainName(world::Material m) {
 std::string nameOf(world::Material m) {
     if (m >= world::ROCK_FIRST && m <= world::ROCK_LAST) return world::rockDef(int(m) - world::ROCK_FIRST).name;
     if (m >= world::SOIL_FIRST && m <= world::SOIL_LAST) return world::soilDef(int(m) - world::SOIL_FIRST).name;   // Р87
+    if (m >= world::ORE_FIRST && m <= world::ORE_LAST) return world::oreDef(int(m) - world::ORE_FIRST).name;      // Р88
     if (m == world::GRASS_SIDE || m == world::GRASS_SNOWY_SIDE) return "дёрн";
     return plainName(m);
 }

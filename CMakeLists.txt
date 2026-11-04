@@ -38,6 +38,7 @@ add_library(otmel_world STATIC
     src/world/rocks.cpp
     src/world/rock_table.cpp
     src/world/soil_table.cpp
+    src/world/ores.cpp
     src/world/spawn.cpp
     src/world/query.cpp
 )

@@ -258,7 +258,7 @@ void meshImpl(ChunkPos pos, const Chunk* vox, const ColumnHeights& hm, const uin
         const int32_t topEff = hm.h[z + 1][x + 1] - vcut;
         // Р82: снежный слой - воксель над верхом столбца; толщина едет в старших битах материала
         if (wy == topEff + 1 && hm.snow[z + 1][x + 1])
-            return Material(SNOW | (uint32_t(hm.snow[z + 1][x + 1] - 1) << 6));
+            return Material(SNOW | (uint32_t(hm.snow[z + 1][x + 1] - 1) << 7));
         Cover cv = hm.cover[z][x];
         cv.soil = int16_t(std::max(0, int(cv.soil) - vcut));
         const Material m = columnMaterial(topEff, cv, wy, hm.water[z + 1][x + 1], hm.rock, x0w + x, z0w + z);
