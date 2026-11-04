@@ -100,6 +100,8 @@ struct ChunkCache {
 
 }  // namespace
 
+std::string materialName(world::Material m) { return nameOf(m); }
+
 float groundAt(const world::TerrainParams& p, float x, float z) {
     static world::ColumnHeights hm;
     const int32_t vx = int32_t(std::lround(x * VOXELS_PER_BLOCK)), vz = int32_t(std::lround(z * VOXELS_PER_BLOCK));

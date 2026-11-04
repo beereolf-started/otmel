@@ -36,6 +36,7 @@
 #include "world/lod.h"
 #include "world/mesher.h"
 #include "world/oak.h"
+#include "world/query.h"
 #include "world/spawn.h"
 #include "world/water_sim.h"
 #include "world/terrain.h"
@@ -48,6 +49,7 @@
 #include <windows.h>
 
 #include "builder.h"
+#include "player.h"
 #include "dev_text.h"
 #include "devinfo.h"
 #include "voxel_zone.h"
@@ -356,8 +358,12 @@ int main(int argc, char** argv) {
     world::TerrainParams tp;
     for (int i = 1; i + 1 < argc; ++i)
         if (std::string(argv[i]) == "--style") tp.mountainStyle = std::stoi(argv[i + 1]);   // вид гор (Р23)
+    // Р83: правки игрока - сломанные блоки. Их видит и чтение по вокселю, и постройка сеток.
+    world::Edits edits;
     Builder builder(tp);
+    builder.setEdits(&edits);
     VoxelZone voxels(*gpu, builder, std::max(1, voxelBlocks / blocksPerColumn));
+    voxels.setEdits(&edits);   // Р83: по числу правок зона отличает свежую сетку от устаревшей
     FarTerrain farTerrain(*gpu, builder);
 
     // Камера: в блоках. Мышь - взгляд, WASD - движение, пробел/Ctrl - вверх/вниз, Shift - быстрее,
@@ -380,6 +386,12 @@ int main(int argc, char** argv) {
     // Отсюда были рывки и ощущение, что по одной оси тянет охотнее, чем по другой. Копим в double,
     // а в отрисовку отдаём уже разность с началом координат - она мала, и точности хватает с запасом.
     glm::dvec3 eye(atX, ground + 2.0, atZ);   // Р81: глаза чуть выше поверхности, а не в её толще
+    // Р83: игрок с телом. Пешком - притяжение, прыжок, бег; двойной прыжок - в полёт и обратно.
+    // Правки мира (сломанные блоки) видит и чтение по вокселю, и постройка сеток.
+    world::VoxelQuery voxelQuery(tp, &edits);
+    game::Player player;
+    player.flying = shot;   // снимок не должен падать на землю; живая игра начинается пешком
+    bool jumpWas = false;
     const auto eyeF = [&eye] { return glm::vec3(eye); };
     float yaw = -0.6f, pitch = -0.35f, speedScale = 1.0f;
     // Подсказки разработчика (devinfo.h): что под прицелом и переход по координатам
@@ -603,7 +615,7 @@ int main(int argc, char** argv) {
     glm::ivec2 lipAt(INT32_MIN / 2);
     // Р62: лес в генерации - зона 7×7 кусков (224 блока) вокруг куска камеры; места - в фоне, деревья - в фоне по 6
     struct ForestSpot { uint64_t key; glm::ivec3 base; glm::ivec3 shift; uint32_t seed; };
-    struct ForestZone { glm::ivec2 origin; int side; std::shared_ptr<std::vector<int32_t>> ground; std::vector<ForestSpot> spots; int nWet = 0, nSteep = 0, nSnow = 0, nSparse = 0, nCave = 0; float rainSum = 0, groveSum = 0; int nC = 0; };
+    struct ForestZone { glm::ivec2 origin; int side; std::shared_ptr<std::vector<int32_t>> ground; std::vector<int16_t> skyTop; std::vector<ForestSpot> spots; int nWet = 0, nSteep = 0, nSnow = 0, nSparse = 0, nCave = 0; float rainSum = 0, groveSum = 0; int nC = 0; };
     struct ForestBuilt { uint64_t key; int level; glm::ivec3 base; std::vector<OakChunk> chunks; };
     // Р63: дерево леса - текущий уровень детализации (-1 - нет), какой строится, его сетки
     struct ForestTree { ForestSpot spot; int level = -1, building = -1; std::vector<OakMesh> meshes; };
@@ -612,6 +624,7 @@ int main(int argc, char** argv) {
     std::shared_ptr<std::vector<int32_t>> forestGround;
     glm::ivec2 forestGroundOrigin(0);
     int forestGroundSide = 0;
+    glm::vec4 skyArea(0);   // Р85: угол и сторона карты верхних высот (блоки)
     std::unordered_map<uint64_t, ForestTree> forest;
     std::vector<std::future<ForestBuilt>> forestRunning;
     glm::vec3 forestEyePrev(0);   // Р70: скорость камеры
@@ -680,14 +693,37 @@ int main(int argc, char** argv) {
             if (ev.type == SDL_EVENT_KEY_DOWN && ev.key.key == SDLK_F3) { showPanel = !showPanel; panelLines.clear(); }
             if (ev.type == SDL_EVENT_KEY_DOWN && ev.key.key == SDLK_ESCAPE) running = false;
             if (ev.type == SDL_EVENT_KEY_DOWN && ev.key.key == SDLK_L) gpu->setDebug(debug ^= 1);
-            if (ev.type == SDL_EVENT_MOUSE_BUTTON_DOWN && ev.button.button == SDL_BUTTON_LEFT) {
+            if (ev.type == SDL_EVENT_KEY_DOWN && ev.key.key == SDLK_O) {   // Р53: показательный дуб перед камерой
                 const glm::vec2 f = glm::normalize(glm::vec2(std::cos(yaw), std::sin(yaw)));
                 const int32_t x = int32_t(std::floor((eye.x + f.x * 2.0f) * 16)), z = int32_t(std::floor((eye.z + f.y * 2.0f) * 16));   // 32 блока
                 oakSeed = oakSeed * 1664525u + 1013904223u;
                 oaks.push_back({x, oakBase(x, z), z, oakSeed});
                 buildOaks();
             }
-            if (ev.type == SDL_EVENT_MOUSE_BUTTON_DOWN && ev.button.button == SDL_BUTTON_RIGHT) { oaks.clear(); buildOaks(); }
+            // Р83: кнопка мыши (любая) - сломать блок под прицелом. Он уходит в правки мира, затронутые
+            // столбцы перестраиваются, и грани соседей, прежде закрытые, открываются сами.
+            if (ev.type == SDL_EVENT_MOUSE_BUTTON_DOWN &&
+                (ev.button.button == SDL_BUTTON_RIGHT || ev.button.button == SDL_BUTTON_LEFT)) {
+                const glm::dvec3 start = eye * 16.0;                       // прежние меры -> блоки (Р54)
+                const glm::dvec3 dir(std::cos(pitch) * std::cos(yaw), std::sin(pitch), std::cos(pitch) * std::sin(yaw));
+                for (int i = 1; i <= 6 * 8; ++i) {                          // до 6 блоков, шаг 1/8
+                    const glm::dvec3 v = start + dir * (double(i) / 8.0);
+                    const int32_t vx = int32_t(std::floor(v.x)), vy = int32_t(std::floor(v.y)), vz = int32_t(std::floor(v.z));
+                    const world::Material m = voxelQuery.at(vx, vy, vz);
+                    if (m == world::AIR || m == world::WATER) continue;
+                    edits.set(vx, vy, vz, world::AIR);
+                    const auto fd = [](int32_t a) { return a >= 0 ? a / 32 : -((-a + 31) / 32); };
+                    const int32_t cx = fd(vx), cz = fd(vz);
+                    // сломали у границы куска - перестроить и соседа: у него открылась грань
+                    for (int dz = -1; dz <= 1; ++dz)
+                        for (int dx = -1; dx <= 1; ++dx)
+                            if (fd(vx + dx) == cx + dx && fd(vz + dz) == cz + dz) voxels.invalidate(cx + dx, cz + dz);
+                    voxels.invalidate(cx, cz);
+                    journal::info("мир", "сломан блок: {} в ({}, {}, {})", dev::materialName(m), vx, vy, vz);
+                    break;
+                }
+            }
+            if (ev.type == SDL_EVENT_KEY_DOWN && ev.key.key == SDLK_K) { oaks.clear(); buildOaks(); }
             if (ev.type == SDL_EVENT_KEY_DOWN && ev.key.key == SDLK_G) {   // Р60: роща в 40 блоках перед камерой
                 const glm::vec2 f = glm::normalize(glm::vec2(std::cos(yaw), std::sin(yaw)));
                 oakSeed = oakSeed * 1664525u + 1013904223u;
@@ -715,14 +751,22 @@ int main(int argc, char** argv) {
         const glm::vec3 right = glm::normalize(glm::cross(fwd, glm::vec3(0, 1, 0)));
         static const bool noKeys[SDL_SCANCODE_COUNT] = {};
         const bool* keys = (shot || typing) ? noKeys : SDL_GetKeyboardState(nullptr);
-        // Р56: камера - в прежних мерах (16 блоков мира): шаг ~5 блоков/с, с Shift ~48 - чтобы разглядеть мелочь
-        const float speed = (keys[SDL_SCANCODE_LSHIFT] ? 3.0f : 0.3f) * speedScale * dt;
-        if (keys[SDL_SCANCODE_W]) eye += glm::dvec3(fwd) * double(speed);
-        if (keys[SDL_SCANCODE_S]) eye -= glm::dvec3(fwd) * double(speed);
-        if (keys[SDL_SCANCODE_D]) eye += glm::dvec3(right) * double(speed);
-        if (keys[SDL_SCANCODE_A]) eye -= glm::dvec3(right) * double(speed);
-        if (keys[SDL_SCANCODE_SPACE]) eye.y += speed;
-        if (keys[SDL_SCANCODE_LCTRL]) eye.y -= speed;
+        // Р83: движение - через тело игрока (player.h). В полёте всё как прежде, пешком - притяжение,
+        // упоры в блоки, прыжок и бег; двойной прыжок переключает одно в другое.
+        {
+            game::Input in;
+            in.forward = float(keys[SDL_SCANCODE_W]) - float(keys[SDL_SCANCODE_S]);
+            in.strafe = float(keys[SDL_SCANCODE_D]) - float(keys[SDL_SCANCODE_A]);
+            in.jumpHeld = keys[SDL_SCANCODE_SPACE];
+            in.jumpPressed = in.jumpHeld && !jumpWas;
+            jumpWas = in.jumpHeld;
+            in.sprint = keys[SDL_SCANCODE_LSHIFT];
+            in.down = keys[SDL_SCANCODE_LCTRL];
+            player.eye = eye;
+            player.flySpeed = speedScale;
+            game::step(player, voxelQuery, in, yaw, dt, std::chrono::duration<float>(now - startAt).count());
+            eye = player.eye;
+        }
         if (shot && warm && flySpeed > 0) eye += glm::dvec3(glm::normalize(glm::vec3(fwd.x, 0, fwd.z))) * double(flySpeed * dt);
 
         // обратная глубина (Р20): ближняя и дальняя плоскости переставлены местами
@@ -1225,6 +1269,24 @@ int main(int argc, char** argv) {
                             for (const auto [dx, dy] : {std::pair{0, 0}, {1, 0}, {0, 1}, {1, 1}}) g0 = std::min(g0, H(x + dx, y + dy));
                             z->spots.push_back({(uint64_t(uint32_t(ci)) << 32) | uint32_t(cj), glm::ivec3(x, g0 + 1, y), glm::ivec3(tc.fx, 0, tc.fz), tc.seed});
                         }
+                    // Р85: КАРТА ВЕРХНИХ ВЫСОТ - для теней. На каждый столбец - высота того, что
+                    // закрывает небо: земля, а под кроной - её верх. Дерева в блочной маске нет, оно
+                    // живёт отдельной сеткой, поэтому крону рисуем сюда кружком: иначе тени под
+                    // деревьями не будет вовсе, а она и нужна больше всего.
+                    z->skyTop.assign(size_t(S) * S, 0);
+                    for (size_t i = 0; i < z->skyTop.size(); ++i) z->skyTop[i] = int16_t((*g)[i]);
+                    for (const ForestSpot& sp : z->spots) {
+                        const int cxp = sp.base.x - z->origin.x, czp = sp.base.z - z->origin.y;
+                        const int top = sp.base.y + 10, r = 4;   // крона примерно там же, где у спрайта
+                        for (int dz = -r; dz <= r; ++dz)
+                            for (int dx = -r; dx <= r; ++dx) {
+                                if (dx * dx + dz * dz > r * r) continue;
+                                const int px = cxp + dx, pz = czp + dz;
+                                if (px < 0 || pz < 0 || px >= S || pz >= S) continue;
+                                int16_t& v = z->skyTop[size_t(pz) * S + px];
+                                v = std::max<int16_t>(v, int16_t(top));
+                            }
+                    }
                     return z;
                 });
             }
@@ -1234,6 +1296,8 @@ int main(int argc, char** argv) {
                 forestGround = z->ground;
                 forestGroundOrigin = z->origin;
                 forestGroundSide = z->side;
+                gpu->setSkyTop(z->side, z->skyTop);   // Р85: по ней фрагментный обработчик строит тени
+                skyArea = glm::vec4(float(z->origin.x), float(z->origin.y), float(z->side), 0.0f);
                 std::unordered_map<uint64_t, bool> wanted;
                 for (const ForestSpot& sp : z->spots) wanted[sp.key] = true;
                 for (auto it = forest.begin(); it != forest.end();) {   // ушедшие из зоны - выгрузить
@@ -1416,7 +1480,7 @@ int main(int argc, char** argv) {
         frame.clear(sky);
         frame.camera({viewProjGpu, glm::vec3(0.4f, 1.0f, 0.25f), eye, voxels.window(),
                       float(lod.drawDistance) * 0.85f, float(lod.drawDistance), 9000.0f, 0.6f, sky,
-                      std::chrono::duration<float>(now - startAt).count(), flowArea, simArea, originV});
+                      std::chrono::duration<float>(now - startAt).count(), flowArea, simArea, skyArea, originV});
         chunksDrawn = voxels.draw(fr, frame);
         for (const OakMesh& m : oakMeshes) frame.drawFineChunk(m.mesh, m.base, m.fineOff);
         for (const auto& [key, t] : forest)

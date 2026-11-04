@@ -77,6 +77,7 @@ struct FrameUbo {
     float invViewProj[16];   // Р51: из экрана в мир - толщина воды по лучу (глубина сцены под водой)
     int32_t originV[4];      // Р69: начало координат видеокарты, воксели
     float originOld[4];      // Р69: оно же в прежних мерах
+    float skyArea[4];        // Р85: карта верхних высот (тени)
 };
 
 class GLBackend final : public Backend {
@@ -217,6 +218,21 @@ public:
         glTextureSubImage2D(maskTex_, 0, 0, 0, side, side, GL_RED_INTEGER, GL_UNSIGNED_BYTE, mask.data());
     }
 
+    // Р85: карта верхних высот для теней
+    void setSkyTop(int side, std::span<const int16_t> top) override {
+        if (side != skySide_) {
+            if (skyTex_) glDeleteTextures(1, &skyTex_);
+            glCreateTextures(GL_TEXTURE_2D, 1, &skyTex_);
+            glTextureStorage2D(skyTex_, 1, GL_R16I, side, side);
+            glTextureParameteri(skyTex_, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+            glTextureParameteri(skyTex_, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+            skySide_ = side;
+        }
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 2);
+        glTextureSubImage2D(skyTex_, 0, 0, 0, side, side, GL_RED_INTEGER, GL_SHORT, top.data());
+        glBindTextureUnit(8, skyTex_);
+    }
+
     // Р80: текстуры блоков рядом с игрой (assets/atlas.bin: сторона, слоёв, уровней, затем RGBA
     // уровень за уровнем, внутри уровня слой за слоем). Собирает их tools/atlas.py.
     void ensureAtlas() {
@@ -342,6 +358,7 @@ public:
                 const float* mi = &inv[0][0];
                 for (int i = 0; i < 16; ++i) u.invViewProj[i] = mi[i];
                 for (int i = 0; i < 3; ++i) { u.originV[i] = cam->originV[i]; u.originOld[i] = float(cam->originV[i]) / 16.0f; }
+                for (int i = 0; i < 4; ++i) u.skyArea[i] = cam->skyArea[i];
                 simArea_ = cam->simArea;
                 glNamedBufferSubData(ubo_, 0, sizeof(u), &u);
                 glBindBufferBase(GL_UNIFORM_BUFFER, 0, ubo_);
@@ -630,6 +647,8 @@ private:
     glm::vec4 simArea_{0};
     int flowSide_ = 0;
     int maskSide_ = 0;
+    GLuint skyTex_ = 0;
+    int skySide_ = 0;   // Р85: карта верхних высот
     int width_ = 1, height_ = 1;
     std::vector<Mesh> meshes_;
     std::vector<MeshId> free_;

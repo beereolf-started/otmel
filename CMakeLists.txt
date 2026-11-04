@@ -38,6 +38,7 @@ add_library(otmel_world STATIC
     src/world/rocks.cpp
     src/world/rock_table.cpp
     src/world/spawn.cpp
+    src/world/query.cpp
 )
 target_include_directories(otmel_world PUBLIC src)
 
@@ -48,6 +49,7 @@ add_executable(otmel
     src/dev_text.cpp
     src/voxel_zone.cpp
     src/builder.cpp
+    src/player.cpp
     src/render/gl/gl_backend.cpp
     src/render/vk/vk_backend.cpp
 )

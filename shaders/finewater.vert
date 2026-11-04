@@ -18,6 +18,7 @@ layout(std140, binding = 0) uniform Frame {
     mat4 invViewProj;  // Р51: из экрана - в координаты относительно originOld
     ivec4 originV;     // Р69: начало координат видеокарты - воксели (блоки мира), кратно куску
     vec4 originOld;    // Р69: оно же в прежних мерах (originV / 16)
+    vec4 skyArea;      // Р85: карта верхних высот для теней - угол x, z (блоки), сторона, 0
 };
 layout(binding = 1) uniform sampler2D uFlow;   // скорость воды, блоки/с (по прежним блокам поля)
 layout(binding = 4) uniform sampler2D uFine;   // r - vb (верх глади в центре блока, блоки; < -1e8 - нет), g - верх земли

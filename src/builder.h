@@ -14,6 +14,7 @@
 
 #include <glm/vec3.hpp>
 
+#include "world/query.h"
 #include "world/lod.h"
 #include "world/terrain.h"
 
@@ -27,10 +28,13 @@ public:
     // NO_DEPTH - только куски, через которые проходит поверхность
     static constexpr int32_t NO_DEPTH = INT32_MAX;
     struct ColumnJob { int32_t cx, cz, cyMin; uint8_t caps; };
-    struct ColumnResult { int32_t cx, cz, cyMin; uint8_t caps; std::vector<ChunkData> chunks; double ms; };
+    // editStamp - сколько правок игрока учтено в этой сетке (Р83): зона по нему видит, что итог
+    // пришёл из мира, в котором блок ещё не был сломан, и отбрасывает его
+    struct ColumnResult { int32_t cx, cz, cyMin; uint8_t caps; std::vector<ChunkData> chunks; double ms; size_t editStamp; };
     struct TileResult { world::TileKey key; world::TileMesh mesh; double ms; };
 
     explicit Builder(const world::TerrainParams& tp);
+    void setEdits(const world::Edits* e) { edits_ = e; }   // Р83: правки игрока - в сетку
     ~Builder();
 
     // очередь столбцов целиком заменяется (ближние - в конце); те, что уже строятся, повторно не встают
@@ -46,6 +50,7 @@ private:
     void worker();
 
     const world::TerrainParams& tp_;
+    const world::Edits* edits_ = nullptr;
     std::mutex mu_;
     std::condition_variable cv_;
     std::vector<ColumnJob> columns_;                        // ближние - в конце

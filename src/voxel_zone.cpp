@@ -39,6 +39,8 @@ void VoxelZone::releaseAll() {
     for (auto& [k, c] : ready_) release(c);
 }
 
+void VoxelZone::invalidate(int32_t cx, int32_t cz) { stale_.insert(key(cx, cz)); }
+
 bool VoxelZone::inWindow(int32_t cx, int32_t cz, int margin) const {
     return cx >= ccx_ - radius_ - margin && cx <= ccx_ + radius_ + margin && cz >= ccz_ - radius_ - margin &&
            cz <= ccz_ + radius_ + margin;
@@ -132,7 +134,7 @@ void VoxelZone::reprioritize(glm::vec3 eye, glm::vec3 forward, const Frustum& fr
                 const bool recap = want != Builder::NO_DEPTH && it->second.caps != caps;
                 // Р37: ушёл из подземного яруса - перестроить без пещер (вход в пустоту просвечивал бы)
                 const bool closed = want == Builder::NO_DEPTH && it->second.builtMin != Builder::NO_DEPTH;
-                if (!shallow && !recap && !closed) continue;
+                if (!shallow && !recap && !closed && !stale_.count(key(cx, cz))) continue;
             }
             const int64_t dx = cx - ccx_, dz = cz - ccz_;
             const int64_t d2 = dx * dx + dz * dz;
@@ -191,14 +193,20 @@ void VoxelZone::update(glm::vec3 eye, glm::vec3 forward, const Frustum& fr, doub
         // успел уйти за запас - не нужен; уже есть такой же или глубже с нужными заглушками - тоже не нужен;
         // иначе (глубже, или заглушки теперь другие) - заменяет прежний
         if (!inWindow(r.cx, r.cz, UNLOAD_MARGIN)) continue;
-        auto old = ready_.find(key(r.cx, r.cz));
+        const uint64_t rk = key(r.cx, r.cz);
+        const bool wasStale = stale_.count(rk) > 0;
+        // Р83: итог пришёл из мира, где блок ещё не был сломан, - он устарел; пометку оставляем,
+        // и следующий обход окна закажет столбец заново
+        if (wasStale && edits_ && r.editStamp < edits_->size()) continue;
+        if (wasStale) stale_.erase(rk);
+        auto old = ready_.find(rk);
         if (old != ready_.end()) {
             const bool deeperNow = r.cyMin < old->second.builtMin;
             const bool capsFixed = r.caps == wantCaps(r.cx, r.cz) && old->second.caps != r.caps;
             // Р37: столбец, ушедший из яруса, - перестроенный без пещер заменяет прежний
             const bool closedNow = r.cyMin == Builder::NO_DEPTH && wantMin(r.cx, r.cz) == Builder::NO_DEPTH &&
                                    old->second.builtMin != Builder::NO_DEPTH;
-            if (!deeperNow && !capsFixed && !closedNow) continue;
+            if (!deeperNow && !capsFixed && !closedNow && !wasStale) continue;
             release(old->second);
         }
         Column& c = ready_[key(r.cx, r.cz)];

@@ -173,7 +173,7 @@ void rotateMasks(uint64_t (&col)[3][CHUNK][CHUNK], const uint64_t (&edge)[CHUNK 
 
 // vox - воксели правленого куска; nullptr - нетронутый: маски и материалы формулой от высот и покрова
 void meshImpl(ChunkPos pos, const Chunk* vox, const ColumnHeights& hm, const uint64_t (*air)[CHUNK + 2],
-              std::vector<uint32_t>& out, MeshStats& stats, const uint8_t (*cut)[CHUNK + 2]) {
+              std::vector<uint32_t>& out, MeshStats& stats, const uint8_t (*cut)[CHUNK + 2], const EditMap* edits) {
     out.clear();
     stats = {};
     const int32_t y0 = pos.y * CHUNK, x0w = pos.x * CHUNK, z0w = pos.z * CHUNK;
@@ -198,6 +198,20 @@ void meshImpl(ChunkPos pos, const Chunk* vox, const ColumnHeights& hm, const uin
             solid[z][x] = ground & ~(air ? air[z][x] : 0);
             wet[z][x] = columnFromHeight(hm.water[z][x], y0) & ~ground;
             anyWater |= wet[z][x] != 0;
+        }
+
+    // Р83: правки игрока. Сломанный блок убирается из маски - и грани соседей, прежде закрытые,
+    // становятся видны сами собой. Кайма входит в перебор: блок сломали у границы куска, а
+    // открылась грань соседнего столбца.
+    if (edits)
+        for (const auto& [k, e] : *edits) {
+            if (e.x < x0w - 1 || e.x > x0w + CHUNK || e.z < z0w - 1 || e.z > z0w + CHUNK) continue;
+            const uint64_t bit = bitAt(e.y, y0);
+            if (!bit) continue;
+            const int lx = e.x - x0w + 1, lz = e.z - z0w + 1;
+            if (e.m == AIR) { solid[lz][lx] &= ~bit; snowEdge[lz][lx] &= ~bit; }
+            else solid[lz][lx] |= bit;
+            wet[lz][lx] &= ~bit;
         }
 
     // ─── 1. Маски столбцов вдоль трёх осей: 34 бита (кайма + 32 + кайма) ─────────
@@ -234,10 +248,14 @@ void meshImpl(ChunkPos pos, const Chunk* vox, const ColumnHeights& hm, const uin
         // ПОДОШВА ЗЕМЛИ ПРИ ЭТОМ ОСТАЁТСЯ НА МЕСТЕ: срез уменьшает толщину земли, а не двигает её
         // вниз. Иначе слой земли съезжал бы вслед за поверхностью, влезал в пустоту, которая лежит
         // ниже его прежней подошвы, и повисал над ней - а заодно подменял бы собой камень.
+        const int32_t wy = y0 + y;
+        if (edits) {   // Р83: правка главнее формулы
+            const auto it = edits->find(editKey(x0w + x, wy, z0w + z));
+            if (it != edits->end()) return it->second.m;
+        }
         const int32_t vcut = cut ? int32_t(cut[z + 1][x + 1]) : 0;
         if (vox) return vox->at(x, y, z);
         const int32_t topEff = hm.h[z + 1][x + 1] - vcut;
-        const int32_t wy = y0 + y;
         // Р82: снежный слой - воксель над верхом столбца; толщина едет в старших битах материала
         if (wy == topEff + 1 && hm.snow[z + 1][x + 1])
             return Material(SNOW | (uint32_t(hm.snow[z + 1][x + 1] - 1) << 6));
@@ -267,12 +285,12 @@ void meshImpl(ChunkPos pos, const Chunk* vox, const ColumnHeights& hm, const uin
 }  // namespace
 
 void buildMesh(const Chunk& c, const ColumnHeights& hm, std::vector<uint32_t>& out, MeshStats& stats) {
-    meshImpl(c.pos, c.edited ? &c : nullptr, hm, nullptr, out, stats, nullptr);
+    meshImpl(c.pos, c.edited ? &c : nullptr, hm, nullptr, out, stats, nullptr, nullptr);
 }
 
 void buildMesh(ChunkPos pos, const ColumnHeights& hm, std::vector<uint32_t>& out, MeshStats& stats,
-               const uint64_t (*air)[CHUNK + 2], const uint8_t (*cut)[CHUNK + 2]) {
-    meshImpl(pos, nullptr, hm, air, out, stats, cut);
+               const uint64_t (*air)[CHUNK + 2], const uint8_t (*cut)[CHUNK + 2], const EditMap* edits) {
+    meshImpl(pos, nullptr, hm, air, out, stats, cut, edits);
 }
 
 }  // namespace world

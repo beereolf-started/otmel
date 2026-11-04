@@ -17,6 +17,7 @@ layout(std140, binding = 0) uniform Frame {
     mat4 invViewProj;  // Р51: из экрана - в координаты относительно originOld
     ivec4 originV;     // Р69: начало координат видеокарты - воксели (блоки мира), кратно куску
     vec4 originOld;    // Р69: оно же в прежних мерах (originV / 16)
+    vec4 skyArea;      // Р85: карта верхних высот для теней - угол x, z (блоки), сторона, 0
 };
 #ifdef VULKAN   // Р73: в Vulkan параметры вызова - push-константы
 layout(push_constant) uniform Push { ivec4 i0; vec4 f0; ivec4 i1; } pc;

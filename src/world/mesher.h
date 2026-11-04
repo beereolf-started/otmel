@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "world/chunk.h"
+#include "world/query.h"
 #include "world/terrain.h"
 
 namespace world {
@@ -21,7 +22,10 @@ struct MeshStats { int quads = 0, waterQuads = 0; };
 void buildMesh(const Chunk& c, const ColumnHeights& heights, std::vector<uint32_t>& vertices, MeshStats& stats);
 // Нетронутый кусок по одному положению: массив вокселей не нужен вовсе (Р2, Р22).
 // air - воздух пещер в куске с каймой (Р26, world/caves.h) или nullptr: твёрдо = ниже поверхности И не пещера.
+// edits - правки игрока (Р83): сломанный блок убирается из маски, и соседние грани, прежде закрытые,
+// становятся видны сами собой - отдельного кода для «открыть грань» нет.
 void buildMesh(ChunkPos pos, const ColumnHeights& heights, std::vector<uint32_t>& vertices, MeshStats& stats,
-               const uint64_t (*air)[CHUNK + 2] = nullptr, const uint8_t (*cut)[CHUNK + 2] = nullptr);
+               const uint64_t (*air)[CHUNK + 2] = nullptr, const uint8_t (*cut)[CHUNK + 2] = nullptr,
+               const EditMap* edits = nullptr);
 
 }  // namespace world

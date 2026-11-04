@@ -27,6 +27,7 @@ layout(std140, binding = 0) uniform Frame {
     mat4 invViewProj;  // Р51: из экрана - в координаты относительно originOld
     ivec4 originV;     // Р69: начало координат видеокарты - воксели (блоки мира), кратно куску
     vec4 originOld;    // Р69: оно же в прежних мерах (originV / 16)
+    vec4 skyArea;      // Р85: карта верхних высот для теней - угол x, z (блоки), сторона, 0
 };
 layout(binding = 1) uniform sampler2D uFlow;         // Р43: скорость воды, блоки/с (x, z)
 layout(binding = 2) uniform sampler2D uSceneDepth;   // Р51: глубина сцены без воды
@@ -35,6 +36,35 @@ layout(binding = 5) uniform usampler2D uFineMask;   // Р58: 1 - блок рис
 // Не одна сетка клеток, а именно слои: вдали нужны уменьшенные копии, а у сетки уменьшение
 // смешало бы соседние клетки, и по земле поползла бы чужая краска.
 layout(binding = 7) uniform sampler2DArray uAtlas;
+// Р85: карта верхних высот вокруг игрока - что закрывает небо над каждым столбцом (земля, крона).
+layout(binding = 8) uniform isampler2D uSkyTop;
+
+// Р85: ТЕНИ ПО КАРТЕ ВЫСОТ, без отдельного прохода отрисовки.
+//
+// Шагаем от точки к солнцу и смотрим, не выше ли нас то, что закрывает небо. Отсюда разом и тенёк
+// под кронами (крона вписана в карту кружком - дерево живёт отдельной сеткой и в блочной маске его
+// нет), и темень в шахтах: под землёй небо закрыто с первого же шага.
+//
+// Начинаем на полблока ВДОЛЬ НОРМАЛИ от грани: иначе отвесная стенка затеняла бы сама себя - её
+// собственный столбец выше её же точки.
+const vec3 NRM[6] = vec3[](vec3(1, 0, 0), vec3(-1, 0, 0), vec3(0, 1, 0), vec3(0, -1, 0), vec3(0, 0, 1), vec3(0, 0, -1));
+float sunShade(vec3 wb) {
+    if (skyArea.z <= 0.0) return 0.0;
+    vec3 s = normalize(sunDir.xyz);
+    if (s.y <= 0.05) return 0.0;
+    vec3 from = wb + NRM[vNormal] * 0.5;
+    vec2 d = s.xz / s.y;                      // сколько блоков вбок на каждый блок вверх
+    float shade = 0.0;
+    for (int i = 1; i <= 14; ++i) {
+        float up = float(i) * float(i) * 0.2;   // шаг растёт: вблизи точно, вдали грубо
+        vec2 p = from.xz + d * up - skyArea.xy;
+        if (p.x < 0.0 || p.y < 0.0 || p.x >= skyArea.z || p.y >= skyArea.z) break;
+        float top = float(texelFetch(uSkyTop, ivec2(p), 0).r);
+        shade = max(shade, clamp((top - (from.y + up)) * 0.7, 0.0, 1.0));
+        if (shade >= 1.0) break;
+    }
+    return shade;
+}
 
 // Р80: цвет грунта. Место внутри блока - две поперечные нормали координаты: прямоугольники склеены
 // из многих блоков, и повторение рисунка даёт сама выборка (края картинки сомкнуты), без лишних
@@ -43,9 +73,16 @@ layout(binding = 7) uniform sampler2DArray uAtlas;
 //
 // Дальше половины дальности видимости текстура не берётся: там она не читается, а цена есть.
 // Переход плавный, на четверти дальности, иначе по кольцу пошла бы заметная черта.
+// Во сколько раз темнее от тени. Прямой свет гаснет, рассеянный остаётся: в шахте не чернота, а сумрак.
+float shadeFactor() {
+    vec3 wb = vWorld * 16.0;   // Р54: мир в блоках
+    float lit = 0.35 + (vLight - 0.35) * (1.0 - sunShade(wb));
+    return lit / max(vLight, 0.001);
+}
+
 vec4 groundColor() {
     // Листва текстуру пока не берёт: у неё свой принцип, это отдельная работа.
-    if (vMat == 9u || vMat == 10u) return vColor;
+    if (vMat == 9u || vMat == 10u) return vec4(vColor.rgb * shadeFactor(), vColor.a);
     // У картинки первая строка - ВЕРХНЯЯ, а y в мире растёт вверх: на боковых гранях поперечную
     // ось надо обратить, иначе рисунок встаёт вверх ногами - у обрубленного дёрна полоска травы
     // оказывалась снизу.
@@ -54,7 +91,7 @@ vec4 groundColor() {
     vec3 rgb = texture(uAtlas, vec3(uv, float(vMat))).rgb * vLight;
     float far = max(fade.y, 64.0);
     float t = clamp((distance(vWorld, eye.xyz) - 0.5 * far) / (0.25 * far), 0.0, 1.0);   // far - в тех же мерах
-    return vec4(mix(rgb, vColor.rgb, t), vColor.a);
+    return vec4(mix(rgb, vColor.rgb, t), vColor.a) * shadeFactor();
 }
 
 // шум для ряби: значения в узлах решётки, между ними - плавно

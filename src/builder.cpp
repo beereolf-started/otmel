@@ -111,7 +111,7 @@ void Builder::worker() {
             doneTiles_.push_back(std::move(r));
             continue;
         }
-        ColumnResult r{col.cx, col.cz, col.cyMin, col.caps, {}, 0};
+        ColumnResult r{col.cx, col.cz, col.cyMin, col.caps, {}, 0, 0};
         world::columnHeights(tp_, col.cx, col.cz, hm);
         // Срез земли у выхода шахты - ДО выбора кусков: он опускает поверхность до трёх блоков, и
         // нижний строящийся кусок надо выбирать уже по сниженной высоте. Иначе срез уводит
@@ -121,6 +121,11 @@ void Builder::worker() {
         // Считается для ВСЕХ столбцов кусков, а не только там, где рядом вход: иначе сосед без входа
         // среза не знает, считает пограничный столбец полной высоты и не рисует его боковую грань.
         // Где гашение полное во всех столбцах, расчёт выходит сразу и ничего не стоит.
+        // Р83: снимок правок берётся ОДИН на столбец: во время постройки он меняться не должен,
+        // иначе маска и материалы разойдутся между соседними кусками одного столбца.
+        const std::shared_ptr<const world::EditMap> ed = edits_ ? edits_->snapshot() : nullptr;
+        const world::EditMap* edits = ed && !ed->empty() ? ed.get() : nullptr;
+        r.editStamp = ed ? ed->size() : 0;
         world::soilCut(tp_, col.cx, col.cz, hm, cut);
         int32_t maxCut = 0;
         for (int z = 0; z < world::CHUNK + 2; ++z)
@@ -203,7 +208,7 @@ void Builder::worker() {
             if (!caves && underground) continue;   // подземный и без пещер - сплошной камень
             // нетронутый кусок: сетка прямо от высот (и пещер), без заполнения вокселей (Р22)
             world::MeshStats ms;
-            world::buildMesh(pos, hm, verts, ms, caves ? air : nullptr, cut);
+            world::buildMesh(pos, hm, verts, ms, caves ? air : nullptr, cut, edits);
             if (verts.empty()) continue;
             r.chunks.push_back({{col.cx * world::CHUNK, cy * world::CHUNK, col.cz * world::CHUNK}, verts, ms.quads, ms.waterQuads, underground});
         }

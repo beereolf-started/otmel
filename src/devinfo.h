@@ -8,6 +8,8 @@
 
 #include <glm/vec3.hpp>
 
+#include "world/chunk.h"
+
 namespace world {
 struct TerrainParams;
 }
@@ -37,5 +39,7 @@ bool parseGoto(const std::string& s, glm::vec3& out, bool& hasY);
 
 /** Высота поверхности в точке (блоки) - чтобы переход по «x z» не ставил под землю. */
 float groundAt(const world::TerrainParams& p, float x, float z);
+// Р83: имя материала по-русски - для журнала и подсказок
+std::string materialName(world::Material m);
 
 }  // namespace dev

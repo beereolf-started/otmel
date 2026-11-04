@@ -5,12 +5,14 @@
 // шейдера плиток) - быстрый полёт не оставляет дыр.
 #include <cstdint>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include <glm/vec3.hpp>
 #include <glm/vec4.hpp>
 
 #include "builder.h"
+#include "world/query.h"
 #include "frustum.h"
 #include "render/render.h"
 
@@ -35,6 +37,10 @@ public:
     void update(glm::vec3 eye, glm::vec3 forward, const Frustum& fr, double uploadBudgetMs);
     // куски готовых столбцов окна, видимые камере
     int draw(const Frustum& fr, render::CommandList& out) const;
+    // Р83: столбец устарел (в нём сломали блок) - заказать заново. Прежние сетки при этом НЕ
+    // снимаются: пока столбец строится, на его месте зияла бы дыра в дальний рельеф.
+    void invalidate(int32_t cx, int32_t cz);
+    void setEdits(const world::Edits* e) { edits_ = e; }
     // прямоугольник в блоках целиком покрыт готовыми вокселями (таблица сумм по маске, 4 чтения)
     bool covered(int64_t x0, int64_t z0, int64_t size) const;
     // окно для шейдера: minX, minZ (блоки), столбцов по стороне, блоков в столбце
@@ -67,6 +73,10 @@ private:
     const int radius_, side_;
     int32_t ccx_ = INT32_MIN, ccz_ = INT32_MIN;              // столбец камеры
     std::unordered_map<uint64_t, Column> ready_;   // готовые столбцы (и в запасе за окном)
+    // Р83: столбцы, устаревшие из-за правки. Строящийся столбец отменить нельзя - его итог
+    // придёт из прежнего мира, и такой итог отбрасывается по числу учтённых правок.
+    std::unordered_set<uint64_t> stale_;
+    const world::Edits* edits_ = nullptr;
     int32_t depthMin_ = Builder::NO_DEPTH;        // Р26: до какого куска строить вниз рядом с камерой
     int32_t qx_ = INT32_MIN, qz_ = INT32_MIN;     // Р27: центр подземного яруса - камера, округлённо
     bool inUnder(int32_t cx, int32_t cz) const;   // столбец в подземном ярусе

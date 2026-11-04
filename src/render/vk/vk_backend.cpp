@@ -63,6 +63,7 @@ struct FrameUbo {
     float invViewProj[16];
     int32_t originV[4];
     float originOld[4];
+    float skyArea[4];
 };
 // push-константы шейдеров (#ifdef VULKAN): кусок и плитка - по 48 байт, мелкая вода - 16
 struct PushChunk { int32_t chunk[4], fineOff[4], flags[4]; };
@@ -294,6 +295,18 @@ public:
             maskSide_ = side;
         }
         uploadImage(maskTex_, mask.data(), static_cast<size_t>(side) * side);
+    }
+
+    // Р85: карта верхних высот для теней. Целое со знаком: высоты бывают и ниже нуля.
+    void setSkyTop(int side, std::span<const int16_t> top) override {
+        ensureFrame();
+        if (side != skySide_) {
+            drop(skyTex_);
+            skyTex_ = makeImage(side, side, VK_FORMAT_R16_SINT, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                                VK_SAMPLE_COUNT_1_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
+            skySide_ = side;
+        }
+        uploadImage(skyTex_, top.data(), static_cast<size_t>(side) * side * 2);
     }
 
     void updateFlowField(int side, std::span<const float> v) override {
@@ -843,6 +856,7 @@ private:
         const float* mi = &inv[0][0];
         for (int i = 0; i < 16; ++i) u.invViewProj[i] = mi[i];
         for (int i = 0; i < 3; ++i) { u.originV[i] = cam.originV[i]; u.originOld[i] = float(cam.originV[i]) / 16.0f; }
+        for (int i = 0; i < 4; ++i) u.skyArea[i] = cam.skyArea[i];
         std::memcpy(s.ubo.map, &u, sizeof(u));
     }
 
@@ -851,8 +865,8 @@ private:
         ensureAtlas();   // Р80: атлас текстур блоков - один раз за запуск
         VkDescriptorBufferInfo ubo{s.ubo.buf, 0, sizeof(FrameUbo)};
         VkDescriptorBufferInfo ssbo{fineBlocks_.per[slot_].buf, 0, VK_WHOLE_SIZE};
-        VkWriteDescriptorSet w[16];
-        VkDescriptorImageInfo img[2][6];
+        VkWriteDescriptorSet w[18];
+        VkDescriptorImageInfo img[2][7];
         for (int k = 0; k < 2; ++k) {
             const VkDescriptorSet set = k ? s.setWater : s.setOpaque;
             const VkImageLayout ro = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
@@ -862,19 +876,20 @@ private:
             img[k][3] = {nearest_, fineSide_ ? fineMask_.view : dummyUint_.view, ro};
             img[k][4] = {nearest_, maskTex_.view, ro};
             img[k][5] = {atlasSmp_, atlasTex_.img ? atlasTex_.view : dummyFloat_.view, ro};   // Р80
-            const uint32_t imgBinding[6] = {1, 2, 4, 5, 6, 7};
-            VkWriteDescriptorSet* o = &w[k * 8];
-            for (int i = 0; i < 8; ++i) o[i] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+            img[k][6] = {nearest_, skyTex_.img ? skyTex_.view : dummyUint_.view, ro};   // Р85
+            const uint32_t imgBinding[7] = {1, 2, 4, 5, 6, 7, 8};
+            VkWriteDescriptorSet* o = &w[k * 9];
+            for (int i = 0; i < 9; ++i) o[i] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
             o[0].dstSet = set; o[0].dstBinding = 0; o[0].descriptorCount = 1;
             o[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; o[0].pBufferInfo = &ubo;
             o[1].dstSet = set; o[1].dstBinding = 3; o[1].descriptorCount = 1;
             o[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; o[1].pBufferInfo = &ssbo;
-            for (int i = 0; i < 6; ++i) {
+            for (int i = 0; i < 7; ++i) {
                 o[2 + i].dstSet = set; o[2 + i].dstBinding = imgBinding[i]; o[2 + i].descriptorCount = 1;
                 o[2 + i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; o[2 + i].pImageInfo = &img[k][i];
             }
         }
-        vkUpdateDescriptorSets(dev_, 16, w, 0, nullptr);
+        vkUpdateDescriptorSets(dev_, 18, w, 0, nullptr);
     }
 
     void beginRendering(VkCommandBuffer c, const VkRenderingAttachmentInfo& col, const VkRenderingAttachmentInfo& dep) {
@@ -1165,8 +1180,8 @@ private:
     bool createLayouts() {
         const VkShaderStageFlags st = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
         // 0 кадр, 1 течения, 2 глубина сцены, 3 блоки мелкой воды, 4 мелкая вода, 5 её маска,
-        // 6 маска вокселей, 7 атлас текстур блоков (Р80)
-        VkDescriptorSetLayoutBinding b[8] = {
+        // 6 маска вокселей, 7 текстуры блоков (Р80), 8 карта верхних высот для теней (Р85)
+        VkDescriptorSetLayoutBinding b[9] = {
             {0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, st, nullptr},
             {1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, st, nullptr},
             {2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, st, nullptr},
@@ -1175,9 +1190,10 @@ private:
             {5, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, st, nullptr},
             {6, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, st, nullptr},
             {7, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, st, nullptr},
+            {8, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, st, nullptr},
         };
         VkDescriptorSetLayoutCreateInfo lci{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-        lci.bindingCount = 8;
+        lci.bindingCount = 9;
         lci.pBindings = b;
         if (!vkOk(vkCreateDescriptorSetLayout(dev_, &lci, nullptr, &setLayout_), "vkCreateDescriptorSetLayout")) return false;
         const VkPushConstantRange pr{PUSH_STAGES, 0, PUSH_BYTES};
@@ -1188,7 +1204,7 @@ private:
         plci.pPushConstantRanges = &pr;
         if (!vkOk(vkCreatePipelineLayout(dev_, &plci, nullptr, &layout_), "vkCreatePipelineLayout")) return false;
         const VkDescriptorPoolSize sizes[3] = {{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, FRAMES * 2},
-                                               {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, FRAMES * 2 * 6},
+                                               {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, FRAMES * 2 * 7},
                                                {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, FRAMES * 2}};
         VkDescriptorPoolCreateInfo dpci{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
         dpci.maxSets = FRAMES * 2;
@@ -1322,7 +1338,7 @@ private:
             for (HostBuf& b : d->per) destroyHost(b);
         destroyHost(readback_);
         for (Block& b : blocks_) { vkDestroyBuffer(dev_, b.buf, nullptr); vkFreeMemory(dev_, b.mem, nullptr); }
-        for (Image* im : {&maskTex_, &flowTex_, &fineTex_, &fineMask_, &dummyFloat_, &dummyUint_, &atlasTex_}) destroyImage(*im);
+        for (Image* im : {&maskTex_, &flowTex_, &fineTex_, &fineMask_, &dummyFloat_, &dummyUint_, &atlasTex_, &skyTex_}) destroyImage(*im);
         destroySwapchainParts();
         if (swapchain_) vkDestroySwapchainKHR(dev_, swapchain_, nullptr);
         for (VkPipeline p : {pTerrain_, pTerrainWater_, pTile_, pTileWater_, pTree_, pFine_, pSpray_, pDyn_})
@@ -1361,7 +1377,8 @@ private:
     std::vector<VkSemaphore> renderDone_;   // по изображению окна: показ ждёт отрисовку
     bool vsync_ = true, swapDirty_ = false;
     Image msaaColor_, msaaDepth_, depthCopy_;
-    Image maskTex_, flowTex_, fineTex_, fineMask_, dummyFloat_, dummyUint_, atlasTex_;
+    Image maskTex_, flowTex_, fineTex_, fineMask_, dummyFloat_, dummyUint_, atlasTex_, skyTex_;
+    int skySide_ = 0;   // Р85
     bool atlasTried_ = false;
     int maskSide_ = 0, flowSide_ = 0, fineSide_ = 0;
     VkSampler linear_ = VK_NULL_HANDLE, nearest_ = VK_NULL_HANDLE, atlasSmp_ = VK_NULL_HANDLE;

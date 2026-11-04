@@ -19,6 +19,7 @@ layout(std140, binding = 0) uniform Frame {
     mat4 invViewProj;  // Р51: из экрана - в координаты относительно originOld
     ivec4 originV;     // Р69: начало координат видеокарты - воксели (блоки мира), кратно куску
     vec4 originOld;    // Р69: оно же в прежних мерах (originV / 16)
+    vec4 skyArea;      // Р85: карта верхних высот для теней - угол x, z (блоки), сторона, 0
 };
 
 layout(location = 0) out vec4 vColor;
