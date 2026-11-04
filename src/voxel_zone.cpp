@@ -78,6 +78,10 @@ void VoxelZone::moveWindow(int32_t ccx, int32_t ccz) {
         release(it->second);
         it = ready_.erase(it);
     }
+    // Р83: пометки о правке у столбцов за окном не держим - иначе очередь пересобиралась бы
+    // каждый кадр до скончания века из-за столбца, которого в зоне давно нет
+    for (auto it = stale_.begin(); it != stale_.end();)
+        it = inWindow(int32_t(*it >> 32), int32_t(uint32_t(*it)), UNLOAD_MARGIN) ? std::next(it) : stale_.erase(it);
     // маска - сдвигом: что было в старом окне, переносим; новые клетки - по таблице готовых
     std::vector<uint8_t> next(size_t(side_) * side_, 0);
     const int32_t newX = ccx - radius_, newZ = ccz - radius_;
@@ -178,7 +182,10 @@ void VoxelZone::update(glm::vec3 eye, glm::vec3 forward, const Frustum& fr, doub
         t = clk::now();
         reprioritize(eye, forward, fr);
         worst(1, t);
-    } else if (++sinceSort_ >= RESORT_FRAMES && stats_.pending > 0) {
+    } else if (!stale_.empty() || (++sinceSort_ >= RESORT_FRAMES && stats_.pending > 0)) {
+        // Р83: столбец с правкой заказывается ТОЛЬКО здесь. Без первого условия очередь
+        // пересобиралась лишь при смене столбца камеры или пока есть недостроенное: стоя на месте в
+        // достроенной зоне, игрок ломал блок, тело сквозь него проходило, а сетка оставалась прежней.
         const auto t = clk::now();
         reprioritize(eye, forward, fr);
         worst(1, t);
