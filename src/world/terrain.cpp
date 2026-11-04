@@ -1,6 +1,7 @@
 #include "world/terrain.h"
 
 #include "world/caves.h"
+#include "world/soil_table.h"
 
 #include <algorithm>
 #include <cmath>
@@ -221,15 +222,39 @@ int16_t soilFromSlope(int32_t sl) {
     return int16_t(int32_t(SOIL_FULL) * (BARE_TO - sl) / (BARE_TO - BARE_FROM));
 }
 
-Cover coverAt(const TerrainParams& p, const Climate& c, int32_t height) {
+Cover coverAt(const TerrainParams& p, const Climate& c, int32_t height, int32_t x, int32_t z, int32_t slope8) {
     const fx::q16 t = temperatureAt(p, c, height);
+    // Р87: СОСТАВ ПОЧВЫ - НЕПРЕРЫВНО, ИМЯ - БЛИЖАЙШЕЕ. Доли считаются по четырём доводам, а потом
+    // приближаются именованной почвой из справочника (world/soil_table.h), как и у пород (Р78).
+    //
+    //   дожди   - выщелачивают основания и накапливают глину; в сухом остаётся песок и пыль;
+    //   холод и сырость - перегной не разлагается, копится торф;
+    //   крутизна - мелкое сносит вниз, на склоне остаётся крупное;
+    //   свой шум - иначе почва менялась бы только с климатом, полосами в десятки километров.
+    const float rain01 = std::clamp(float(c.rain) / float(2 * p.rainMid), 0.0f, 1.0f);
+    const float warm01 = std::clamp((float(t) / 65536.0f + 10.0f) / 40.0f, 0.0f, 1.0f);
+    const float steep = std::clamp(float(slope8) / 12.0f, 0.0f, 1.0f);
+    // Два своих шума, крупный и помельче: с одним доли ходили бы вместе, и состав полз бы по прямой
+    // между двумя почвами вместо того, чтобы гулять по всему треугольнику.
+    const float n1 = float(gen::value2(x, z, 11, p.seed ^ 0x50113u)) / 65536.0f;   // -1..1
+    const float n2 = float(gen::value2(x, z, 9, p.seed ^ 0x7A2D1u)) / 65536.0f;
+    // Каждая доля считается СВОЯ, а не остатком. Остаток забирал всё себе, и почва по всему миру
+    // выходила одна и та же - пылеватый суглинок.
+    SoilComp sc;
+    sc.sand = std::max(0.02f, 0.10f + 0.70f * (1.0f - rain01) + 0.45f * steep + 0.25f * n1);
+    sc.silt = std::max(0.02f, 0.30f + 0.40f * (1.0f - std::abs(rain01 - 0.5f) * 2.0f) - 0.20f * n1 + 0.15f * n2);
+    sc.clay = std::max(0.01f, 0.05f + 0.75f * rain01 * warm01 - 0.35f * steep + 0.22f * n2);
+    sc.organic = std::max(0.0f, 0.02f + 1.10f * std::max(0.0f, rain01 - 0.35f) * (1.0f - warm01) * (1.0f - steep));
+    const float sum = sc.sand + sc.silt + sc.clay + sc.organic;
+    sc.sand /= sum; sc.silt /= sum; sc.clay /= sum; sc.organic /= sum;
+    const Material soil = Material(SOIL_FIRST + nearestSoil(sc));
     // Р82: снег - слой поверх покрова, а не сам покров. Поэтому сначала выбираем, что лежит под
     // ним, и только потом добавляем толщину снега. Чем холоднее порога, тем слой толще: у самого
     // порога - одна шестнадцатая блока, на восемь градусов ниже - целый блок.
     Cover cv = [&]() -> Cover {
         if (height < p.seaLevel + 2 * VOXELS_PER_BLOCK) return {SAND, SAND};   // Р25: дно и берег - песок
-        if (c.rain < p.desertRain && t > p.desertTemp) return {SAND, SAND};
-        return {GRASS, DIRT};
+        if (c.rain < p.desertRain && t > p.desertTemp) return {SAND, soil};
+        return {GRASS, soil};
     }();
     if (t < p.snowBelow) {
         constexpr fx::q16 FULL = 8 * DEG;   // насколько ниже порога снег вырастает до целого блока
@@ -428,13 +453,25 @@ void columnHeights(const TerrainParams& p, int32_t chunkX, int32_t chunkZ, Colum
             }
     }
 
+    // Р87: крутизна в восьмых долях тангенса - тот же сглаженный уклон, по которому снимается
+    // покров (Р79); почве он говорит, что мелкое снесено вниз, а на склоне осталось крупное.
+    const auto slopeOf = [&](int z, int x) {
+        const int zc = std::clamp(z, 1, CHUNK), xc = std::clamp(x, 1, CHUNK);
+        const int32_t gx = (out.h[zc - 1][xc + 1] + 2 * out.h[zc][xc + 1] + out.h[zc + 1][xc + 1]) -
+                           (out.h[zc - 1][xc - 1] + 2 * out.h[zc][xc - 1] + out.h[zc + 1][xc - 1]);
+        const int32_t gz = (out.h[zc + 1][xc - 1] + 2 * out.h[zc + 1][xc] + out.h[zc + 1][xc + 1]) -
+                           (out.h[zc - 1][xc - 1] + 2 * out.h[zc - 1][xc] + out.h[zc - 1][xc + 1]);
+        return std::max(std::abs(gx), std::abs(gz));
+    };
+
     // Климат и покров. Р82: считаются С КАЙМОЙ, потому что толщина снега нужна и ей - у снежного
     // слоя есть боковые грани, и без каймы на каждой границе кусков вставала бы лишняя стенка.
     // У воды рек и озёр - песок (Р29).
     for (int z = 0; z < CHUNK + 2; ++z)
         for (int x = 0; x < CHUNK + 2; ++x) {
             Cover cv = shore[z][x] ? Cover{SAND, SAND}
-                                   : coverAt(p, climateAt(p, x0 + x, z0 + z, slow.at(x0 + x, z0 + z)), out.h[z][x]);
+                                   : coverAt(p, climateAt(p, x0 + x, z0 + z, slow.at(x0 + x, z0 + z)), out.h[z][x],
+                                               x0 + x, z0 + z, slopeOf(z, x));
             // Р82: под водой снега нет - он лежит на суше
             if (out.water[z][x] != NO_WATER && out.water[z][x] > out.h[z][x]) cv.snow = 0;
             out.snow[z][x] = cv.snow;

@@ -64,7 +64,7 @@ int main(int argc, char** argv) {
                 const int32_t wx = vox(cx, x), wz = vox(cz, z);
                 const world::Relief r = world::reliefAt(p, wx, wz);
                 rel[size_t(z) * n + x] = r;
-                cov[size_t(z) * n + x] = world::coverAt(p, world::climateAt(p, wx, wz), r.height);
+                cov[size_t(z) * n + x] = world::coverAt(p, world::climateAt(p, wx, wz), r.height, wx, wz);
             }
     };
     std::vector<std::thread> pool;

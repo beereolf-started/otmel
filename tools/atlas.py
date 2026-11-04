@@ -27,8 +27,8 @@ TFC = os.path.join(GAME, "mods", "TerraFirmaCraft-Forge-1.20.1-3.2.21.jar")
 VANILLA = os.path.join(GAME, "versions", "Forge 1.20.1", "Forge 1.20.1.jar")
 
 TILE = 16          # сторона рисунка, точек
-LAYERS = 50        # материалы 0..49 (world/chunk.h)
-COLS, ROWS = 8, 7  # раскладка только для картинки-образца atlas.png
+LAYERS = 59        # материалы 0..58 (world/chunk.h)
+COLS, ROWS = 8, 8  # раскладка только для картинки-образца atlas.png
 
 # ── чтение PNG без сторонних библиотек: нам нужны только 16×16 RGBA и палитровые ────────────────
 
@@ -125,6 +125,10 @@ MIXED = [("granite", (0.67, 0.63, 0.60)), ("diorite", (0.70, 0.66, 0.60)), ("gab
 # материалы 0..11 (world/chunk.h): воздух, камень, земля, трава, песок, снег, вода, кора, древесина,
 # листва, листва светлее, кора в трещине
 GRASS_RGB = (0.36, 0.58, 0.25)   # тот же цвет, что в shaders/terrain.vert
+# Р87: почвы по номерам SOIL_FIRST.. - порядок ровно как в src/world/soil_table.cpp
+SOILS = ["tfc:block/sand/yellow", "tfc:block/dirt/sandy_loam", "tfc:block/dirt/loam",
+         "tfc:block/dirt/silty_loam", "tfc:block/dirt/silt", "tfc:block/clay/loam",
+         "tfc:block/clay/silty_loam", "tfc:block/mud/silt", "tfc:block/peat"]
 BASE = ["", "tfc:block/rock/raw/granite", "tfc:block/dirt/loam", "tfc:block/grass_top", "tfc:block/sand/yellow",
         "mc:block/snow", "", "tfc:block/wood/log/oak", "tfc:block/wood/stripped_log/oak", "tfc:block/wood/leaves/oak",
         "tfc:block/wood/leaves/oak", "tfc:block/wood/log/oak"]
@@ -175,6 +179,9 @@ def main():
     tiles[48] = over(recolor(load("tfc:block/grass_side"), GRASS_RGB), tiles[2])
     # Р82: тот же бок, но под снежной шапкой - полоска снега; снег в TFC не красится палитрой
     tiles[49] = over(load("tfc:block/grass_snowy_side"), tiles[2])
+    # Р87: именованные почвы - порядок ровно как в src/world/soil_table.cpp
+    for i, ref in enumerate(SOILS):
+        tiles[50 + i] = load(ref)
 
     W, H = COLS * TILE, ROWS * TILE
     px = [(0, 0, 0, 0)] * (W * H)
