@@ -109,15 +109,15 @@ bool caveAir(const TerrainParams& p, ChunkPos pos, const ColumnHeights& hm, uint
     // Полоса опоры задевает этот кусок: значит в нём может осыпаться кровля, а сама пустота под ней
     // лежит ниже, в соседнем куске снизу - узлы приходится считать с запасом вниз.
     const bool bandHere = minTop - ROOF_BAND <= y0 + CHUNK + 1;
-    const int32_t below = bandHere ? ROOF_BAND : 0;   // до низа полосы поиска: земля и два блока камня
     // и ВВЕРХ на толщу земли: поверхность столбца может лежать выше верха куска, а значение поля на
     // ней всё равно нужно - иначе обращение к узлам уйдёт за край массива и посчитается мусор
-    const int32_t above = bandHere ? SOIL_DEPTH : 0;
 
     // узлы каналов
-    const int32_t nx0 = x0 >> STEP_LOG2, ny0 = (y0 - below) >> STEP_LOG2, nz0 = z0 >> STEP_LOG2;
+    // Запаса узлов вверх и вниз здесь больше не нужно: срез земли считает soilCut со своей сеткой,
+    // а маска пустот смотрит только свой кусок с каймой.
+    const int32_t nx0 = x0 >> STEP_LOG2, ny0 = y0 >> STEP_LOG2, nz0 = z0 >> STEP_LOG2;
     const int nx = ((x0 + CHUNK + 1) >> STEP_LOG2) - nx0 + 2;
-    const int ny = ((y0 + CHUNK + 1 + above) >> STEP_LOG2) - ny0 + 2;
+    const int ny = ((y0 + CHUNK + 1) >> STEP_LOG2) - ny0 + 2;
     const int nz = ((z0 + CHUNK + 1) >> STEP_LOG2) - nz0 + 2;
     static thread_local Node nodes[MAX_NODES][MAX_NODES_Y][MAX_NODES];
     fx::q16 maxT = INT32_MIN, maxH = INT32_MIN;
@@ -256,6 +256,15 @@ bool caveAir(const TerrainParams& p, ChunkPos pos, const ColumnHeights& hm, uint
             any |= bits != 0;
         }
     return any;
+}
+
+bool soilGone(const TerrainParams& p, int32_t wx, int32_t wz, int32_t) {
+    // Нарочно ДЁШЕВО: один вызов шума. Точный срез считать здесь нельзя - эта проверка идёт на
+    // каждое дерево-кандидата, и полный расчёт поля удваивал время прогрузки. Берём область входа
+    // целиком: вне её срез строго нулевой, а внутри дерева лучше не ставить вовсе - там земля
+    // осыпалась или вот-вот осыплется.
+    const CaveParams& c = p.caves;
+    return gen::simplex2(wx, wz, c.entranceCellLog2, caveSeed(p.seed, ENTRANCE)) > c.entranceFrom - ENTRANCE_EDGE;
 }
 
 // ── Р79: срез земли у выхода шахты (см. caves.h) ───────────────────────────────────────────────

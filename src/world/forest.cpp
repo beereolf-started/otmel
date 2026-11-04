@@ -1,5 +1,7 @@
 #include "world/forest.h"
 
+#include "world/caves.h"
+
 #include <algorithm>
 #include <unordered_map>
 #include <utility>
@@ -76,6 +78,9 @@ std::vector<float> buildSpriteRegion(const TerrainParams& tp, int rx, int rz, in
                         hi = std::max(hi, q.height);
                     }
                 if (bad || hi - lo > 4) continue;   // у воды или круто (вблизи - перепад больше 3 на ±2)
+                // Р79: на осыпавшейся земле у выхода шахты не сажаем: там поверхность опущена срезом,
+                // и дерево, поставленное по нетронутой высоте, повисло бы над ней.
+                if (soilGone(tp, tc.x, tc.z, r.height)) continue;
                 int32_t g0 = r.height;
                 for (const auto [dx, dz] : {std::pair{1, 0}, {0, 1}, {1, 1}}) g0 = std::min(g0, at(tc.x + dx, tc.z + dz).height);
                 base = float(g0 + 1) - 0.2f;
@@ -97,6 +102,7 @@ std::vector<float> buildSpriteRegion(const TerrainParams& tp, int rx, int rz, in
                 }
                 if (hi - lo > step) continue;   // круче 45°
                 if (tc.roll >= forestDensity(tp, tc.x, tc.z, int32_t(h))) continue;
+                if (soilGone(tp, tc.x, tc.z, int32_t(h))) continue;   // Р79: не сажаем на срезе
                 base = h + 1.0f - 0.5f;   // верх верхнего вокселя; полблока в землю - на плитке без шва
             }
             const float fr = float(tc.seed & 0xFFFF) / 65535.0f;

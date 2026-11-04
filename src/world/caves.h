@@ -21,6 +21,10 @@ namespace world {
 bool caveAir(const TerrainParams& p, ChunkPos pos, const ColumnHeights& hm, uint64_t air[CHUNK + 2][CHUNK + 2],
              const uint8_t (*cut)[CHUNK + 2] = nullptr);
 
+// Осыпалась ли земля в этом столбце (Р79): true - срез ненулевой, земля у выхода шахты сошла.
+// Для редких точек (деревья): считает поле в самой точке, без сетки узлов.
+bool soilGone(const TerrainParams& p, int32_t wx, int32_t wz, int32_t top);
+
 // Р79: СРЕЗ ЗЕМЛИ У ВЫХОДА ШАХТЫ - на сколько вокселей осыпалась земля в каждом столбце (с каймой).
 //
 // Считается ОДИН РАЗ НА ВЕСЬ СТОЛБЕЦ КУСКОВ, до постройки, и применяется ко всем его кускам
