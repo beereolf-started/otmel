@@ -1153,9 +1153,13 @@ int main(int argc, char** argv) {
                         for (int cx = 0; cx < 17; ++cx) {
                             world::ColumnHeights& hm = hms[size_t(cz) * 17 + cx];
                             world::columnHeights(tp, z->origin.x / 32 + cx, z->origin.y / 32 + cz, hm);
+                            // Р79: земля у выхода шахты срезана, поверхность там ниже карты высот. Без этого
+                            // дубы вставали по нетронутой высоте и висели в воздухе над сглаженной воронкой.
+                            uint8_t cut[world::CHUNK + 2][world::CHUNK + 2];
+                            world::soilCut(tp, z->origin.x / 32 + cx, z->origin.y / 32 + cz, hm, cut);
                             for (int j = 0; j < 32; ++j)
                                 for (int i = 0; i < 32; ++i) {
-                                    (*g)[size_t(cz * 32 + j) * S + cx * 32 + i] = hm.h[j + 1][i + 1];
+                                    (*g)[size_t(cz * 32 + j) * S + cx * 32 + i] = hm.h[j + 1][i + 1] - cut[j + 1][i + 1];
                                     w[size_t(cz * 32 + j) * S + cx * 32 + i] = hm.water[j + 1][i + 1];
                                 }
                         }
@@ -1199,6 +1203,10 @@ int main(int argc, char** argv) {
                                 }
                             if (bad) { ++z->nWet; continue; }
                             if (hi - lo > 3) { ++z->nSteep; continue; }
+                            // Р79: на осыпавшейся земле у выхода шахты дубов нет - там голая порода.
+                            // То же правило у дальних спрайтов (world/forest.cpp), иначе на границе
+                            // уровней детализации лес то появлялся бы, то пропадал.
+                            if (world::soilGone(tp, x, y, H(x, y))) { ++z->nCave; continue; }
                             const float dens = world::forestDensity(tp, x, y, H(x, y));
                             if (dens <= 0.0f) { ++z->nSnow; continue; }
                             ++z->nC;

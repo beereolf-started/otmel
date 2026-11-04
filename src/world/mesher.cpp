@@ -25,6 +25,12 @@ inline uint64_t columnFromHeight(int32_t top, int32_t y0) {
 struct Axis { int d, u, v; };
 constexpr Axis AXES[3] = {{0, 1, 2}, {1, 2, 0}, {2, 0, 1}};
 
+// Бит вокселя мира wy в столбце куска (бит 0 - кайма снизу, y0 - 1); вне столбца - ноль
+inline uint64_t bitAt(int32_t wy, int32_t y0) {
+    const int64_t i = int64_t(wy) - (int64_t(y0) - 1);
+    return (i >= 0 && i < 34) ? (uint64_t(1) << i) : 0;
+}
+
 inline uint32_t pack(int x, int y, int z, int normal, Material m) {
     return uint32_t(x) | uint32_t(y) << 6 | uint32_t(z) << 12 | uint32_t(normal) << 18 | uint32_t(m) << 21;
 }
@@ -38,9 +44,15 @@ namespace {
 // Видимые грани одного вида вокселей (self) - битами по трём осям, слияние в прямоугольники.
 // Грань видна, где воксель self, а сосед в сторону грани не self и не block: у грунта block нет (дно под
 // водой видно), у воды block - грунт (у воды остаются только грани в воздух). mat(x, y, z) - материал грани.
+// Р82: snow - воксели снежного слоя. Слой тоньше блока, поэтому СБОКУ он ничего не закрывает: за
+// ним остаётся видна стенка соседнего блока, который выше. Снег закрывает только снег - иначе на
+// стыке двух снежных плит вставала бы лишняя грань внутри самого снега.
+//
+// Сверху и снизу правило обычное: верх блока под слоем снегом закрыт целиком (слой лежит ровно на
+// нём и занимает весь его след), и рисовать его незачем.
 template <class MatFn>
 void emitFaces(const uint64_t (&self)[3][CHUNK][CHUNK], const uint64_t (*block)[3][CHUNK][CHUNK], MatFn mat,
-               std::vector<uint32_t>& out, int& quads) {
+               std::vector<uint32_t>& out, int& quads, const uint64_t (*snow)[CHUNK][CHUNK] = nullptr) {
     uint32_t t[CHUNK];
     static thread_local uint32_t layerRows[CHUNK][CHUNK];   // [слой d][строка v], бит u
     static thread_local MatRows mats[64];
@@ -52,8 +64,17 @@ void emitFaces(const uint64_t (&self)[3][CHUNK][CHUNK], const uint64_t (*block)[
             // [d][биты u] для каждой строки v: грани всех 32 слоёв сразу разложены по строкам
             for (int v = 0; v < CHUNK; ++v) {
                 for (int u = 0; u < CHUNK; ++u) {
-                    const uint64_t b = self[ai][u][v], o = b | (block ? (*block)[ai][u][v] : 0);
-                    const uint64_t f = sign == 0 ? (b & ~(o >> 1)) : (b & ~(o << 1));
+                    const uint64_t b = self[ai][u][v];
+                    const uint64_t o = b | (block ? (*block)[ai][u][v] : 0);
+                    const uint64_t sn = (snow && ai != 1) ? snow[ai][u][v] : 0;
+                    uint64_t f;
+                    if (sn) {
+                        const uint64_t on = o & ~sn;   // для не-снега снег не закрывает ничего
+                        f = sign == 0 ? (((b & ~sn) & ~(on >> 1)) | ((b & sn) & ~(o >> 1)))
+                                      : (((b & ~sn) & ~(on << 1)) | ((b & sn) & ~(o << 1)));
+                    } else {
+                        f = sign == 0 ? (b & ~(o >> 1)) : (b & ~(o << 1));
+                    }
                     t[u] = uint32_t(f >> 1);
                 }
                 transpose32(t);
@@ -73,7 +94,7 @@ void emitFaces(const uint64_t (&self)[3][CHUNK][CHUNK], const uint64_t (*block)[
                         const int u = std::countr_zero(r);
                         int p[3];
                         p[ax.u] = u; p[ax.v] = v; p[ax.d] = layer;
-                        const Material m = mat(p[0], p[1], p[2]);
+                        const Material m = mat(p[0], p[1], p[2], normal);
                         int k = 0;
                         while (k < nmats && mats[k].mat != m) ++k;
                         if (k == nmats) { mats[k].mat = m; std::memset(mats[k].rows, 0, sizeof(mats[k].rows)); ++nmats; }
@@ -161,13 +182,19 @@ void meshImpl(ChunkPos pos, const Chunk* vox, const ColumnHeights& hm, const uin
     // Р34: вода прозрачна - для граней она не «твёрдое»: грунт под водой даёт свои грани (видно дно), у воды
     // свои грани - только в воздух (поверхность, края водопадов); вода рисуется отдельным проходом.
     static thread_local uint64_t solid[CHUNK + 2][CHUNK + 2], wet[CHUNK + 2][CHUNK + 2];
-    bool anyWater = false;
+    static thread_local uint64_t snowEdge[CHUNK + 2][CHUNK + 2];   // Р82: воксель снежного слоя столбца
+    bool anyWater = false, anySnow = false;
     for (int z = 0; z < CHUNK + 2; ++z)
         for (int x = 0; x < CHUNK + 2; ++x) {
             // верх столбца - с учётом среза земли у воронки: по этой же высоте ниже выбирается и
             // материал, иначе маска считает воксель твёрдым, а материал для него выходит воздухом
             const int32_t topEff = hm.h[z][x] - (cut ? int32_t(cut[z][x]) : 0);
-            const uint64_t ground = columnFromHeight(topEff, y0);
+            uint64_t ground = columnFromHeight(topEff, y0);
+            // Р82: снег - слой ПОВЕРХ грунта, то есть лишний воксель над верхом столбца. В маске он
+            // твёрдый (у него свои грани), а высоту ему убавляет уже вершинный обработчик.
+            snowEdge[z][x] = hm.snow[z][x] ? bitAt(topEff + 1, y0) : 0;
+            anySnow |= snowEdge[z][x] != 0;
+            ground |= snowEdge[z][x];
             solid[z][x] = ground & ~(air ? air[z][x] : 0);
             wet[z][x] = columnFromHeight(hm.water[z][x], y0) & ~ground;
             anyWater |= wet[z][x] != 0;
@@ -175,6 +202,7 @@ void meshImpl(ChunkPos pos, const Chunk* vox, const ColumnHeights& hm, const uin
 
     // ─── 1. Маски столбцов вдоль трёх осей: 34 бита (кайма + 32 + кайма) ─────────
     static thread_local uint64_t col[3][CHUNK][CHUNK], wcol[3][CHUNK][CHUNK];
+    static thread_local uint64_t snowCol[3][CHUNK][CHUNK];   // Р82: снежные воксели по трём осям
     // вертикаль: формулой от высоты; правленый кусок - из его вокселей (кайма по высоте - по карте высот)
     constexpr uint64_t EDGE_Y = 1 | uint64_t(1) << 33;
     for (int z = 0; z < CHUNK; ++z) {
@@ -192,12 +220,14 @@ void meshImpl(ChunkPos pos, const Chunk* vox, const ColumnHeights& hm, const uin
             }
             col[1][z][x] = b;
             wcol[1][z][x] = w;
+            snowCol[1][z][x] = snowEdge[z + 1][x + 1];
         }
     }
     rotateMasks(col, solid);
+    if (anySnow) rotateMasks(snowCol, snowEdge);
 
     // ─── 2-4. Грани грунта, затем воды: вода - в конце сетки (stats.waterQuads) ──
-    emitFaces(col, nullptr, [&](int x, int y, int z) {
+    emitFaces(col, nullptr, [&](int x, int y, int z, int normal) -> Material {
         // Верх столбца - с учётом среза земли у выхода шахты: поверхность опустилась, и покров
         // должен лечь на новый верх, иначе по откосу воронки видна голая земля вместо дёрна.
         //
@@ -205,14 +235,32 @@ void meshImpl(ChunkPos pos, const Chunk* vox, const ColumnHeights& hm, const uin
         // вниз. Иначе слой земли съезжал бы вслед за поверхностью, влезал в пустоту, которая лежит
         // ниже его прежней подошвы, и повисал над ней - а заодно подменял бы собой камень.
         const int32_t vcut = cut ? int32_t(cut[z + 1][x + 1]) : 0;
+        if (vox) return vox->at(x, y, z);
+        const int32_t topEff = hm.h[z + 1][x + 1] - vcut;
+        const int32_t wy = y0 + y;
+        // Р82: снежный слой - воксель над верхом столбца; толщина едет в старших битах материала
+        if (wy == topEff + 1 && hm.snow[z + 1][x + 1])
+            return Material(SNOW | (uint32_t(hm.snow[z + 1][x + 1] - 1) << 6));
         Cover cv = hm.cover[z][x];
         cv.soil = int16_t(std::max(0, int(cv.soil) - vcut));
-        return vox ? vox->at(x, y, z) : columnMaterial(hm.h[z + 1][x + 1] - vcut, cv, y0 + y, hm.water[z + 1][x + 1],
-                                                       hm.rock, x0w + x, z0w + z);
-    }, out, stats.quads);
+        const Material m = columnMaterial(topEff, cv, wy, hm.water[z + 1][x + 1], hm.rock, x0w + x, z0w + z);
+        // Р82: ДЁРН ПО ПРАВИЛУ TFC. Бок блока травы - сплошная трава, если до соседней поверхности
+        // ровно одна ступенька: так склон, сложенный из ступенек, остаётся зелёным, а не идёт
+        // полосами земли. Если же перепад в два блока и больше (или грань открыта пещерой), дёрн
+        // обрублен: земля с полоской травы сверху, как в обычном кубике травы.
+        if (m == GRASS && normal != 2 && normal != 3) {
+            // Р82: под снежной шапкой полоска сверху - снежная, а не травяная: иначе по склону
+            // тянулась бы зелёная лесенка дёрна прямо под снегом.
+            if (hm.snow[z + 1][x + 1]) return GRASS_SNOWY_SIDE;
+            const int nx = x + 1 + (normal == 0) - (normal == 1), nz = z + 1 + (normal == 4) - (normal == 5);
+            const int32_t ntop = hm.h[nz][nx] - (cut ? int32_t(cut[nz][nx]) : 0) + (hm.snow[nz][nx] ? 1 : 0);
+            if (topEff - ntop != 1) return GRASS_SIDE;
+        }
+        return m;
+    }, out, stats.quads, anySnow ? &snowCol[0] : nullptr);
     if (!anyWater) return;
     rotateMasks(wcol, wet);
-    emitFaces(wcol, &col, [](int, int, int) { return Material(WATER); }, out, stats.waterQuads);
+    emitFaces(wcol, &col, [](int, int, int, int) { return Material(WATER); }, out, stats.waterQuads);
     stats.quads += stats.waterQuads;
 }
 

@@ -222,12 +222,27 @@ int16_t soilFromSlope(int32_t sl) {
 }
 
 Cover coverAt(const TerrainParams& p, const Climate& c, int32_t height) {
-    // Р25: дно и берег - песок (до 2 блоков над водой)
-    if (height < p.seaLevel + 2 * VOXELS_PER_BLOCK) return {SAND, SAND};
     const fx::q16 t = temperatureAt(p, c, height);
-    if (t < p.snowBelow) return {SNOW, DIRT};
-    if (c.rain < p.desertRain && t > p.desertTemp) return {SAND, SAND};
-    return {GRASS, DIRT};
+    // Р82: снег - слой поверх покрова, а не сам покров. Поэтому сначала выбираем, что лежит под
+    // ним, и только потом добавляем толщину снега. Чем холоднее порога, тем слой толще: у самого
+    // порога - одна шестнадцатая блока, на восемь градусов ниже - целый блок.
+    Cover cv = [&]() -> Cover {
+        if (height < p.seaLevel + 2 * VOXELS_PER_BLOCK) return {SAND, SAND};   // Р25: дно и берег - песок
+        if (c.rain < p.desertRain && t > p.desertTemp) return {SAND, SAND};
+        return {GRASS, DIRT};
+    }();
+    if (t < p.snowBelow) {
+        constexpr fx::q16 FULL = 8 * DEG;   // насколько ниже порога снег вырастает до целого блока
+        const int64_t d = std::min<int64_t>(FULL, int64_t(p.snowBelow) - t);
+        // Толщина - СТУПЕНЯМИ, а не любым числом от 1 до 16. Причина в цене: прямоугольники сетки
+        // склеиваются только при одинаковом материале, а толщина едет в том же слове. Непрерывная
+        // толщина меняется от столбца к столбцу, склеивать нечего, и верх снега становился
+        // прямоугольником на каждый блок - вдвое больше всей остальной сетки. Ступенями ровные поля
+        // снова склеиваются в большие полотна, а на глаз ступени неразличимы.
+        static constexpr uint8_t STEPS[5] = {1, 4, 8, 12, 16};
+        cv.snow = STEPS[(4 * d) / FULL < 4 ? (4 * d) / FULL : 4];
+    }
+    return cv;
 }
 
 void columnHeights(const TerrainParams& p, int32_t chunkX, int32_t chunkZ, ColumnHeights& out) {
@@ -413,28 +428,27 @@ void columnHeights(const TerrainParams& p, int32_t chunkX, int32_t chunkZ, Colum
             }
     }
 
-    // климат и покров - только своим столбцам, не кайме; у воды рек и озёр - песок (Р29)
-    for (int z = 0; z < CHUNK; ++z)
-        for (int x = 0; x < CHUNK; ++x)
-        {
-            Cover cv = shore[z + 1][x + 1]
-                           ? Cover{SAND, SAND}
-                           : coverAt(p, climateAt(p, x0 + 1 + x, z0 + 1 + z, slow.at(x0 + 1 + x, z0 + 1 + z)), out.h[z + 1][x + 1]);
+    // Климат и покров. Р82: считаются С КАЙМОЙ, потому что толщина снега нужна и ей - у снежного
+    // слоя есть боковые грани, и без каймы на каждой границе кусков вставала бы лишняя стенка.
+    // У воды рек и озёр - песок (Р29).
+    for (int z = 0; z < CHUNK + 2; ++z)
+        for (int x = 0; x < CHUNK + 2; ++x) {
+            Cover cv = shore[z][x] ? Cover{SAND, SAND}
+                                   : coverAt(p, climateAt(p, x0 + x, z0 + z, slow.at(x0 + x, z0 + z)), out.h[z][x]);
+            // Р82: под водой снега нет - он лежит на суше
+            if (out.water[z][x] != NO_WATER && out.water[z][x] > out.h[z][x]) cv.snow = 0;
+            out.snow[z][x] = cv.snow;
+            if (cv.snow) out.maxH = std::max(out.maxH, out.h[z][x] + 1);   // слой снега - воксель выше грунта
+            if (z == 0 || x == 0 || z > CHUNK || x > CHUNK) continue;
             // Р79: КРУТИЗНА СНИМАЕТ ПОКРОВ. Землю держит пологое, на крутом она осыпается и наружу
             // выходит порода. Под водой не трогаем: там своё дно (песок), и обнажать его незачем.
             //
-            // Уклон берём СГЛАЖЕННЫЙ, по всем восьми соседям сразу (кайма для этого и нужна). Перепад
-            // к одному соседу для этого не годится: у поверхности есть своя мелкая рябь в один-два
-            // вокселя, и на ровном месте такой перепад то превышает порог, то нет - покров срывался
-            // через столбец, и склон шёл вертикальными полосами голого камня вперемешку с землёй, а
-            // в тех полосах ещё и пещера выходила наружу щелью. Сглаженный уклон рябь гасит.
-            const int32_t gx = (out.h[z][x + 2] + 2 * out.h[z + 1][x + 2] + out.h[z + 2][x + 2]) -
-                               (out.h[z][x] + 2 * out.h[z + 1][x] + out.h[z + 2][x]);
-            const int32_t gz = (out.h[z + 2][x] + 2 * out.h[z + 2][x + 1] + out.h[z + 2][x + 2]) -
-                               (out.h[z][x] + 2 * out.h[z][x + 1] + out.h[z][x + 2]);
-            // толщина земли - из общего массива с каймой: одно число для обоих соседних кусков
-            if (!shore[z + 1][x + 1]) cv.soil = out.soilThick[z + 1][x + 1];
-            out.cover[z][x] = cv;
+            // Толщина земли - из общего массива с каймой: одно число для обоих соседних кусков.
+            // Уклон для неё берётся СГЛАЖЕННЫЙ, по всем восьми соседям сразу (кайма для этого и
+            // нужна): перепад к одному соседу срывал покров через столбец, и склон шёл
+            // вертикальными полосами голого камня вперемешку с землёй.
+            if (!shore[z][x]) cv.soil = out.soilThick[z][x];
+            out.cover[z - 1][x - 1] = cv;
         }
 }
 

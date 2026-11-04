@@ -91,6 +91,8 @@ void buildTile(const TerrainParams& p, TileKey k, TileMesh& out) {
             const int32_t wx = int32_t(x0 + i * 2 * step), wz = int32_t(z0 + j * 2 * step);
             Cover c = shoreC[j + 1][i + 1] ? Cover{SAND, SAND}
                                              : coverAt(p, climateAt(p, wx, wz, slowFine(wx, wz)), hc[j + 1][i + 1]);   // климату отсечка октав не нужна
+            // Р82: вдали снежный слой не рисуется отдельно - столбец просто белый
+            if (c.snow) c.top = SNOW;
             // Р41: устье пещеры - бурым пятном (вдали пещер нет - только метка); шаг грубой сетки - вдвое
             if (!shoreC[j + 1][i + 1] && !wetC[j + 1][i + 1] && caveMouth(p, wx, wz, hc[j + 1][i + 1], int32_t(2 * step / VOXELS_PER_BLOCK)))
                 c = Cover{DIRT, DIRT};
@@ -115,6 +117,7 @@ void buildTile(const TerrainParams& p, TileKey k, TileMesh& out) {
 
             const Climate cl = climateAt(p, int32_t(x0 + i * step), int32_t(z0 + j * step), slowFine(x0 + i * step, z0 + j * step));
             Cover c = shoreF[j + 1][i + 1] ? Cover{SAND, SAND} : coverAt(p, cl, h);
+            if (c.snow) c.top = SNOW;   // Р82: вдали снежный слой - просто белый верх
             // Р67: густота леса в узле (как у дубов вблизи и спрайтов) - для шума крон вдали; у воды, на берегу и на
             // кручах (больше блока на блок) - ноль
             float forest = 0.0f;

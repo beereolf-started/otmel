@@ -27,7 +27,8 @@ TFC = os.path.join(GAME, "mods", "TerraFirmaCraft-Forge-1.20.1-3.2.21.jar")
 VANILLA = os.path.join(GAME, "versions", "Forge 1.20.1", "Forge 1.20.1.jar")
 
 TILE = 16          # сторона рисунка, точек
-COLS, ROWS = 8, 6  # 48 клеток: материалы 0..47 (world/chunk.h)
+LAYERS = 50        # материалы 0..49 (world/chunk.h)
+COLS, ROWS = 8, 7  # раскладка только для картинки-образца atlas.png
 
 # ── чтение PNG без сторонних библиотек: нам нужны только 16×16 RGBA и палитровые ────────────────
 
@@ -123,6 +124,7 @@ MIXED = [("granite", (0.67, 0.63, 0.60)), ("diorite", (0.70, 0.66, 0.60)), ("gab
          ("marble", (0.28, 0.40, 0.32))]
 # материалы 0..11 (world/chunk.h): воздух, камень, земля, трава, песок, снег, вода, кора, древесина,
 # листва, листва светлее, кора в трещине
+GRASS_RGB = (0.36, 0.58, 0.25)   # тот же цвет, что в shaders/terrain.vert
 BASE = ["", "tfc:block/rock/raw/granite", "tfc:block/dirt/loam", "tfc:block/grass_top", "tfc:block/sand/yellow",
         "mc:block/snow", "", "tfc:block/wood/log/oak", "tfc:block/wood/stripped_log/oak", "tfc:block/wood/leaves/oak",
         "tfc:block/wood/leaves/oak", "tfc:block/wood/log/oak"]
@@ -141,24 +143,38 @@ def main():
     def recolor(src, rgb):
         """Рисунок соседней породы как маска светлоты, цвет - наш."""
         lum = [(0.299 * p[0] + 0.587 * p[1] + 0.114 * p[2]) / 255.0 for p in src]
-        mid = sum(lum) / len(lum) or 1.0
+        vis = [l for l, p in zip(lum, src) if p[3]] or lum   # прозрачные точки в среднее не идут
+        mid = sum(vis) / len(vis) or 1.0
         out = []
         for l, p in zip(lum, src):
             k = l / mid
             out.append(tuple(min(255, int(255 * c * k + 0.5)) for c in rgb) + (p[3],))
         return out
 
-    tiles = [[(255, 0, 255, 255)] * (TILE * TILE) for _ in range(COLS * ROWS)]
+    def over(top, bottom):
+        """Накладка с прозрачностью: полоска травы поверх земли."""
+        out = []
+        for t, b in zip(top, bottom):
+            a = t[3] / 255.0
+            out.append(tuple(int(t[i] * a + b[i] * (1 - a) + 0.5) for i in range(3)) + (255,))
+        return out
+
+    tiles = [[(255, 0, 255, 255)] * (TILE * TILE) for _ in range(LAYERS)]
     for i, ref in enumerate(BASE):
         if ref: tiles[i] = load(ref)
     # Трава и листва в TFC - серые маски: цвет им даёт палитра, как и в самой игре. Красим их теми
     # же цветами, что стоят в shaders/terrain.vert, чтобы вблизи и вдали был один цвет.
-    for i, rgb in [(3, (0.36, 0.58, 0.25))]:   # листва текстуру пока не берёт - у неё свой принцип
+    for i, rgb in [(3, GRASS_RGB)]:   # листва текстуру пока не берёт - у неё свой принцип
         tiles[i] = recolor(tiles[i], rgb)
     for i, name in enumerate(TFC_ROCKS):
         tiles[12 + i] = load("tfc:block/rock/raw/" + name)
     for i, (parent, rgb) in enumerate(MIXED):
         tiles[32 + i] = recolor(load("tfc:block/rock/raw/" + parent), rgb)
+    # Р82: обрубленный дёрн - бок блока травы. В TFC это накладка с прозрачностью поверх земли:
+    # сверху полоска дёрна, ниже видна сама земля. Накладка - такая же серая маска, красим её.
+    tiles[48] = over(recolor(load("tfc:block/grass_side"), GRASS_RGB), tiles[2])
+    # Р82: тот же бок, но под снежной шапкой - полоска снега; снег в TFC не красится палитрой
+    tiles[49] = over(load("tfc:block/grass_snowy_side"), tiles[2])
 
     W, H = COLS * TILE, ROWS * TILE
     px = [(0, 0, 0, 0)] * (W * H)

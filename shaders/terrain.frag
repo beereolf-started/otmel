@@ -46,7 +46,11 @@ layout(binding = 7) uniform sampler2DArray uAtlas;
 vec4 groundColor() {
     // Листва текстуру пока не берёт: у неё свой принцип, это отдельная работа.
     if (vMat == 9u || vMat == 10u) return vColor;
-    vec2 uv = vNormal < 2u ? vBlock.zy : (vNormal < 4u ? vBlock.xz : vBlock.xy);
+    // У картинки первая строка - ВЕРХНЯЯ, а y в мире растёт вверх: на боковых гранях поперечную
+    // ось надо обратить, иначе рисунок встаёт вверх ногами - у обрубленного дёрна полоска травы
+    // оказывалась снизу.
+    vec2 uv = vNormal < 2u ? vec2(vBlock.z, -vBlock.y)
+                           : (vNormal < 4u ? vBlock.xz : vec2(vBlock.x, -vBlock.y));
     vec3 rgb = texture(uAtlas, vec3(uv, float(vMat))).rgb * vLight;
     float far = max(fade.y, 64.0);
     float t = clamp((distance(vWorld, eye.xyz) - 0.5 * far) / (0.25 * far), 0.0, 1.0);   // far - в тех же мерах
