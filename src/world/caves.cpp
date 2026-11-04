@@ -89,9 +89,9 @@ bool caveEntranceNear(const TerrainParams& p, int32_t cx, int32_t cz) {
 // на скалах и обрывах земли нет вовсе (покров сходит с крутизны), и там пещера имеет право
 // начинаться почти сразу - это и есть вход в скале. А под лугом та же пещера обязана лежать ниже
 // всей земли и ещё двух блоков породы, иначе своду не на чем держаться.
-constexpr int32_t ROCK_ROOF = 2;   // Р84: в блоках (прежняя запись считала вокселями в 1/16 блока)
-constexpr int32_t SOIL_DEPTH = SOIL_FULL;                  // покров и подпокровный слой
-constexpr int32_t ROOF_BAND = SOIL_DEPTH + ROCK_ROOF;      // вся полоса опоры: шесть блоков
+constexpr int32_t ROCK_ROOF = 2 * VOXELS_PER_BLOCK;
+constexpr int32_t SOIL_DEPTH = SOIL_FULL;                  // покров и подпокровный слой (Р79)
+constexpr int32_t ROOF_BAND = SOIL_DEPTH + ROCK_ROOF;      // вся полоса опоры: пять блоков
 
 bool caveAir(const TerrainParams& p, ChunkPos pos, const ColumnHeights& hm, uint64_t air[CHUNK + 2][CHUNK + 2],
              const uint8_t (*cut)[CHUNK + 2]) {

@@ -132,7 +132,24 @@ void Builder::worker() {
             for (int x = 0; x < world::CHUNK + 2; ++x) maxCut = std::max<int32_t>(maxCut, cut[z][x]);
         // по высоте - куски, через которые проходит поверхность (с каймой), Р2; рядом с камерой - и ниже, до cyMin:
         // там строятся только куски с пещерами (сплошной камень граней не даёт), Р26
-        const int cyLo = (hm.minH - maxCut - 1) >> world::CHUNK_LOG2, cyHi = hm.maxH >> world::CHUNK_LOG2;
+        int cyLo = (hm.minH - maxCut - 1) >> world::CHUNK_LOG2, cyHi = hm.maxH >> world::CHUNK_LOG2;
+        // Р83: СЛОМАННЫЙ БЛОК МОЖЕТ ЛЕЖАТЬ НИЖЕ ОБЫЧНОГО ДНА СТОЛБЦА. Копая вниз, игрок быстро
+        // выходит за куски, которые строятся по рельефу, - и дальше грани переставали открываться:
+        // куска, в котором появилась пустота, просто не существовало. Поэтому ярус кусков
+        // раздвигается до самой глубокой правки столбца (с каймой: правка у границы открывает
+        // грань соседу).
+        int editLo = INT32_MAX, editHi = INT32_MIN;
+        if (edits) {
+            const int32_t bx0 = col.cx * world::CHUNK - 1, bx1 = col.cx * world::CHUNK + world::CHUNK;
+            const int32_t bz0 = col.cz * world::CHUNK - 1, bz1 = col.cz * world::CHUNK + world::CHUNK;
+            for (const auto& [k, e] : *edits) {
+                if (e.x < bx0 || e.x > bx1 || e.z < bz0 || e.z > bz1) continue;
+                const int cy = e.y >> world::CHUNK_LOG2;
+                editLo = std::min(editLo, cy);
+                editHi = std::max(editHi, cy);
+            }
+        }
+        if (editLo != INT32_MAX) { cyLo = std::min(cyLo, editLo); cyHi = std::max(cyHi, editHi); }
         constexpr int32_t WORLD_BOTTOM = -500 * world::VOXELS_PER_BLOCK / world::CHUNK;   // Р10
         // Р39: LOD пещер. Вне ближнего яруса - пещеры с входами до SHALLOW вглубь, ниже - закрыты дном (вход виден
         // провалом с дном, а не дырой в пустоту). Пол столбца - гладко по рельефу (без рек, крупными формами)
@@ -205,7 +222,9 @@ void Builder::worker() {
                     }
                 caves = left;
             }
-            if (!caves && underground) continue;   // подземный и без пещер - сплошной камень
+            // Р83: кусок с правкой строим всегда - в нём есть пустота, которой нет в формуле
+            const bool edited = editLo != INT32_MAX && cy >= editLo && cy <= editHi;
+            if (!caves && underground && !edited) continue;   // подземный и без пещер - сплошной камень
             // нетронутый кусок: сетка прямо от высот (и пещер), без заполнения вокселей (Р22)
             world::MeshStats ms;
             world::buildMesh(pos, hm, verts, ms, caves ? air : nullptr, cut, edits);
