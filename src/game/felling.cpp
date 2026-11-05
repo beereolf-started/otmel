@@ -19,6 +19,16 @@ bool TreeCut::inNotch(float x, float y, float z) const {
     return std::fabs(y - y0) <= (s - inner) * 0.85f + 0.6f;
 }
 
+void TreeCut::computeParts(const world::TreeSkel& t) {
+    part.assign(t.branches.size(), 0);
+    for (size_t b = 1; b < t.branches.size(); ++b) {
+        const world::TreeBranch& br = t.branches[b];
+        if (br.root || br.first < 0) continue;
+        const world::TreeNode& at = t.nodes[size_t(t.nodes[size_t(br.first)].parent)];   // узел развилки на родителе
+        part[b] = at.branch == 0 ? char(at.p[1] >= y0) : part[size_t(at.branch)];
+    }
+}
+
 float TreeCut::perHit() const {
     // молодой (R ~2-3) - около 4 ударов, взрослый (R ~4-5) - около 8, вековой (R ~8-10) - около 16
     const float n = std::clamp(R * 1.6f, 3.0f, 18.0f);

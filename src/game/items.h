@@ -20,6 +20,7 @@
 
 #include "world/chunk.h"
 #include "world/query.h"
+#include "game/rigid.h"
 
 namespace game {
 
@@ -54,14 +55,6 @@ Item makeTool(ItemKind kind);
 // Сетка модели: куски 32³ мелких вокселей; off - угол куска от центра масс, мелкие воксели
 struct ItemMeshChunk { std::vector<uint32_t> verts; glm::ivec3 off; };
 void meshItem(const ItemModel& m, std::vector<ItemMeshChunk>& out);
-
-struct Body {
-    glm::dvec3 pos{0};          // центр масс, блоки
-    glm::quat rot{1, 0, 0, 0};
-    glm::vec3 vel{0}, ang{0};   // блоки/с, рад/с
-    bool asleep = false;
-    float still = 0;            // сколько секунд почти без движения
-};
 
 struct WorldItem {
     uint32_t id = 0;

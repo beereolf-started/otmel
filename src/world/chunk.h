@@ -39,7 +39,8 @@ enum : Material { AIR = 0, STONE = 1, DIRT = 2, GRASS = 3, SAND = 4, SNOW = 5, W
                     LEATHER = 147, LEATHER2 = 148,   // Р92: кожа обмотки (палитра)
                     FLINT = 149, FLINT2 = 150,       // Р92: кремень головки топора (палитра)
                     HANDLE = 151, HANDLE2 = 152,     // Р92: светлое дерево рукоятей (палитра)
-                    MATERIAL_COUNT = 153,
+                    HIGHLIGHT = 153,                 // Р94: контур вырубки (палитра, яркий)
+                    MATERIAL_COUNT = 154,
                     // Р89: снег в сетке - верхние 16 номеров 11-битного поля, в номере его толщина
                     SNOW_MESH = 2032 };
 inline bool isGrass(Material m) { return m == GRASS || (m >= GRASS_FIRST && m <= GRASS_LAST); }

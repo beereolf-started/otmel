@@ -36,6 +36,13 @@ struct TreeCut {
     // сколько ударов нужно - по толщине ствола
     float perHit() const;
     bool ready() const { return depth >= 2.0f * R * 0.75f; }
+    // Р94: какие ветви падают вместе со стволом - по скелету: сук, растущий от ствола выше реза, и всё на нём
+    std::vector<char> part;
+    void computeParts(const world::TreeSkel& t);
+    bool falls(int branch, float y) const {
+        if (branch == 0) return y >= y0;
+        return branch > 0 && branch < int(part.size()) && part[size_t(branch)];
+    }
 };
 
 /** Ось и радиус ствола на высоте y (по отрезкам ветви 0). */

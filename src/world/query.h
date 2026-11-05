@@ -10,6 +10,7 @@
 // обязан её видеть, иначе игрок провалится сквозь то, чего уже нет.
 #include <cstdint>
 #include <memory>
+#include <unordered_set>
 #include <mutex>
 #include <unordered_map>
 
@@ -73,9 +74,16 @@ public:
     Material at(int32_t vx, int32_t vy, int32_t vz);
     // Можно ли сквозь воксель пройти: воздух и вода - да, остальное - нет
     bool solid(int32_t vx, int32_t vy, int32_t vz) {
+        if (extra && extra->count(editKey(vx, vy, vz))) return true;
+        return solidTerrain(vx, vy, vz);
+    }
+    // только рельеф и правки, без стволов
+    bool solidTerrain(int32_t vx, int32_t vy, int32_t vz) {
         const Material m = at(vx, vy, vz);
         return m != AIR && m != WATER;
     }
+    // Р94: твёрдое сверх рельефа - блоки, занятые стволами деревьев (стоящих, пней, поваленных); задаёт игра
+    const std::unordered_set<uint64_t>* extra = nullptr;
 
 private:
     const TerrainParams& p_;

@@ -12,7 +12,6 @@
 namespace game {
 namespace {
 
-constexpr float GRAVITY = 28.0f;   // как у игрока (player.cpp)
 
 std::shared_ptr<ItemModel> blank(int sx, int sy, int sz) {
     auto m = std::make_shared<ItemModel>();
@@ -240,78 +239,11 @@ void Items::wake(glm::dvec3 at, double radius) {
 }
 
 void Items::step(world::VoxelQuery& q, float dt, glm::dvec3 near, double radius) {
-    dt = std::min(dt, 0.1f);
-    const int sub = std::max(1, int(std::ceil(dt / (1.0f / 240.0f))));
-    const float h = dt / float(sub);
     for (WorldItem& w : list) {
         if (w.placed || w.body.asleep) continue;
         if (glm::distance(w.body.pos, near) > radius) continue;
-        Body& b = w.body;
         const ItemModel& m = *w.item.model;
-        const glm::vec3 invI = 1.0f / m.inertia;
-        const float invM = 1.0f / m.mass;
-        for (int s = 0; s < sub; ++s) {
-            b.vel.y -= GRAVITY * h;
-            const glm::mat3 R = glm::mat3_cast(b.rot);
-            const glm::mat3 Iw = R * glm::mat3(glm::vec3(invI.x, 0, 0), glm::vec3(0, invI.y, 0), glm::vec3(0, 0, invI.z)) * glm::transpose(R);
-            // касания: точка поверхности внутри твёрдого блока - выталкиваем к ближайшей свободной грани
-            int contacts = 0;
-            glm::dvec3 push(0);
-            for (const glm::vec3& pr : m.probes) {
-                const glm::vec3 r = R * pr;
-                const glm::dvec3 p = b.pos + glm::dvec3(r);
-                const int32_t ix = int32_t(std::floor(p.x)), iy = int32_t(std::floor(p.y)), iz = int32_t(std::floor(p.z));
-                if (!q.solid(ix, iy, iz)) continue;
-                // нормаль: грань блока, ближайшая к точке, за которой свободно; вверх - в первую очередь
-                const double fx = p.x - ix, fy = p.y - iy, fz = p.z - iz;
-                struct F { double d; glm::vec3 n; int dx, dy, dz; };
-                F faces[6] = {{1 - fy, {0, 1, 0}, 0, 1, 0}, {fx, {-1, 0, 0}, -1, 0, 0}, {1 - fx, {1, 0, 0}, 1, 0, 0},
-                              {fz, {0, 0, -1}, 0, 0, -1}, {1 - fz, {0, 0, 1}, 0, 0, 1}, {fy, {0, -1, 0}, 0, -1, 0}};
-                F best{1e9, {0, 1, 0}, 0, 1, 0};
-                for (const F& f : faces) {
-                    if (q.solid(ix + f.dx, iy + f.dy, iz + f.dz)) continue;
-                    const double d = f.n.y > 0 ? f.d * 0.8 : f.d;   // вверх выталкиваем охотнее
-                    if (d < best.d) best = {d, f.n, f.dx, f.dy, f.dz};
-                }
-                if (best.d > 1e8) best = {1 - fy, {0, 1, 0}, 0, 1, 0};
-                const glm::vec3 n = best.n;
-                const float depth = float(best.n.y > 0 ? 1 - fy : best.d);
-                ++contacts;
-                push += glm::dvec3(n) * double(depth);
-                // удар: скорость точки против нормали гасится, с отскоком и трением
-                const glm::vec3 vp = b.vel + glm::cross(b.ang, r);
-                const float vn = glm::dot(vp, n);
-                if (vn < 0) {
-                    const glm::vec3 rn = glm::cross(r, n);
-                    const float k = invM + glm::dot(n, glm::cross(Iw * rn, r));
-                    const float e = vn < -2.0f ? 0.15f : 0.0f;
-                    const float j = -(1 + e) * vn / k;
-                    glm::vec3 imp = n * j;
-                    // трение (Кулон): касательная составляющая гасится не больше μ·j
-                    glm::vec3 vt = vp - n * vn;
-                    const float vtl = glm::length(vt);
-                    if (vtl > 1e-5f) {
-                        const glm::vec3 t = vt / vtl;
-                        const glm::vec3 rt = glm::cross(r, t);
-                        const float kt = invM + glm::dot(t, glm::cross(Iw * rt, r));
-                        const float jt = std::min(vtl / kt, 0.6f * j);
-                        imp -= t * jt;
-                    }
-                    b.vel += imp * invM;
-                    b.ang += Iw * glm::cross(r, imp);
-                }
-            }
-            if (contacts) b.pos += push * (0.5 / contacts);
-            b.ang *= 0.999f;
-            b.pos += glm::dvec3(b.vel) * double(h);
-            const float al = glm::length(b.ang);
-            if (al > 1e-6f) b.rot = glm::normalize(glm::angleAxis(al * h, b.ang / al) * b.rot);
-        }
-        // покой: почти без движения полсекунды - засыпает
-        if (glm::length(b.vel) < 0.08f && glm::length(b.ang) < 0.15f) b.still += dt;
-        else b.still = 0;
-        if (b.still > 0.5f) { b.asleep = true; b.vel = glm::vec3(0); b.ang = glm::vec3(0); }
-        if (b.pos.y < -4096) b.asleep = true;
+        stepRigid(w.body, m.mass, m.inertia, m.probes, [&q](int32_t x, int32_t y, int32_t z) { return q.solid(x, y, z); }, dt);
     }
 }
 
