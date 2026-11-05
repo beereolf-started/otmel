@@ -27,8 +27,8 @@ struct TreeCandidate {
 inline void treeSpriteSize(TreeAge age, float fr, float& h, float& w) {
     switch (age) {
         case TreeAge::YOUNG: h = 6.5f + 1.5f * fr; w = 6.0f + 1.5f * fr; break;
-        case TreeAge::ADULT: h = 15.0f + 4.0f * fr; w = 13.0f + 3.0f * fr; break;
-        default: h = 23.0f + 4.0f * fr; w = 26.0f + 5.0f * fr; break;
+        case TreeAge::ADULT: h = 12.0f + 4.0f * fr; w = 12.0f + 4.0f * fr; break;
+        default: h = 20.0f + 6.0f * fr; w = 24.0f + 6.0f * fr; break;
     }
 }
 TreeCandidate forestCandidate(const TerrainParams& p, int32_t ci, int32_t cj);

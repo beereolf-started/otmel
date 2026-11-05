@@ -25,8 +25,8 @@ int main(int argc, char** argv) {
             auto t = growTree(seed, age);
             // вид сбоку: x вправо, y вверх; глубина z - ближнее побеждает
             const int scale = age == TreeAge::YOUNG ? 1 : (age == TreeAge::ADULT ? 2 : 2);
-            const float span = std::max(t->hi[1] - std::min(0.0f, t->lo[1]), std::max(t->hi[0] - t->lo[0], t->hi[2] - t->lo[2]));
-            const float k = float(PANEL - 20) / span;   // точек на мелкий воксель
+            // общий масштаб для всех возрастов: 30 м на клетку - видно, кто крупнее
+            const float k = float(PANEL - 20) / (30.0f * 16.0f);   // точек на мелкий воксель
             std::vector<float> zb(size_t(PANEL) * PANEL, 1e9f);
             int lo[3], hi[3];
             treeChunkRange(*t, scale, lo, hi);
