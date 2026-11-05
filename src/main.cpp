@@ -441,7 +441,8 @@ int main(int argc, char** argv) {
     // Р99: каменный век. Тёска - камень у глаз (E); крафт - сетка 2×2 ячеек по четверть блока на земле (F);
     // природные камни и сушняк вокруг игрока (подобранное помнится - не возвращается).
     std::optional<game::Knap> knap;
-    struct Craft { bool on = false; glm::dvec3 corner{0}; uint32_t cell[4] = {0, 0, 0, 0}; };
+    // Р100: крафт на земле - F2: рамка едет за прицелом; F2 - встала; F2 - убрать. stage: 0 нет, 1 едет, 2 стоит
+    struct Craft { int stage = 0; glm::dvec3 corner{0}; };
     Craft craft;
     std::unordered_set<uint64_t> takenNatural;
     std::unordered_map<uint64_t, uint32_t> naturalSpawned;   // ключ места -> id предмета
@@ -777,6 +778,27 @@ int main(int argc, char** argv) {
         else journal::warn("сохранение", "не удалось записать {}", savePath);
     };
     float sinceSave = 0;
+    // Р100: КРАФТ НА ЗЕМЛЕ. Ячейки 2×2 по четверть блока от угла corner; пятая (готовое) - справа от них.
+    // Что в ячейке - решает центр масс предмета, лежащего в ней; порядок и поворот не важны.
+    const auto craftCell = [&](glm::dvec3 st, glm::dvec3 dr) -> int {   // какая ячейка под прицелом (0..3, 4 - готовое, -1)
+        if (craft.stage != 2 || std::fabs(dr.y) < 1e-4) return -1;
+        const double t = (craft.corner.y - st.y) / dr.y;
+        if (t <= 0 || t > 5) return -1;
+        const glm::dvec3 p = st + dr * t;
+        const double u = (p.x - craft.corner.x) / 0.25, v = (p.z - craft.corner.z) / 0.25;
+        if (u >= 0 && u < 2 && v >= 0 && v < 2) return int(v) * 2 + int(u);
+        if (u >= 2.2 && u < 3.2 && v >= 0.5 && v < 1.5) return 4;
+        return -1;
+    };
+    const auto craftMatch = [&](game::Item& out, std::string& name, std::vector<size_t>& idx) {
+        std::vector<const game::Item*> got;
+        idx.clear();
+        for (size_t k = 0; k < items.list.size(); ++k) {
+            const glm::dvec3 p = items.list[k].body.pos - craft.corner;
+            if (p.x >= 0 && p.x < 0.5 && p.z >= 0 && p.z < 0.5 && p.y > -0.2 && p.y < 0.6) { got.push_back(&items.list[k].item); idx.push_back(k); }
+        }
+        return !got.empty() && game::matchRecipe(got, out, name);
+    };
     // Р93-Р96: УДАР ИНСТРУМЕНТОМ из руки hand по лучу (start, dir - блоки); tBlock - где луч упёрся в рельеф.
     //   топор: сук лежащего дерева - обрубка; его ствол - раскряжёвка (медленно); стоящее - зарубка; пень - корни;
     //   пила: ствол лежащего - раскряжёвка; стоящее - зарубка (быстрее топора);
@@ -1077,75 +1099,27 @@ int main(int argc, char** argv) {
                 }
                 continue;
             }
-            // Р99: КРАФТ - F: ячейки 2×2 на земле под прицелом; F ещё раз - собрать (если сложилось) или выйти
-            if (!typing && ev.type == SDL_EVENT_KEY_DOWN && ev.key.key == SDLK_F) {
-                if (!craft.on) {
-                    const glm::dvec3 st = eye * 16.0;
-                    const glm::dvec3 dr(std::cos(pitch) * std::cos(yaw), std::sin(pitch), std::cos(pitch) * std::sin(yaw));
-                    for (int i = 1; i <= 5 * 16; ++i) {
-                        const glm::dvec3 v = st + dr * (double(i) / 16.0);
-                        const int32_t bx = int32_t(std::floor(v.x)), by = int32_t(std::floor(v.y)), bz = int32_t(std::floor(v.z));
-                        if (!voxelQuery.solidTerrain(bx, by, bz)) continue;
-                        if (voxelQuery.solid(bx, by + 1, bz)) break;   // верх закрыт - некуда
-                        craft = Craft{};
-                        craft.on = true;
-                        craft.corner = glm::dvec3(std::floor(v.x * 4.0) / 4.0 - 0.25, by + 1.0, std::floor(v.z * 4.0) / 4.0 - 0.25);
-                        break;
-                    }
-                } else {
-                    std::vector<const game::Item*> got;
-                    std::vector<size_t> idx;
-                    for (uint32_t id : craft.cell)
-                        for (size_t k = 0; k < items.list.size(); ++k)
-                            if (id && items.list[k].id == id) { got.push_back(&items.list[k].item); idx.push_back(k); }
-                    game::Item out;
-                    std::string name;
-                    if (game::matchRecipe(got, out, name)) {
-                        std::sort(idx.rbegin(), idx.rend());
-                        for (size_t k : idx) {
-                            for (uint32_t m : items.list[k].meshes) gpu->destroyMesh(m);
-                            items.list.erase(items.list.begin() + long(k));
-                        }
-                        items.spawn(out, craft.corner + glm::dvec3(0.25, 0.1, 0.25), glm::angleAxis(1.5708f, glm::vec3(1, 0, 0)), {}, {}, true);
-                        journal::info("крафт", "собрано: {}", name);
-                    }
-                    craft.on = false;
-                }
-                continue;
-            }
-            // Р99: в режиме крафта клик кладёт предмет из этой руки в ячейку под прицелом (пустой рукой - взять обратно)
-            if (craft.on && ev.type == SDL_EVENT_MOUSE_BUTTON_DOWN && (ev.button.button == SDL_BUTTON_LEFT || ev.button.button == SDL_BUTTON_RIGHT)) {
+            // Р100: F2 - рамка крафта: появилась (едет за прицелом) -> встала -> убрана
+            if (!typing && ev.type == SDL_EVENT_KEY_DOWN && ev.key.key == SDLK_F2) { craft.stage = (craft.stage + 1) % 3; continue; }
+            // Р100: готовое в пятой ячейке - взять пустой рукой; исходные предметы уходят
+            if (craft.stage == 2 && ev.type == SDL_EVENT_MOUSE_BUTTON_DOWN && (ev.button.button == SDL_BUTTON_LEFT || ev.button.button == SDL_BUTTON_RIGHT) &&
+                !SDL_GetKeyboardState(nullptr)[SDL_SCANCODE_V] && !SDL_GetKeyboardState(nullptr)[SDL_SCANCODE_Q]) {
                 const int hand = ev.button.button == SDL_BUTTON_LEFT ? 0 : 1;
                 const glm::dvec3 st = eye * 16.0;
                 const glm::dvec3 dr(std::cos(pitch) * std::cos(yaw), std::sin(pitch), std::cos(pitch) * std::sin(yaw));
-                // точка прицела на плоскости ячеек
-                const double t = std::fabs(dr.y) > 1e-4 ? (craft.corner.y - st.y) / dr.y : -1;
-                if (t > 0 && t < 5) {
-                    const glm::dvec3 p = st + dr * t;
-                    const int ci = int(std::floor((p.x - craft.corner.x) / 0.25)), cj = int(std::floor((p.z - craft.corner.z) / 0.25));
-                    if (ci >= 0 && ci < 2 && cj >= 0 && cj < 2) {
-                        uint32_t& slot = craft.cell[cj * 2 + ci];
-                        bool alive = false;
-                        for (const game::WorldItem& w : items.list) if (slot && w.id == slot) alive = true;
-                        if (!alive) slot = 0;
-                        if (!slot && hands[hand]) {
-                            const glm::dvec3 c = craft.corner + glm::dvec3(ci * 0.25 + 0.125, 0.06, cj * 0.25 + 0.125);
-                            glm::quat rq = glm::angleAxis(1.5708f, glm::vec3(1, 0, 0));
-                            slot = items.spawn(*hands[hand], c, rq, {}, {}, true);
-                            hands[hand].reset();
-                        } else if (slot && !hands[hand]) {
-                            for (size_t k = 0; k < items.list.size(); ++k)
-                                if (items.list[k].id == slot) {
-                                    hands[hand] = items.list[k].item;
-                                    for (uint32_t m : items.list[k].meshes) gpu->destroyMesh(m);
-                                    items.list.erase(items.list.begin() + long(k));
-                                    break;
-                                }
-                            slot = 0;
-                        }
+                game::Item out;
+                std::string name;
+                std::vector<size_t> idx;
+                if (!hands[hand] && craftCell(st, dr) == 4 && craftMatch(out, name, idx)) {
+                    std::sort(idx.rbegin(), idx.rend());
+                    for (size_t k : idx) {
+                        for (uint32_t m : items.list[k].meshes) gpu->destroyMesh(m);
+                        items.list.erase(items.list.begin() + long(k));
                     }
+                    hands[hand] = out;
+                    journal::info("крафт", "собрано: {}", name);
+                    continue;
                 }
-                continue;
             }
             // Р99: зажатая R + клик - второе действие: камнем соскоблить волокно с молодого дерева, топором - окорить
             // лежащий ствол. Зажатая X + клик - метнуть предмет из этой руки.
@@ -1316,7 +1290,11 @@ int main(int argc, char** argv) {
                                 const glm::vec3 k(c & 1 ? md.hi.x : md.lo.x, c & 2 ? md.hi.y : md.lo.y, c & 4 ? md.hi.z : md.lo.z);
                                 low = std::min(low, (R * k).y);
                             }
-                            items.spawn(it, glm::dvec3(prev.x + 0.5, prev.y - low + 0.002, prev.z + 0.5), rq, {}, {}, true);
+                            glm::dvec3 at(prev.x + 0.5, prev.y - low + 0.002, prev.z + 0.5);
+                            const int cell = craftCell(start, dir);   // Р100: в рамку крафта - в середину ячейки
+                            if (cell >= 0 && cell < 4)
+                                at = craft.corner + glm::dvec3((cell % 2) * 0.25 + 0.125, -low + 0.002, (cell / 2) * 0.25 + 0.125);
+                            items.spawn(it, at, rq, {}, {}, true);
                             hands[hand].reset();
                         }
                     } else {
@@ -2425,6 +2403,18 @@ int main(int argc, char** argv) {
             const glm::mat3 cam(glm::normalize(glm::cross(fwdV, up)), up, -fwdV);
             drawItem(eye * 16.0 + glm::dvec3(fwdV * 0.4f), glm::quat_cast(cam), cm, co, 512);
         }
+        if (craft.stage == 1) {   // Р100: рамка едет за прицелом - на верх блока под ним
+            const glm::dvec3 st = eye * 16.0;
+            const glm::dvec3 dr(fwd);
+            for (int i = 1; i <= 5 * 16; ++i) {
+                const glm::dvec3 v = st + dr * (double(i) / 16.0);
+                const int32_t bx = int32_t(std::floor(v.x)), by = int32_t(std::floor(v.y)), bz = int32_t(std::floor(v.z));
+                if (!voxelQuery.solidTerrain(bx, by, bz)) continue;
+                if (!voxelQuery.solid(bx, by + 1, bz))
+                    craft.corner = glm::dvec3(std::floor(v.x * 4.0) / 4.0 - 0.25, by + 1.0, std::floor(v.z * 4.0) / 4.0 - 0.25);
+                break;
+            }
+        }
         // Р99: тёска - камень у глаз; крафт - рамка ячеек на земле
         if (knap) {
             static uint64_t knapSig = ~0ull;
@@ -2449,7 +2439,7 @@ int main(int argc, char** argv) {
             const glm::vec3 com = glm::vec3(kmod->center) + 0.5f, geo(8.5f, 8.5f, 1.5f);
             drawItem(eye * 16.0 + glm::dvec3(fwdV * 0.34f - up * 0.03f + glm::mat3_cast(kq) * ((com - geo) / 64.0f)), kq, km, ko, 64);
         }
-        if (craft.on) {
+        if (craft.stage > 0) {
             static std::vector<render::MeshId> cm;
             static std::vector<glm::ivec3> co;
             if (cm.empty()) {
@@ -2464,6 +2454,28 @@ int main(int argc, char** argv) {
                 for (const game::ItemMeshChunk& c : ch) { cm.push_back(gpu->uploadChunkMesh(c.verts, 0)); co.push_back(c.off); }
             }
             drawItem(craft.corner + glm::dvec3(0.25, 0.01, 0.25), glm::quat(1, 0, 0, 0), cm, co, 64);
+            // Р100: сложилось - пятая ячейка с готовым предметом справа
+            game::Item out;
+            std::string name;
+            std::vector<size_t> idx;
+            static std::vector<render::MeshId> rm;
+            static std::vector<glm::ivec3> ro;
+            static const game::ItemModel* rmod = nullptr;
+            static std::shared_ptr<const game::ItemModel> rhold;
+            if (craft.stage == 2 && craftMatch(out, name, idx)) {
+                if (!rhold || rhold->sx != out.model->sx || rhold->v != out.model->v) {
+                    for (render::MeshId m : rm) gpu->destroyMesh(m);
+                    rm.clear(); ro.clear();
+                    rhold = out.model;
+                    rmod = rhold.get();
+                    std::vector<game::ItemMeshChunk> ch;
+                    game::meshItem(*rhold, ch);
+                    for (const game::ItemMeshChunk& c : ch) { rm.push_back(gpu->uploadChunkMesh(c.verts, 0)); ro.push_back(c.off); }
+                }
+                const glm::quat lay = glm::angleAxis(float(handTime * 0.8), glm::vec3(0, 1, 0)) * glm::angleAxis(1.5708f, glm::vec3(1, 0, 0));
+                drawItem(craft.corner + glm::dvec3(0.675, 0.18 + 0.03 * std::sin(handTime * 2.0), 0.25), lay, rm, ro, rmod->res);
+                drawItem(craft.corner + glm::dvec3(0.675, 0.01, 0.25), glm::quat(1, 0, 0, 0), cm, co, 64 * 2);   // рамка готового - вдвое меньше
+            }
         }
         // Р92: в руках - у камеры: правая справа внизу, левая слева; черенок наклонён от себя
         for (int hnd = 0; hnd < 2; ++hnd) {
@@ -2631,18 +2643,18 @@ int main(int argc, char** argv) {
                     fresh.push_back("ТЁСКА: наведите курсор на клетку камня, ЛКМ - сколоть (можно вести с зажатой), E - отложить. Образцы:");
                     for (const std::string& l : game::knapPatternsText()) fresh.push_back("    " + l);
                 }
-                if (craft.on) {
-                    std::string in;
-                    std::vector<const game::Item*> got;
-                    for (uint32_t id : craft.cell)
-                        for (const game::WorldItem& w : items.list)
-                            if (id && w.id == id) { got.push_back(&w.item); in += (in.empty() ? "" : ", ") + game::itemName(w.item); }
+                if (craft.stage > 0) {
                     game::Item out;
                     std::string name;
-                    fresh.push_back("КРАФТ: клик - положить из руки в ячейку (пустой рукой - взять). Лежит: " + (in.empty() ? std::string("ничего") : in));
-                    fresh.push_back(game::matchRecipe(got, out, name) ? "F - собрать: " + name : "F - выйти.  " + game::recipesHint());
+                    std::vector<size_t> idx;
+                    std::string in;
+                    if (craft.stage == 2)
+                        for (size_t k : (craftMatch(out, name, idx), idx)) in += (in.empty() ? "" : ", ") + game::itemName(items.list[k].item);
+                    fresh.push_back(craft.stage == 1 ? "КРАФТ: рамка едет за прицелом - F2 поставить"
+                                                     : "КРАФТ: V+клик - положить в ячейку, ЛКМ/ПКМ - взять; F2 - убрать рамку. Лежит: " + (in.empty() ? std::string("ничего") : in));
+                    fresh.push_back(craft.stage == 2 && !name.empty() ? "Готово: " + name + " - возьмите из ячейки справа пустой рукой" : game::recipesHint());
                 }
-                fresh.push_back("E - тёска камня в руке, F - крафт на земле, R+клик - второе действие (камень: волокно с молодого дерева; топор: окорка), X+клик - метнуть");
+                fresh.push_back("E - тёска камня в руке, F2 - крафт на земле, R+клик - второе действие (камень: волокно с молодого дерева; топор: окорка), X+клик - метнуть");
                 fresh.push_back(std::format("руки: левая - {}, правая - {}   (ЛКМ/ПКМ взять; V+ЛКМ/ПКМ положить, Q+ЛКМ/ПКМ бросить; Shift присесть, C лечь, Ctrl бег)",
                                             hands[0] ? game::itemName(*hands[0]) : "пусто", hands[1] ? game::itemName(*hands[1]) : "пусто"));
                 fresh.push_back(std::format("воксели: столбцов {} (ждут {}), кусков {}   плиток {}",
