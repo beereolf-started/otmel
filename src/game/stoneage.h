@@ -26,6 +26,7 @@ struct Knap {
     bool cell[5][5];
     int cx = 2, cy = 2;            // курсор
     float mx = 0, my = 0;          // накопленное движение мыши
+    bool down = false;             // ЛКМ зажата - скалываем всё, над чем проходит курсор
     world::Material rock = world::AIR;
     Knap() { for (auto& r : cell) for (bool& c : r) c = true; }
 };
@@ -35,6 +36,8 @@ Item makeHead(ItemKind kind, world::Material rock, const Knap& k);
 /** Камень для тёски перед глазами: плита 5×5 клеток, курсор - светлой рамкой. */
 std::shared_ptr<ItemModel> knapModel(const Knap& k);
 
+/** Образцы тёски для панели: строка подписей и пять строк фигур (■ - камень остаётся, · - скалывается). */
+std::vector<std::string> knapPatternsText();
 /** Рецепт по предметам в ячейках крафта. Совпал - результат и его имя. */
 bool matchRecipe(const std::vector<const Item*>& got, Item& out, std::string& name);
 /** Подсказка: что из чего собирается (как EMI). */

@@ -147,6 +147,22 @@ bool matchRecipe(const std::vector<const Item*>& got, Item& out, std::string& na
     return true;
 }
 
+std::vector<std::string> knapPatternsText() {
+    std::vector<std::string> out(6);
+    const char* names[4] = {"топор", "нож", "лопата", "копьё"};
+    for (int p = 0; p < 4; ++p) {
+        std::string n = names[p];
+        size_t len = 0;
+        for (unsigned char c : n) if ((c & 0xC0) != 0x80) ++len;
+        out[0] += n + std::string(len < 8 ? 8 - len : 1, ' ');
+        for (int y = 0; y < 5; ++y) {
+            for (int x = 0; x < 5; ++x) out[1 + y] += PATTERNS[p].rows[y][x] == 'X' ? "\u25A0" : "\u00B7";
+            out[1 + y] += "   ";
+        }
+    }
+    return out;
+}
+
 std::string recipesHint() {
     return "топор / нож / лопата / копьё = головка (тёска камня, E) + палка + волокно";
 }

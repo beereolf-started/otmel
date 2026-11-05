@@ -1029,32 +1029,52 @@ int main(int argc, char** argv) {
             // Р83: кнопка мыши (любая) - сломать блок под прицелом. Он уходит в правки мира, затронутые
             // столбцы перестраиваются, и грани соседей, прежде закрытые, открываются сами.
             // Р99: ТЁСКА - мышь водит курсор по клеткам, ЛКМ скалывает; E или Esc - отложить
+            // Р99: тёска как в TFC - обычный курсор, камень стоит; клетка - под курсором, ЛКМ (и протяжка) скалывает
+            const auto knapAt = [&](float px, float py) {
+                const float t35 = std::tan(glm::radians(35.0f)), d = 0.34f, aspect = float(width) / float(std::max(1, height));
+                const float nx = 2.0f * px / float(width) - 1.0f, ny = 1.0f - 2.0f * py / float(height);
+                const float u = nx * d * t35 * aspect, v = ny * d * t35 + 0.03f;   // от середины камня, блоки
+                const float x = u * 64.0f + 8.5f, y = v * 64.0f + 8.5f;            // воксели плиты (17×17)
+                const int cx = int(std::floor((x - 1.0f) / 3.0f)), cyb = int(std::floor((y - 1.0f) / 3.0f));
+                const bool in = cx >= 0 && cx < 5 && cyb >= 0 && cyb < 5;
+                knap->cx = in ? cx : -1;
+                knap->cy = in ? 4 - cyb : -1;
+            };
+            const auto endKnap = [&] { knap.reset(); if (!shot) SDL_SetWindowRelativeMouseMode(window, true); };
+            bool chip = false;
             if (knap && ev.type == SDL_EVENT_MOUSE_MOTION) {
-                knap->mx += ev.motion.xrel;
-                knap->my += ev.motion.yrel;
-                while (knap->mx > 28) { knap->mx -= 28; knap->cx = std::min(4, knap->cx + 1); }
-                while (knap->mx < -28) { knap->mx += 28; knap->cx = std::max(0, knap->cx - 1); }
-                while (knap->my > 28) { knap->my -= 28; knap->cy = std::min(4, knap->cy + 1); }
-                while (knap->my < -28) { knap->my += 28; knap->cy = std::max(0, knap->cy - 1); }
-                continue;
+                knapAt(ev.motion.x, ev.motion.y);
+                chip = knap->down;
             }
-            if (knap && ev.type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
-                if (ev.button.button == SDL_BUTTON_LEFT && knap->cell[knap->cy][knap->cx]) {
+            if (knap && ev.type == SDL_EVENT_MOUSE_BUTTON_UP && ev.button.button == SDL_BUTTON_LEFT) { knap->down = false; continue; }
+            if (knap && ev.type == SDL_EVENT_MOUSE_BUTTON_DOWN && ev.button.button == SDL_BUTTON_LEFT) {
+                knapAt(ev.button.x, ev.button.y);
+                knap->down = true;
+                chip = true;
+            }
+            if (knap && (ev.type == SDL_EVENT_MOUSE_MOTION || ev.type == SDL_EVENT_MOUSE_BUTTON_DOWN)) {
+                if (chip && knap->cx >= 0 && knap->cell[knap->cy][knap->cx]) {
                     knap->cell[knap->cy][knap->cx] = false;
                     chips.push_back({glm::vec3(eye * 16.0) + glm::vec3(std::cos(yaw), 0, std::sin(yaw)) * 0.35f, glm::vec3(0, 1.0f, 0), 0.6f});
                     const game::ItemKind res = game::knapResult(*knap);
                     if (res != game::ItemKind::STONE) {
                         hands[knap->hand] = game::makeHead(res, knap->rock, *knap);
                         journal::info("тёска", "выточено: {}", game::itemName(*hands[knap->hand]));
-                        knap.reset();
+                        endKnap();
                     }
                 }
                 continue;
             }
-            if (knap && ev.type == SDL_EVENT_KEY_DOWN && (ev.key.key == SDLK_E || ev.key.key == SDLK_ESCAPE)) { knap.reset(); continue; }
+            if (knap && ev.type == SDL_EVENT_KEY_DOWN && (ev.key.key == SDLK_E || ev.key.key == SDLK_ESCAPE)) { endKnap(); continue; }
             if (!knap && !typing && ev.type == SDL_EVENT_KEY_DOWN && ev.key.key == SDLK_E) {
                 const int h = hands[1] && hands[1]->kind == game::ItemKind::STONE ? 1 : (hands[0] && hands[0]->kind == game::ItemKind::STONE ? 0 : -1);
-                if (h >= 0) { knap = game::Knap{}; knap->hand = h; knap->rock = hands[h]->mat; }
+                if (h >= 0) {
+                    knap = game::Knap{};
+                    knap->hand = h;
+                    knap->rock = hands[h]->mat;
+                    knap->cx = knap->cy = -1;
+                    if (!shot) { SDL_SetWindowRelativeMouseMode(window, false); SDL_WarpMouseInWindow(window, float(width) * 0.5f, float(height) * 0.5f); }
+                }
                 continue;
             }
             // Р99: КРАФТ - F: ячейки 2×2 на земле под прицелом; F ещё раз - собрать (если сложилось) или выйти
@@ -2410,19 +2430,24 @@ int main(int argc, char** argv) {
             static uint64_t knapSig = ~0ull;
             static std::vector<render::MeshId> km;
             static std::vector<glm::ivec3> ko;
-            uint64_t sig = uint64_t(knap->cx) | uint64_t(knap->cy) << 3 | uint64_t(knap->rock) << 6;
+            static std::shared_ptr<game::ItemModel> kmod;
+            uint64_t sig = uint64_t(knap->cx + 1) | uint64_t(knap->cy + 1) << 3 | uint64_t(knap->rock) << 6;
             for (int y = 0; y < 5; ++y) for (int x = 0; x < 5; ++x) sig = sig * 3 + (knap->cell[y][x] ? 1 : 2);
             if (sig != knapSig) {
                 knapSig = sig;
                 for (render::MeshId m : km) gpu->destroyMesh(m);
                 km.clear(); ko.clear();
                 std::vector<game::ItemMeshChunk> ch;
-                game::meshItem(*game::knapModel(*knap), ch);
+                kmod = game::knapModel(*knap);
+                game::meshItem(*kmod, ch);
                 for (const game::ItemMeshChunk& c : ch) { km.push_back(gpu->uploadChunkMesh(c.verts, 0)); ko.push_back(c.off); }
             }
             const glm::vec3 up = glm::cross(right, fwdV);
             const glm::mat3 cam(glm::normalize(glm::cross(fwdV, up)), up, -fwdV);
-            drawItem(eye * 16.0 + glm::dvec3(fwdV * 0.34f - up * 0.03f), glm::quat_cast(cam), km, ko, 64);
+            // середина плиты (8.5, 8.5, 1.5) - точно перед глазами, как бы ни сместился центр масс от сколов
+            const glm::quat kq = glm::quat_cast(cam);
+            const glm::vec3 com = glm::vec3(kmod->center) + 0.5f, geo(8.5f, 8.5f, 1.5f);
+            drawItem(eye * 16.0 + glm::dvec3(fwdV * 0.34f - up * 0.03f + glm::mat3_cast(kq) * ((com - geo) / 64.0f)), kq, km, ko, 64);
         }
         if (craft.on) {
             static std::vector<render::MeshId> cm;
@@ -2602,7 +2627,10 @@ int main(int argc, char** argv) {
                                         : std::string("под прицелом: пусто (64 бл.)"));
                 if (aim.hit && !aim.detail.empty()) fresh.push_back("состав: " + aim.detail);
                 fresh.push_back(std::format("земля под камерой: {:.0f} бл.", dev::groundAt(tp, eye.x, eye.z)));
-                if (knap) fresh.push_back("ТЁСКА: мышь - курсор, ЛКМ - сколоть клетку, E - отложить. Образцы: головка топора, лезвие ножа, штык лопаты, наконечник копья");
+                if (knap) {
+                    fresh.push_back("ТЁСКА: наведите курсор на клетку камня, ЛКМ - сколоть (можно вести с зажатой), E - отложить. Образцы:");
+                    for (const std::string& l : game::knapPatternsText()) fresh.push_back("    " + l);
+                }
                 if (craft.on) {
                     std::string in;
                     std::vector<const game::Item*> got;
