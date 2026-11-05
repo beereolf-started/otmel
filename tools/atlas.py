@@ -27,8 +27,8 @@ TFC = os.path.join(GAME, "mods", "TerraFirmaCraft-Forge-1.20.1-3.2.21.jar")
 VANILLA = os.path.join(GAME, "versions", "Forge 1.20.1", "Forge 1.20.1.jar")
 
 TILE = 16          # сторона рисунка, точек
-LAYERS = 79        # материалы 0..78 (world/chunk.h)
-COLS, ROWS = 8, 10  # раскладка только для картинки-образца atlas.png
+LAYERS = 146       # материалы 0..145 (world/chunk.h)
+COLS, ROWS = 8, 19  # раскладка только для картинки-образца atlas.png
 
 # ── чтение PNG без сторонних библиотек: нам нужны только 16×16 RGBA и палитровые ────────────────
 
@@ -125,6 +125,7 @@ MIXED = [("granite", (0.67, 0.63, 0.60)), ("diorite", (0.70, 0.66, 0.60)), ("gab
 # материалы 0..11 (world/chunk.h): воздух, камень, земля, трава, песок, снег, вода, кора, древесина,
 # листва, листва светлее, кора в трещине
 GRASS_RGB = (0.36, 0.58, 0.25)   # тот же цвет, что в shaders/terrain.vert
+GRASS_BY_SOIL = [(0.5, 0.6, 0.3), (0.44, 0.6, 0.27), (0.36, 0.58, 0.25), (0.4, 0.6, 0.28), (0.47, 0.62, 0.33), (0.31, 0.53, 0.23), (0.28, 0.49, 0.22), (0.3, 0.47, 0.24), (0.25, 0.4, 0.18)]
 # Р87: почвы по номерам SOIL_FIRST.. - порядок ровно как в src/world/soil_table.cpp
 # Р88: руды по номерам ORE_FIRST.. - порядок ровно как в src/world/ores.cpp
 ORES = ["normal_malachite", "normal_native_copper", "pyrite", "normal_tetrahedrite", "normal_limonite",
@@ -192,6 +193,12 @@ def main():
     # на граните: отдельная клетка на каждую пару «порода + руда» - это под тысячу клеток.
     for i, ref in enumerate(ORES):
         tiles[59 + i] = over(load(ref), tiles[12])
+    # Р89: дёрн по почвам - верх, бок (полоска травы поверх своей почвы), бок под снегом. Цвет травы у
+    # каждой почвы свой (те же числа, что в shaders/terrain.vert): на песке сухая, на торфе тёмная.
+    for i, rgb in enumerate(GRASS_BY_SOIL):
+        tiles[119 + i] = recolor(load("tfc:block/grass_top"), rgb)
+        tiles[128 + i] = over(recolor(load("tfc:block/grass_side"), rgb), tiles[50 + i])
+        tiles[137 + i] = over(load("tfc:block/grass_snowy_side"), tiles[50 + i])
 
     W, H = COLS * TILE, ROWS * TILE
     px = [(0, 0, 0, 0)] * (W * H)

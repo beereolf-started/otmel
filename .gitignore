@@ -4,3 +4,5 @@ out/
 *.user
 build-log.txt
 *.log
+shot.bmp
+rec_*.bmp

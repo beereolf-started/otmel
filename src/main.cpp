@@ -312,7 +312,7 @@ int main(int argc, char** argv) {
     bool shot = false, vulkan = true;
     float recordSec = 0;   // со --shot: запись кадров rec_NNN.bmp 15 раз в секунду столько секунд
     int voxelBlocks = 128;
-    float atX = 0, atZ = 0, flySpeed = 0;
+    float atX = 0, atZ = 0, flySpeed = 0, spinRate = 0;
     world::LodSettings lod;
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
@@ -324,6 +324,7 @@ int main(int argc, char** argv) {
         if (a == "--at" && i + 2 < argc) { atX = std::stof(argv[i + 1]); atZ = std::stof(argv[i + 2]); }
         if (a == "--fly" && i + 1 < argc) flySpeed = std::stof(argv[i + 1]);
         if (a == "--record" && i + 1 < argc) recordSec = std::stof(argv[i + 1]);
+        if (a == "--spin" && i + 1 < argc) spinRate = std::stof(argv[i + 1]);   // со --shot: поворот камеры, рад/с
     }
     if (!SDL_Init(SDL_INIT_VIDEO)) { journal::error("окно", "SDL не запустился: {}", SDL_GetError()); return 1; }
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 4);
@@ -767,6 +768,7 @@ int main(int argc, char** argv) {
             game::step(player, voxelQuery, in, yaw, dt, std::chrono::duration<float>(now - startAt).count());
             eye = player.eye;
         }
+        if (shot && warm && spinRate != 0) yaw += spinRate * dt;
         if (shot && warm && flySpeed > 0) eye += glm::dvec3(glm::normalize(glm::vec3(fwd.x, 0, fwd.z))) * double(flySpeed * dt);
 
         // обратная глубина (Р20): ближняя и дальняя плоскости переставлены местами

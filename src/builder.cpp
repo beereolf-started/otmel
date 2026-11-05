@@ -100,6 +100,16 @@ void Builder::setColumnJobs(std::vector<ColumnJob> jobs) {
     cv_.notify_all();
 }
 
+void Builder::urgentColumn(ColumnJob job) {
+    {
+        std::lock_guard lk(mu_);
+        for (const ColumnJob& j : urgent_)
+            if (j.cx == job.cx && j.cz == job.cz) return;   // ещё не взят - он и так соберёт свежий мир
+        urgent_.push_back(job);
+    }
+    cv_.notify_all();
+}
+
 void Builder::requestTiles(const std::vector<world::TileKey>& keys) {
     bool added = false;
     {
@@ -144,9 +154,13 @@ void Builder::worker() {
         ColumnJob col{};
         {
             std::unique_lock lk(mu_);
-            cv_.wait(lk, [&] { return stop_ || !tiles_.empty() || !columns_.empty(); });
+            cv_.wait(lk, [&] { return stop_ || !urgent_.empty() || !tiles_.empty() || !columns_.empty(); });
             if (stop_) return;
-            if (!tiles_.empty()) {
+            if (!urgent_.empty()) {   // Р83: правка игрока - раньше плиток и всего остального
+                col = urgent_.front();
+                urgent_.erase(urgent_.begin());
+                ++buildingColumns_[colKey(col.cx, col.cz)];
+            } else if (!tiles_.empty()) {
                 // плитки - первыми, из них - самая грубая (её четверть закрывает место, пока нет мелких)
                 auto it = std::max_element(tiles_.begin(), tiles_.end(),
                                            [](const world::TileKey& a, const world::TileKey& b) { return a.level < b.level; });
@@ -157,7 +171,7 @@ void Builder::worker() {
             } else {
                 col = columns_.back();
                 columns_.pop_back();
-                buildingColumns_.insert(colKey(col.cx, col.cz));
+                ++buildingColumns_[colKey(col.cx, col.cz)];
             }
         }
         const auto t0 = clk::now();
@@ -181,9 +195,10 @@ void Builder::worker() {
         // Где гашение полное во всех столбцах, расчёт выходит сразу и ничего не стоит.
         // Р83: снимок правок берётся ОДИН на столбец: во время постройки он меняться не должен,
         // иначе маска и материалы разойдутся между соседними кусками одного столбца.
-        const std::shared_ptr<const world::EditMap> ed = edits_ ? edits_->snapshot() : nullptr;
+        uint64_t ver = 0;
+        const std::shared_ptr<const world::EditMap> ed = edits_ ? edits_->snapshot(&ver) : nullptr;
         const world::EditMap* edits = ed && !ed->empty() ? ed.get() : nullptr;
-        r.editStamp = ed ? ed->size() : 0;
+        r.editStamp = ver;
         world::soilCut(tp_, col.cx, col.cz, hm, cut);
         int32_t maxCut = 0;
         for (int z = 0; z < world::CHUNK + 2; ++z)
@@ -246,38 +261,85 @@ void Builder::worker() {
         const int cyFrom = col.cyMin == NO_DEPTH ? cyShallow : std::max(std::min(cyLo, col.cyMin), WORLD_BOTTOM);
         // Р88: вкрапления руды собираются по кускам (здесь же известна пустота пещер) и
         // выкладываются мелкими сетками уже после цикла.
-        static thread_local std::vector<world::OreSpeck> specks;
+        static thread_local std::vector<world::Vein> veins;
         static thread_local std::unordered_map<uint64_t, std::vector<std::pair<world::OreSpeck, uint8_t>>> cells;
         cells.clear();
         const auto fd = [](int32_t a, int32_t b) { return a >= 0 ? a / b : -((-a + b - 1) / b); };
         for (int cy = cyFrom; cy <= cyHi; ++cy) {
             const world::ChunkPos pos{col.cx, cy, col.cz};
             bool caves = shallowCaves && world::caveAir(tp_, pos, hm, air, cut);
-            {   // Р88: руда этого куска. Берётся ЗДЕСЬ, пока маска пустоты не правлена под LOD:
-                // руда сидит в камне и в полостях висеть не должна.
+            {   // Р89: руда этого куска - куски жил на ОТКРЫТЫХ гранях породы. Берётся ЗДЕСЬ, пока
+                // маска пустоты не правлена под LOD: руда сидит в камне и в полостях не висит.
                 const int32_t bx0 = col.cx * world::CHUNK, bz0 = col.cz * world::CHUNK, by0 = cy * world::CHUNK;
-                world::oreSpecks(tp_.seed, bx0, by0, bz0, world::CHUNK, specks);
-                for (const world::OreSpeck& sp : specks) {
-                    const int32_t bx = fd(sp.x, world::FINE), by = fd(sp.y, world::FINE), bz = fd(sp.z, world::FINE);
-                    // Хозяин вкрапления - свой столбец и свой кусок: иначе одно и то же тело выложат
-                    // оба соседа, и грани встанут друг в друга.
-                    if (bx < bx0 || bx >= bx0 + world::CHUNK || bz < bz0 || bz >= bz0 + world::CHUNK) continue;
-                    if (by < by0 || by >= by0 + world::CHUNK) continue;
-                    const int lx = bx - bx0, lz = bz - bz0;
-                    if (caves && ((air[lz + 1][lx + 1] >> (by - by0 + 1)) & 1)) continue;   // здесь пустота
-                    const int32_t vcut = cut[lz + 1][lx + 1];
-                    const int32_t top = hm.h[lz + 1][lx + 1] - vcut;
-                    world::Cover cv = hm.cover[lz][lx];
-                    cv.soil = int16_t(std::max(0, int(cv.soil) - vcut));
-                    const world::Material host =
-                        world::columnMaterial(top, cv, by, hm.water[lz + 1][lx + 1], hm.rock, bx, bz);
-                    if (host < world::ROCK_FIRST || host > world::ROCK_LAST) continue;   // руда сидит в камне
-                    const uint8_t ore = uint8_t(world::pickOre(host, top - by, sp.roll));
-                    const int32_t mnx = sp.x - sp.a - 1, mny = sp.y - sp.c - 1, mnz = sp.z - sp.a - 1;
-                    const int32_t c[3] = {fd(mnx, 40), fd(mny, 40), fd(mnz, 40)};
-                    const uint64_t key = uint64_t(uint32_t(c[0])) << 42 ^ uint64_t(uint32_t(c[1]) & 0x3FFFFF) << 21 ^
-                                         uint64_t(uint32_t(c[2]) & 0x1FFFFF);
-                    cells[key].push_back({sp, ore});
+                world::veinsNear(tp_.seed, bx0, by0, bz0, world::CHUNK, veins);
+                // твёрдо ли в блоке (lx, lz - от -1 до 32, y - абсолютно): срез земли, пещеры, правки
+                const auto solid = [&](int lx, int32_t y, int lz) {
+                    if (edits) {
+                        const auto it = edits->find(world::editKey(bx0 + lx, y, bz0 + lz));
+                        if (it != edits->end()) return it->second.m != world::AIR && it->second.m != world::WATER;
+                    }
+                    if (y > hm.h[lz + 1][lx + 1] - int32_t(cut[lz + 1][lx + 1])) return false;
+                    if (caves && y >= by0 - 1 && y <= by0 + world::CHUNK && ((air[lz + 1][lx + 1] >> (y - by0 + 1)) & 1)) return false;
+                    return true;
+                };
+                static const int NB[6][3] = {{1, 0, 0}, {-1, 0, 0}, {0, 1, 0}, {0, -1, 0}, {0, 0, 1}, {0, 0, -1}};
+                for (const world::Vein& v : veins) {
+                    const int lx0 = std::max(0, int(std::floor(v.c[0] - v.reach)) - bx0), lx1 = std::min(world::CHUNK - 1, int(std::ceil(v.c[0] + v.reach)) - bx0);
+                    const int ly0 = std::max(0, int(std::floor(v.c[1] - v.reach)) - by0), ly1 = std::min(world::CHUNK - 1, int(std::ceil(v.c[1] + v.reach)) - by0);
+                    const int lz0 = std::max(0, int(std::floor(v.c[2] - v.reach)) - bz0), lz1 = std::min(world::CHUNK - 1, int(std::ceil(v.c[2] + v.reach)) - bz0);
+                    for (int lz = lz0; lz <= lz1; ++lz)
+                        for (int lx = lx0; lx <= lx1; ++lx) {
+                            const int32_t top = hm.h[lz + 1][lx + 1] - int32_t(cut[lz + 1][lx + 1]);
+                            for (int ly = ly0; ly <= std::min(ly1, top - by0); ++ly) {
+                                const int32_t by = by0 + ly, bx = bx0 + lx, bz = bz0 + lz;
+                                if (!solid(lx, by, lz)) continue;
+                                int open[6], nOpen = 0;
+                                for (int f = 0; f < 6; ++f)
+                                    if (!solid(lx + NB[f][0], by + NB[f][1], lz + NB[f][2])) open[nOpen++] = f;
+                                if (!nOpen) continue;   // внутри сплошного камня руды не видно - не строим
+                                const float rich = world::veinRichness(v, bx, by, bz);
+                                if (rich <= 0.0f) continue;
+                                world::Cover cv = hm.cover[lz][lx];
+                                cv.soil = int16_t(std::max(0, int(cv.soil) - int(cut[lz + 1][lx + 1])));
+                                const world::Material host = world::columnMaterial(top, cv, by, hm.water[lz + 1][lx + 1], hm.rock, bx, bz);
+                                if (host < world::ROCK_FIRST || host > world::ROCK_LAST) continue;   // руда сидит в камне
+                                uint32_t h = world::editKey(bx, by, bz) * 0x9E3779B97F4A7C15ull >> 32 ^ v.seed;
+                                const auto rnd = [&h]() {
+                                    h ^= h >> 15; h *= 0x2C1B3C6Du; h ^= h >> 12; h *= 0x297A2D39u; h ^= h >> 15;
+                                    return float(h & 0xFFFFFF) / 16777216.0f;
+                                };
+                                const auto put = [&](const world::OreSpeck& sp) {
+                                    const uint8_t ore = uint8_t(world::pickOre(host, hm.h[lz + 1][lx + 1] - by, rnd() < 0.25f ? v.roll2 : v.roll));
+                                    const int32_t c[3] = {fd(sp.x - sp.a - 1, 40), fd(sp.y - sp.c - 1, 40), fd(sp.z - sp.a - 1, 40)};
+                                    const uint64_t key = uint64_t(uint32_t(c[0])) << 42 ^ uint64_t(uint32_t(c[1]) & 0x3FFFFF) << 21 ^
+                                                         uint64_t(uint32_t(c[2]) & 0x1FFFFF);
+                                    cells[key].push_back({sp, ore});
+                                };
+                                const int32_t fx = bx * world::FINE, fy = by * world::FINE, fz = bz * world::FINE;
+                                // сердцевина: самородок размером в блок, край рваный - местами торчит из граней
+                                if (rnd() < 0.3f * rich * rich) {
+                                    put({fx + 8, fy + 8, fz + 8, 9, 9, 8, uint8_t(rnd() * 16.0f), h});
+                                    continue;
+                                }
+                                // иначе куски на открытых гранях: чем богаче, тем больше и крупнее
+                                const int n = int(rnd() * (1.0f + 6.0f * rich));
+                                for (int k = 0; k < n; ++k) {
+                                    const float u = rnd();
+                                    uint8_t a, b, c;
+                                    if (u < 0.55f - 0.2f * rich) { a = b = c = 0; }                                    // один мелкий воксель
+                                    else if (u < 0.82f - 0.2f * rich) { a = uint8_t(2 + rnd() * 2); b = uint8_t(1 + rnd() * 2); c = 1; }
+                                    else if (u < 0.96f - 0.1f * rich) { a = uint8_t(3 + rnd() * 3); b = uint8_t(2 + rnd() * 2); c = 2; }
+                                    else { a = uint8_t(6 + rnd() * 3); b = uint8_t(4 + rnd() * 2); c = 3; }
+                                    const int f = open[int(rnd() * float(nOpen)) % nOpen];
+                                    const int ax = f >> 1;                      // ось нормали грани: 0 x, 1 y, 2 z
+                                    const int ext = ax == 1 ? c : b;            // насколько тельце уходит вдоль нормали
+                                    const int in = ext > 0 ? int(rnd() * float(ext)) : 0;   // утоплено, но хоть на воксель торчит
+                                    int loc[3] = {1 + int(rnd() * 14.0f), 1 + int(rnd() * 14.0f), 1 + int(rnd() * 14.0f)};
+                                    loc[ax] = (f & 1) ? -1 + in : 16 - in;     // плоскость грани: снаружи блока на воксель
+                                    put({fx + loc[0], fy + loc[1], fz + loc[2], a, b, c, uint8_t(rnd() * 16.0f), h});
+                                }
+                            }
+                        }
                 }
             }
             if (caves && caveFloor != INT32_MIN) {   // Р39: ниже пола (с соседями) пещеры закрыты; заглушки у соседей без пещер
@@ -344,7 +406,8 @@ void Builder::worker() {
         }
         r.ms = msSince(t0);
         std::lock_guard lk(mu_);
-        buildingColumns_.erase(colKey(col.cx, col.cz));
+        if (auto it = buildingColumns_.find(colKey(col.cx, col.cz)); it != buildingColumns_.end() && --it->second <= 0)
+            buildingColumns_.erase(it);
         doneColumns_.push_back(std::move(r));
     }
 }

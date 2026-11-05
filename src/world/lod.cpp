@@ -123,7 +123,7 @@ void buildTile(const TerrainParams& p, TileKey k, TileMesh& out) {
             else if (!shoreC[j + 1][i + 1] && !wetC[j + 1][i + 1])
                 bareRock(rfC[j + 1][i + 1], hc[j + 1][i + 1], hc[j + 1][i + 2] - hc[j + 1][i],
                          hc[j + 2][i + 1] - hc[j][i + 1], int32_t(2 * step), wx, wz, c);
-            coarseCover[j][i] = uint32_t(c.top) | uint32_t(c.under) << 6;
+            coarseCover[j][i] = uint32_t(c.top) | uint32_t(c.under) << 8;   // Р89: по 8 бит
         }
 
     static thread_local int32_t sf[TILE_VERTS + 2][TILE_VERTS + 2], sc[CV + 2][CV + 2];
@@ -168,7 +168,7 @@ void buildTile(const TerrainParams& p, TileKey k, TileMesh& out) {
             w[3] = uint32_t(std::lround(forest * 255.0f)) << 16;
             // Р86: покров - в своём слове: на материал шесть бит вместо четырёх (породы 12..47).
             // Свои верх и низ, затем верх и низ соседней сетки уровня L+1.
-            w[5] = uint32_t(c.top) | uint32_t(c.under) << 6 | coarseCover[cj][ci] << 12;
+            w[5] = uint32_t(c.top) | uint32_t(c.under) << 8 | coarseCover[cj][ci] << 16;
             const int32_t s = sf[j + 1][i + 1], scT = sc[cj + 1][ci + 1];
             // Р75: течение у мокрого узла - чтобы и вдали было видно, куда и как быстро течёт река; перепад глади к
             // самому низкому мокрому соседу - пена у падения и места брызг вдали

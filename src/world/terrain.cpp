@@ -254,7 +254,7 @@ Cover coverAt(const TerrainParams& p, const Climate& c, int32_t height, int32_t 
     Cover cv = [&]() -> Cover {
         if (height < p.seaLevel + 2 * VOXELS_PER_BLOCK) return {SAND, SAND};   // Р25: дно и берег - песок
         if (c.rain < p.desertRain && t > p.desertTemp) return {SAND, soil};
-        return {GRASS, soil};
+        return {Material(GRASS_FIRST + (soil - SOIL_FIRST)), soil};   // Р89: дёрн своей почвы
     }();
     if (t < p.snowBelow) {
         constexpr fx::q16 FULL = 8 * DEG;   // насколько ниже порога снег вырастает до целого блока

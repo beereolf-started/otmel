@@ -8,6 +8,7 @@
 #include <deque>
 #include <mutex>
 #include <thread>
+#include <unordered_map>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -39,7 +40,7 @@ public:
     struct ColumnJob { int32_t cx, cz, cyMin; uint8_t caps; };
     // editStamp - сколько правок игрока учтено в этой сетке (Р83): зона по нему видит, что итог
     // пришёл из мира, в котором блок ещё не был сломан, и отбрасывает его
-    struct ColumnResult { int32_t cx, cz, cyMin; uint8_t caps; std::vector<ChunkData> chunks; double ms; size_t editStamp; };
+    struct ColumnResult { int32_t cx, cz, cyMin; uint8_t caps; std::vector<ChunkData> chunks; double ms; uint64_t editStamp; };
     struct TileResult { world::TileKey key; world::TileMesh mesh; double ms; };
 
     explicit Builder(const world::TerrainParams& tp);
@@ -48,6 +49,9 @@ public:
 
     // очередь столбцов целиком заменяется (ближние - в конце); те, что уже строятся, повторно не встают
     void setColumnJobs(std::vector<ColumnJob> jobs);
+    // СРОЧНО: столбец, в котором игрок только что сломал блок. Идёт раньше всего, даже раньше
+    // плиток, и даже если этот столбец уже строится - тот итог из мира без правки, он будет выброшен.
+    void urgentColumn(ColumnJob job);
     // заказать плитки; уже заказанные и строящиеся не дублируются
     void requestTiles(const std::vector<world::TileKey>& keys);
     bool popColumn(ColumnResult& out);
@@ -63,7 +67,8 @@ private:
     std::mutex mu_;
     std::condition_variable cv_;
     std::vector<ColumnJob> columns_;                        // ближние - в конце
-    std::unordered_set<uint64_t> buildingColumns_;
+    std::vector<ColumnJob> urgent_;                         // правки игрока - первыми, по порядку
+    std::unordered_map<uint64_t, int> buildingColumns_;    // столбец может строиться дважды (срочно)
     std::vector<world::TileKey> tiles_;
     std::unordered_set<uint64_t> wantedTiles_;           // заказаны, строятся или готовы, но не забраны
     std::deque<ColumnResult> doneColumns_;

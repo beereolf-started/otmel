@@ -258,7 +258,7 @@ void meshImpl(ChunkPos pos, const Chunk* vox, const ColumnHeights& hm, const uin
         const int32_t topEff = hm.h[z + 1][x + 1] - vcut;
         // Р82: снежный слой - воксель над верхом столбца; толщина едет в старших битах материала
         if (wy == topEff + 1 && hm.snow[z + 1][x + 1])
-            return Material(SNOW | (uint32_t(hm.snow[z + 1][x + 1] - 1) << 7));
+            return Material(SNOW_MESH + (hm.snow[z + 1][x + 1] - 1));
         Cover cv = hm.cover[z][x];
         cv.soil = int16_t(std::max(0, int(cv.soil) - vcut));
         const Material m = columnMaterial(topEff, cv, wy, hm.water[z + 1][x + 1], hm.rock, x0w + x, z0w + z);
@@ -267,14 +267,15 @@ void meshImpl(ChunkPos pos, const Chunk* vox, const ColumnHeights& hm, const uin
         // полосами земли. Если же перепад в два блока и больше (или грань открыта пещерой), дёрн
         // обрублен: земля с полоской травы сверху, как в обычном кубике травы.
         // Низ блока травы - земля: дёрн лежит сверху, снизу его не бывает
-        if (m == GRASS && normal == 3) return DIRT;
-        if (m == GRASS && normal != 2) {
+        // Р89: у каждой почвы свой дёрн; низ блока дёрна - сама почва, а не трава и не общая земля
+        if (isGrass(m) && normal == 3) return Material(SOIL_FIRST + grassSoil(m));
+        if (isGrass(m) && normal != 2) {
             // Р82: под снежной шапкой полоска сверху - снежная, а не травяная: иначе по склону
             // тянулась бы зелёная лесенка дёрна прямо под снегом.
-            if (hm.snow[z + 1][x + 1]) return GRASS_SNOWY_SIDE;
+            if (hm.snow[z + 1][x + 1]) return Material(GRASS_SNOWY_FIRST + grassSoil(m));
             const int nx = x + 1 + (normal == 0) - (normal == 1), nz = z + 1 + (normal == 4) - (normal == 5);
             const int32_t ntop = hm.h[nz][nx] - (cut ? int32_t(cut[nz][nx]) : 0) + (hm.snow[nz][nx] ? 1 : 0);
-            if (topEff - ntop != 1) return GRASS_SIDE;
+            if (topEff - ntop != 1) return Material(GRASS_SIDE_FIRST + grassSoil(m));
         }
         return m;
     }, out, stats.quads, anySnow ? &snowCol[0] : nullptr);

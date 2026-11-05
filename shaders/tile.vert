@@ -46,7 +46,7 @@ layout(location = 4) out vec2 vFlow;     // Р75: течение, блоков/�
 layout(location = 5) out float vFall;    // Р75: перепад глади к соседу ниже 0..1 (пена у падения)
 
 // Р86: та же таблица, что у вокселей (terrain.vert) - вблизи и вдали цвет породы один
-const vec3 COLORS[119] = vec3[](vec3(1, 0, 1), vec3(0.47, 0.47, 0.5), vec3(0.45, 0.32, 0.2), vec3(0.36, 0.58, 0.25), vec3(0.85, 0.8, 0.55), vec3(0.93, 0.95, 0.98), vec3(0.3, 0.62, 0.92),
+const vec3 COLORS[146] = vec3[](vec3(1, 0, 1), vec3(0.47, 0.47, 0.5), vec3(0.45, 0.32, 0.2), vec3(0.36, 0.58, 0.25), vec3(0.85, 0.8, 0.55), vec3(0.93, 0.95, 0.98), vec3(0.3, 0.62, 0.92),
                               vec3(0.36, 0.31, 0.25), vec3(0.68, 0.53, 0.33), vec3(0.22, 0.42, 0.14), vec3(0.32, 0.53, 0.2), vec3(0.17, 0.13, 0.1),
     // Р77: породы - гранит, диорит, габбро, риолит, базальт, андезит, дацит, аргиллитовый сланец, аргиллит, известняк,
     // конгломерат, доломит, кремень, мел, кварцит, кровельный сланец, филлит, кристаллический сланец, гнейс, мрамор
@@ -91,7 +91,11 @@ const vec3 COLORS[119] = vec3[](vec3(1, 0, 1), vec3(0.47, 0.47, 0.5), vec3(0.45,
     vec3(0.52, 0.50, 0.46), vec3(0.84, 0.82, 0.78), vec3(1.00, 0.99, 0.96),   // гипс
     vec3(0.50, 0.46, 0.46), vec3(0.86, 0.80, 0.80), vec3(1.00, 0.96, 0.96),   // каменная соль
     vec3(0.40, 0.34, 0.04), vec3(0.86, 0.78, 0.16), vec3(1.00, 0.98, 0.55),   // сера
-    vec3(0.06, 0.06, 0.07), vec3(0.22, 0.22, 0.24), vec3(0.58, 0.60, 0.64));  // графит
+    vec3(0.06, 0.06, 0.07), vec3(0.22, 0.22, 0.24), vec3(0.58, 0.60, 0.64),
+    // Р89: дёрн по почвам (порядок почв - src/world/soil_table.cpp): верх, бок, бок под снегом
+    vec3(0.50, 0.60, 0.30), vec3(0.44, 0.60, 0.27), vec3(0.36, 0.58, 0.25), vec3(0.40, 0.60, 0.28), vec3(0.47, 0.62, 0.33), vec3(0.31, 0.53, 0.23), vec3(0.28, 0.49, 0.22), vec3(0.30, 0.47, 0.24), vec3(0.25, 0.40, 0.18),
+    vec3(0.71, 0.72, 0.45), vec3(0.55, 0.54, 0.31), vec3(0.41, 0.42, 0.22), vec3(0.47, 0.49, 0.29), vec3(0.55, 0.56, 0.37), vec3(0.41, 0.43, 0.27), vec3(0.41, 0.44, 0.32), vec3(0.35, 0.39, 0.26), vec3(0.24, 0.27, 0.16),
+    vec3(0.87, 0.84, 0.68), vec3(0.71, 0.64, 0.53), vec3(0.59, 0.51, 0.43), vec3(0.64, 0.58, 0.50), vec3(0.70, 0.65, 0.57), vec3(0.61, 0.54, 0.50), vec3(0.63, 0.56, 0.56), vec3(0.55, 0.52, 0.49), vec3(0.45, 0.42, 0.39));  // графит
 const float WATER_ALPHA = 0.55;   // как у вокселей воды (terrain.vert)
 const vec3 LEVEL_TINT[4] = vec3[](vec3(1.3, 0.8, 0.8), vec3(0.8, 1.3, 0.8), vec3(0.8, 0.8, 1.3), vec3(1.3, 1.3, 0.7));
 
@@ -104,7 +108,7 @@ float lightOf(vec3 n) { return 0.35 + 0.65 * max(dot(n, normalize(sunDir.xyz)), 
 // Боковина ступеньки высотой |g|: верхний воксель - покров, остальное - слой под ним.
 vec3 stairColor(vec2 g, uint top, uint under, vec3 view) {
     const vec3 up = vec3(0, 1, 0);
-    vec3 ct = COLORS[min(top, 118u)], cu = COLORS[min(under, 118u)];
+    vec3 ct = COLORS[min(top, 145u)], cu = COLORS[min(under, 145u)];
     float ax = abs(g.x), az = abs(g.y);
     vec3 nx = vec3(-sign(g.x), 0, 0), nz = vec3(0, 0, -sign(g.y));
     float wt = max(view.y, 0.0);
@@ -144,8 +148,8 @@ void main() {
     vec2 g = vec2(bitfieldExtract(int(aData.y), 0, 16), bitfieldExtract(int(aData.y), 16, 16)) / 256.0;
     vec2 gc = vec2(bitfieldExtract(int(aData.z), 0, 16), bitfieldExtract(int(aData.z), 16, 16)) / 256.0;
     vec3 view = normalize(eye.xyz - world);
-    vec3 cf = stairColor(g, aWater.y & 63u, (aWater.y >> 6) & 63u, view);
-    vec3 cc = stairColor(gc, (aWater.y >> 12) & 63u, (aWater.y >> 18) & 63u, view);
+    vec3 cf = stairColor(g, aWater.y & 255u, (aWater.y >> 8) & 255u, view);       // Р89: по 8 бит
+    vec3 cc = stairColor(gc, (aWater.y >> 16) & 255u, (aWater.y >> 24) & 255u, view);
     vColor = vec4(mix(cf, cc, k), 1.0);
     if (uDebug == 1) vColor.rgb *= LEVEL_TINT[uLevel % 4];
 }

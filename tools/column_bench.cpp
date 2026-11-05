@@ -420,7 +420,7 @@ void hanging(const world::TerrainParams& p, int32_t bx, int32_t bz, int sideBloc
     int64_t bad = 0, looked = 0;
     int shown = 0;
     const auto isSoil = [](world::Material m) {
-        return m == world::DIRT || m == world::GRASS || m == world::SAND || m == world::SNOW;
+        return m == world::DIRT || world::isGrass(m) || m == world::SAND || m == world::SNOW;
     };
     for (int j = 0; j < side; ++j)
         for (int i = 0; i < side; ++i) {
@@ -467,48 +467,83 @@ void hanging(const world::TerrainParams& p, int32_t bx, int32_t bz, int sideBloc
 }
 
 int main(int argc, char** argv) {
-    // Р88: где лежат рудные тела и из чего они. Печатает самородки - по ним удобно смотреть глазами.
+    // Р89: жилы вокруг точки - сколько, какого размера, сколько блоков руды в них и из чего.
     if (argc > 3 && std::string(argv[1]) == "--ores") {
         world::TerrainParams tp;
         const int32_t bx = atoi(argv[2]), bz = atoi(argv[3]);
         const int n = argc > 4 ? std::max(1, atoi(argv[4])) : 4;   // кусков по стороне
-        std::vector<world::OreSpeck> sp;
-        std::vector<int64_t> cnt(world::ORE_COUNT, 0);
         static world::ColumnHeights hm;
-        int shown = 0;
+        std::vector<world::Vein> veins;
+        std::vector<int64_t> cnt(world::ORE_COUNT, 0);
+        int64_t blocks = 0, rock = 0;
+        int nVeins = 0;
         for (int cz = 0; cz < n; ++cz)
             for (int cx = 0; cx < n; ++cx) {
                 const int32_t ccx = bx / world::CHUNK + cx, ccz = bz / world::CHUNK + cz;
                 world::columnHeights(tp, ccx, ccz, hm);
-                for (int32_t by = hm.minH - 160; by < hm.maxH; by += world::CHUNK) {
-                    world::oreSpecks(tp.seed, ccx * world::CHUNK, by, ccz * world::CHUNK, world::CHUNK, sp);
-                    for (const world::OreSpeck& s2 : sp) {
-                        const auto fd = [](int32_t a, int32_t b) { return a >= 0 ? a / b : -((-a + b - 1) / b); };
-                        const int32_t bxx = fd(s2.x, world::FINE), byy = fd(s2.y, world::FINE), bzz = fd(s2.z, world::FINE);
-                        if (bxx < ccx * world::CHUNK || bxx >= ccx * world::CHUNK + world::CHUNK) continue;
-                        if (bzz < ccz * world::CHUNK || bzz >= ccz * world::CHUNK + world::CHUNK) continue;
-                        if (byy < by || byy >= by + world::CHUNK) continue;
-                        const int lx = bxx - ccx * world::CHUNK, lz = bzz - ccz * world::CHUNK;
-                        const int32_t top = hm.h[lz + 1][lx + 1];
-                        const world::Material host = world::columnMaterial(top, hm.cover[lz][lx], byy,
-                                                                          hm.water[lz + 1][lx + 1], hm.rock, bxx, bzz);
-                        if (host < world::ROCK_FIRST || host > world::ROCK_LAST) continue;
-                        const int ore = world::pickOre(host, top - byy, s2.roll);
-                        ++cnt[ore];
-                        if (s2.a >= 5 && shown < 10) {
-                            std::printf("  самородок %-18s в %s: блок (%d, %d, %d), полуоси %d/%d/%d\n",
-                                        world::oreDef(ore).name, world::rockDef(int(host) - world::ROCK_FIRST).name,
-                                        bxx, byy, bzz, int(s2.a), int(s2.b), int(s2.c));
-                            ++shown;
-                        }
-                    }
+                for (int32_t by = (hm.minH - 160) & ~31; by < hm.maxH; by += world::CHUNK) {
+                    world::veinsNear(tp.seed, ccx * world::CHUNK, by, ccz * world::CHUNK, world::CHUNK, veins);
+                    for (int lz = 0; lz < world::CHUNK; ++lz)
+                        for (int lx = 0; lx < world::CHUNK; ++lx)
+                            for (int ly = 0; ly < world::CHUNK; ++ly) {
+                                const int32_t x = ccx * world::CHUNK + lx, y = by + ly, z = ccz * world::CHUNK + lz;
+                                const int32_t top = hm.h[lz + 1][lx + 1];
+                                const world::Material host = world::columnMaterial(top, hm.cover[lz][lx], y, hm.water[lz + 1][lx + 1], hm.rock, x, z);
+                                if (host < world::ROCK_FIRST || host > world::ROCK_LAST) continue;
+                                ++rock;
+                                for (const world::Vein& v : veins)
+                                    if (world::veinRichness(v, x, y, z) > 0.0f) {
+                                        ++blocks;
+                                        ++cnt[world::pickOre(host, top - y, v.roll)];
+                                        break;
+                                    }
+                            }
                 }
             }
-        int64_t all = 0;
-        for (int64_t c : cnt) all += c;
-        std::printf("вкраплений %lld\n", (long long)all);
+        world::veinsNear(tp.seed, bx, -400, bz, n * world::CHUNK, veins);
+        for (const world::Vein& v : veins) {
+            if (nVeins++ < 8)
+                std::printf("  жила у (%.0f, %.0f, %.0f): длина %.0f, сечение %.1f x %.1f блоков\n", v.c[0], v.c[1], v.c[2],
+                            2.0f * v.half, 2.0f * v.R, 2.0f * v.R * v.flat);
+        }
+        std::printf("блоков породы %lld, из них в жилах %lld (%.2f%%)\n", (long long)rock, (long long)blocks,
+                    100.0 * double(blocks) / double(std::max<int64_t>(1, rock)));
         for (int i = 0; i < world::ORE_COUNT; ++i)
             if (cnt[i]) std::printf("  %-20s %lld\n", world::oreDef(i).name, (long long)cnt[i]);
+        return 0;
+    }
+    // Р89: где жила выходит на голую породу у поверхности - место для снимка
+    if (argc > 3 && std::string(argv[1]) == "--orefind") {
+        world::TerrainParams tp;
+        const int32_t bx = atoi(argv[2]), bz = atoi(argv[3]);
+        static world::ColumnHeights hm;
+        std::vector<world::Vein> veins;
+        int found = 0;
+        for (int r = 0; r < 40 && found < 5; ++r)
+            for (int cz = -r; cz <= r && found < 5; ++cz)
+                for (int cx = -r; cx <= r && found < 5; ++cx) {
+                    if (std::max(std::abs(cx), std::abs(cz)) != r) continue;
+                    const int32_t ccx = bx / world::CHUNK + cx, ccz = bz / world::CHUNK + cz;
+                    world::columnHeights(tp, ccx, ccz, hm);
+                    world::veinsNear(tp.seed, ccx * world::CHUNK, hm.minH - 8, ccz * world::CHUNK, world::CHUNK, veins);
+                    if (veins.empty()) continue;
+                    int best = 0, bxx = 0, byy = 0, bzz = 0;
+                    for (int lz = 0; lz < world::CHUNK; ++lz)
+                        for (int lx = 0; lx < world::CHUNK; ++lx) {
+                            if (hm.cover[lz][lx].soil > 0) continue;   // голая порода
+                            const int32_t top = hm.h[lz + 1][lx + 1];
+                            if (hm.water[lz + 1][lx + 1] != world::NO_WATER && hm.water[lz + 1][lx + 1] > top) continue;
+                            for (const world::Vein& v : veins)
+                                for (int d = 0; d < 6; ++d)
+                                    if (world::veinRichness(v, ccx * world::CHUNK + lx, top - d, ccz * world::CHUNK + lz) > 0.3f) {
+                                        ++best; bxx = ccx * world::CHUNK + lx; byy = top - d; bzz = ccz * world::CHUNK + lz;
+                                    }
+                        }
+                    if (best > 20) {
+                        std::printf("выход жилы: %d блоков, например (%d, %d, %d)\n", best, bxx, byy, bzz);
+                        ++found;
+                    }
+                }
         return 0;
     }
     if (argc > 3 && std::string(argv[1]) == "--hang") {

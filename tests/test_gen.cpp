@@ -218,7 +218,7 @@ int main() {
         world::columnHeights(p, bx, bz, hm);
         const int cy = (hm.maxH >> world::CHUNK_LOG2) - 1;
         bool snow = false;
-        for (auto& row : hm.cover) for (auto& cv : row) if (cv.top == world::SNOW) snow = true;
+        for (auto& row : hm.snow) for (uint8_t sn : row) if (sn) snow = true;   // Р82: снег - слой, а не покров
         CHECK(snow && hm.maxH > 150 * world::VOXELS_PER_BLOCK, "у вершины цепи - горы выше 150 блоков и снег");
         std::printf("сумма горного куска (%d,%d,%d) при зерне 1337: %016llx (вершина %.0f блоков)\n", bx, cy, bz,
                     static_cast<unsigned long long>(chunkSum(p, bx, cy, bz)), hm.maxH / 16.0);

@@ -31,7 +31,16 @@ enum : Material { AIR = 0, STONE = 1, DIRT = 2, GRASS = 3, SAND = 4, SNOW = 5, W
                     // отдельный блок, а вкрапления в породе: рисунок - накладка поверх камня.
                     // Р88: на минерал по три оттенка палитры - тёмный, основной и блестящий
                     ORE_FIRST = 59, ORE_LAST = 118,
-                    MATERIAL_COUNT };
+                    // Р89: дёрн по почвам - у каждой почвы своя трава: верх, бок (обрубленный дёрн) и
+                    // бок под снежной шапкой. Номер почвы - как у SOIL_FIRST.
+                    GRASS_FIRST = 119, GRASS_LAST = 127,
+                    GRASS_SIDE_FIRST = 128, GRASS_SNOWY_FIRST = 137,
+                    MATERIAL_COUNT = 146,
+                    // Р89: снег в сетке - верхние 16 номеров 11-битного поля, в номере его толщина
+                    SNOW_MESH = 2032 };
+inline bool isGrass(Material m) { return m == GRASS || (m >= GRASS_FIRST && m <= GRASS_LAST); }
+/** Номер почвы под дёрном (GRASS без почвы - суглинок). */
+inline int grassSoil(Material m) { return m == GRASS ? 2 : int(m) - GRASS_FIRST; }
 
 struct ChunkPos { int32_t x, y, z; };
 

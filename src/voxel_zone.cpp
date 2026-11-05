@@ -39,7 +39,11 @@ void VoxelZone::releaseAll() {
     for (auto& [k, c] : ready_) release(c);
 }
 
-void VoxelZone::invalidate(int32_t cx, int32_t cz) { stale_.insert(key(cx, cz)); }
+void VoxelZone::invalidate(int32_t cx, int32_t cz) {
+    stale_[key(cx, cz)] = edits_ ? edits_->version() : 0;
+    // Р83: в срочную полосу - иначе столбец ждал своей очереди за тысячами дальних плиток
+    builder_.urgentColumn({cx, cz, wantMin(cx, cz), wantCaps(cx, cz)});
+}
 
 bool VoxelZone::inWindow(int32_t cx, int32_t cz, int margin) const {
     return cx >= ccx_ - radius_ - margin && cx <= ccx_ + radius_ + margin && cz >= ccz_ - radius_ - margin &&
@@ -81,7 +85,7 @@ void VoxelZone::moveWindow(int32_t ccx, int32_t ccz) {
     // Р83: пометки о правке у столбцов за окном не держим - иначе очередь пересобиралась бы
     // каждый кадр до скончания века из-за столбца, которого в зоне давно нет
     for (auto it = stale_.begin(); it != stale_.end();)
-        it = inWindow(int32_t(*it >> 32), int32_t(uint32_t(*it)), UNLOAD_MARGIN) ? std::next(it) : stale_.erase(it);
+        it = inWindow(int32_t(it->first >> 32), int32_t(uint32_t(it->first)), UNLOAD_MARGIN) ? std::next(it) : stale_.erase(it);
     // маска - сдвигом: что было в старом окне, переносим; новые клетки - по таблице готовых
     std::vector<uint8_t> next(size_t(side_) * side_, 0);
     const int32_t newX = ccx - radius_, newZ = ccz - radius_;
@@ -182,7 +186,7 @@ void VoxelZone::update(glm::vec3 eye, glm::vec3 forward, const Frustum& fr, doub
         t = clk::now();
         reprioritize(eye, forward, fr);
         worst(1, t);
-    } else if (!stale_.empty() || (++sinceSort_ >= RESORT_FRAMES && stats_.pending > 0)) {
+    } else if (++sinceSort_ >= RESORT_FRAMES && (stats_.pending > 0 || !stale_.empty())) {
         // Р83: столбец с правкой заказывается ТОЛЬКО здесь. Без первого условия очередь
         // пересобиралась лишь при смене столбца камеры или пока есть недостроенное: стоя на месте в
         // достроенной зоне, игрок ломал блок, тело сквозь него проходило, а сетка оставалась прежней.
@@ -201,11 +205,12 @@ void VoxelZone::update(glm::vec3 eye, glm::vec3 forward, const Frustum& fr, doub
         // иначе (глубже, или заглушки теперь другие) - заменяет прежний
         if (!inWindow(r.cx, r.cz, UNLOAD_MARGIN)) continue;
         const uint64_t rk = key(r.cx, r.cz);
-        const bool wasStale = stale_.count(rk) > 0;
+        const auto st = stale_.find(rk);
+        const bool wasStale = st != stale_.end();
         // Р83: итог пришёл из мира, где блок ещё не был сломан, - он устарел; пометку оставляем,
         // и следующий обход окна закажет столбец заново
-        if (wasStale && edits_ && r.editStamp < edits_->size()) continue;
-        if (wasStale) stale_.erase(rk);
+        if (wasStale && r.editStamp < st->second) continue;
+        if (wasStale) stale_.erase(st);
         auto old = ready_.find(rk);
         if (old != ready_.end()) {
             const bool deeperNow = r.cyMin < old->second.builtMin;

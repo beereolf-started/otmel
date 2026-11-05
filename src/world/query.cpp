@@ -24,7 +24,7 @@ VoxelQuery::Slot& VoxelQuery::slotFor(int32_t cx, int32_t cz) {
 
 Material VoxelQuery::at(int32_t vx, int32_t vy, int32_t vz) {
     if (edits_) {   // правка главнее всего: её видит и сетка, и столкновения
-        if (!snap_ || snapSize_ != edits_->size()) { snap_ = edits_->snapshot(); snapSize_ = snap_->size(); }
+        if (!snap_ || snapVer_ != edits_->version()) snap_ = edits_->snapshot(&snapVer_);
         const auto it = snap_->find(editKey(vx, vy, vz));
         if (it != snap_->end()) return it->second.m;
     }

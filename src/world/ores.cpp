@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <cmath>
 
+#include "gen/fixed.h"
+#include "gen/noise.h"
 #include "world/terrain.h"
 
 namespace world {
@@ -44,93 +46,120 @@ Kind kindOf(Material host) {
     }
 }
 
-constexpr int CELL = 48;        // сторона ячейки рудных тел, блоки
-constexpr int LAYER = 5;        // расстояние между плоскостями напластования, мелкие воксели
+constexpr int VCELL = 96;       // Р89: ячейка жил, блоки: жила - примерно в каждой второй
+constexpr uint32_t VEIN_P = 140; // из 256
+
+float frand(uint32_t& h) { h = mix(h + 0x9E3779B9u); return float(h & 0xFFFFFF) / 16777216.0f; }
 
 }  // namespace
 
 const OreDef& oreDef(int ore) { return TABLE[ore < 0 ? 0 : (ore >= ORE_COUNT ? ORE_COUNT - 1 : ore)]; }
 
 int pickOre(Material host, int32_t depth, uint32_t roll) {
-    // Зона окисления: наверху сульфиды выветрены, остаются окислы и карбонаты. Правило общее для
-    // всех пород, поэтому идёт первым (Р76: поясов глубины нет, есть процессы).
+    // Р89: у минералов ВЕСА, а не равные доли: золото и серебро - редкость, а не каждая восьмая жила.
+    struct W { Ore o; int w; };
+    const auto pick = [&](const W* t, int n) {
+        int sum = 0;
+        for (int i = 0; i < n; ++i) sum += t[i].w;
+        int r = int(mix(roll) % uint32_t(sum));
+        for (int i = 0; i < n; ++i) { if (r < t[i].w) return int(t[i].o); r -= t[i].w; }
+        return int(t[0].o);
+    };
+    // Зона окисления: наверху сульфиды выветрены, остаются окислы и карбонаты (Р76: процессы, а не пояса)
     if (depth < 25) {
-        static const Ore OX[4] = {MALACHITE, LIMONITE, HEMATITE, NATIVE_COPPER};
-        return OX[roll % 4];
+        static const W OX[] = {{MALACHITE, 3}, {LIMONITE, 4}, {HEMATITE, 3}, {NATIVE_COPPER, 2}};
+        return pick(OX, 4);
     }
     switch (kindOf(host)) {
         case ACID: {   // порфировые и гидротермальные у кислых глубинных пород
-            static const Ore A[8] = {CHALCOPYRITE, GALENA, SPHALERITE, NATIVE_GOLD,
-                                     CASSITERITE, NATIVE_SILVER, BISMUTHINITE, TETRAHEDRITE};
-            return A[roll % 8];
+            static const W A[] = {{CHALCOPYRITE, 5}, {GALENA, 4}, {SPHALERITE, 4}, {CASSITERITE, 3},
+                                  {TETRAHEDRITE, 3}, {BISMUTHINITE, 2}, {NATIVE_SILVER, 1}, {NATIVE_GOLD, 1}};
+            return pick(A, 8);
         }
         case BASIC: {   // магматические - внутри основных пород
-            static const Ore B[3] = {MAGNETITE, GARNIERITE, NATIVE_COPPER};
-            return B[roll % 3];
+            static const W B[] = {{MAGNETITE, 5}, {GARNIERITE, 3}, {CHALCOPYRITE, 2}, {NATIVE_COPPER, 1}};
+            return pick(B, 4);
         }
         case VOLCANIC: {
-            static const Ore V[4] = {NATIVE_COPPER, HEMATITE, SULFUR, CHALCOPYRITE};
-            return V[roll % 4];
+            static const W V[] = {{NATIVE_COPPER, 3}, {HEMATITE, 3}, {SULFUR, 3}, {CHALCOPYRITE, 2}};
+            return pick(V, 4);
         }
-        case SEDIMENT: {   // в своих пластах: угли, испарения, сера
-            static const Ore S[6] = {COAL, LIGNITE, GYPSUM, HALITE, SULFUR, LIMONITE};
-            return S[roll % 6];
+        case SEDIMENT: {   // в своих пластах: угли, испарения, осадочное железо
+            static const W S[] = {{COAL, 4}, {LIGNITE, 3}, {LIMONITE, 3}, {GYPSUM, 2}, {HALITE, 2}, {SULFUR, 1}};
+            return pick(S, 6);
         }
         default: {
-            static const Ore M[4] = {GRAPHITE, SPHALERITE, NATIVE_GOLD, HEMATITE};
-            return M[roll % 4];
+            static const W M[] = {{GRAPHITE, 4}, {HEMATITE, 3}, {MAGNETITE, 2}, {SPHALERITE, 2}, {NATIVE_GOLD, 1}};
+            return pick(M, 5);
         }
     }
 }
 
-void oreSpecks(uint32_t seed, int32_t bx, int32_t by, int32_t bz, int side, std::vector<OreSpeck>& out) {
+void veinsNear(uint32_t seed, int32_t bx, int32_t by, int32_t bz, int side, std::vector<Vein>& out) {
     out.clear();
-    // Тела ищем в ячейках, задевающих куб, плюс кольцо: тело заводится внутри своей ячейки, но
-    // растекается прожилками и может достать до соседней.
-    const int32_t c0x = floorDiv(bx, CELL) - 1, c0y = floorDiv(by, CELL) - 1, c0z = floorDiv(bz, CELL) - 1;
-    const int32_t c1x = floorDiv(bx + side - 1, CELL), c1y = floorDiv(by + side - 1, CELL), c1z = floorDiv(bz + side - 1, CELL);
-    const int32_t f0x = bx * FINE, f0y = by * FINE, f0z = bz * FINE, fside = side * FINE;
+    constexpr float MAX_REACH = 100.0f;   // половина длины + изгиб + сечение - не больше
+    const int32_t c0x = floorDiv(bx - int32_t(MAX_REACH), VCELL), c1x = floorDiv(bx + side + int32_t(MAX_REACH), VCELL);
+    const int32_t c0y = floorDiv(by - int32_t(MAX_REACH), VCELL), c1y = floorDiv(by + side + int32_t(MAX_REACH), VCELL);
+    const int32_t c0z = floorDiv(bz - int32_t(MAX_REACH), VCELL), c1z = floorDiv(bz + side + int32_t(MAX_REACH), VCELL);
     for (int32_t cz = c0z; cz <= c1z; ++cz)
         for (int32_t cy = c0y; cy <= c1y; ++cy)
             for (int32_t cx = c0x; cx <= c1x; ++cx) {
-                const uint32_t h = hash3(cx, cy, cz, seed ^ 0x0E5A1u);
-                if ((h & 255u) >= 30u) continue;   // тело примерно в одной ячейке из девяти
-                // Тело раскатано по напластованию: поперёк слоёв широкое, по вертикали тонкое.
-                const int32_t mx = cx * CELL * FINE + int32_t((h >> 8) % uint32_t(CELL * FINE));
-                const int32_t my = cy * CELL * FINE + int32_t((h >> 14) % uint32_t(CELL * FINE));
-                const int32_t mz = cz * CELL * FINE + int32_t((h >> 20) % uint32_t(CELL * FINE));
-                const int32_t rH = 16 + int32_t((h >> 3) % 56u);    // поперёк слоёв - от блока до четырёх
-                const int32_t rV = 6 + int32_t((h >> 26) % 20u);    // по вертикали - тоньше
-                const int n = 40 + int((h >> 11) % 220u);           // сколько вкраплений в теле
-                // Складка: у всего тела одно направление, и вдоль него вытянуты и само тело, и
-                // каждый камушек в нём. Иначе вытянутость была бы у каждого своя, и вместо жилы
-                // получилась бы каша.
-                const uint8_t dir = uint8_t((h >> 18) & 15u);
-                for (int k = 0; k < n; ++k) {
-                    const uint32_t s = mix(h ^ (uint32_t(k) * 0x9E3779B1u));
-                    // ПЛОСКОСТИ НАПЛАСТОВАНИЯ: высота прижата к слою, разброс остаётся внутри слоя.
-                    const int lay = int((s >> 2) % uint32_t(2 * rV / LAYER + 1)) - rV / LAYER;
-                    const int32_t dy = lay * LAYER + int32_t((s >> 9) % 2u);
-                    const float ang = float((s >> 11) % 1024u) * 0.0061359231f;
-                    const float rad = float(rH) * float((s >> 21) % 1024u) / 1024.0f;
-                    const int32_t dx = int32_t(rad * std::cos(ang)), dz = int32_t(rad * std::sin(ang));
-                    // Размер: почти всегда крупинка, изредка самородок. Полуось вдоль слоя больше
-                    // поперечной, а вертикальная - самая малая.
-                    const uint32_t sz = s & 255u;
-                    uint8_t a, b, c;
-                    // Крупинка - РОВНО один мелкий воксель: их больше всего, и если каждой дать
-                    // тельце, вся геометрия мира уходит в рудную пыль.
-                    if (sz < 205u) { a = 0; b = 0; c = 0; }
-                    else if (sz < 248u) { a = 3; b = 2; c = 1; }
-                    else { a = uint8_t(5 + (sz & 3u)); b = uint8_t(3 + (sz & 1u)); c = 2; }
-                    const int32_t x = mx + dx, y = my + dy, z = mz + dz;
-                    const int32_t reach = int32_t(a) + 1;
-                    if (x + reach <= f0x || x - reach >= f0x + fside || y + reach <= f0y || y - reach >= f0y + fside ||
-                        z + reach <= f0z || z - reach >= f0z + fside)
-                        continue;
-                    out.push_back({x, y, z, a, b, c, dir, h});
+                uint32_t h = hash3(cx, cy, cz, seed ^ 0x7E1A5u);
+                if ((h & 255u) >= VEIN_P) continue;
+                Vein v{};
+                v.seed = h;
+                v.c[0] = float(cx * VCELL) + frand(h) * VCELL;
+                v.c[1] = float(cy * VCELL) + frand(h) * VCELL;
+                v.c[2] = float(cz * VCELL) + frand(h) * VCELL;
+                // ось: чаще пологая (вдоль напластования), изредка крутая (секущая жила)
+                const float yaw = frand(h) * 6.2831853f;
+                const float pitch = (frand(h) - 0.5f) * (frand(h) < 0.75f ? 0.7f : 2.6f);
+                v.d[0] = std::cos(pitch) * std::cos(yaw);
+                v.d[1] = std::sin(pitch);
+                v.d[2] = std::cos(pitch) * std::sin(yaw);
+                // поперечные оси: n1 горизонтальна, n2 = d × n1
+                float l = std::sqrt(v.d[0] * v.d[0] + v.d[2] * v.d[2]);
+                v.n1[0] = -v.d[2] / l; v.n1[1] = 0.0f; v.n1[2] = v.d[0] / l;
+                v.n2[0] = v.d[1] * v.n1[2] - v.d[2] * v.n1[1];
+                v.n2[1] = v.d[2] * v.n1[0] - v.d[0] * v.n1[2];
+                v.n2[2] = v.d[0] * v.n1[1] - v.d[1] * v.n1[0];
+                v.half = 20.0f + frand(h) * 45.0f;
+                v.R = 3.0f + frand(h) * 6.0f;
+                v.flat = 0.45f + frand(h) * 0.55f;
+                // изгиб: дуга, середина отходит от хорды до трети половины длины
+                const float b1 = (frand(h) - 0.5f) * 0.7f * v.half, b2 = (frand(h) - 0.5f) * 0.4f * v.half;
+                for (int i = 0; i < 3; ++i) v.bend[i] = v.n1[i] * b1 + v.n2[i] * b2;
+                v.roll = mix(h ^ 0xA11CEu);
+                v.roll2 = mix(h ^ 0xB0B0u);
+                v.reach = v.half + std::sqrt(b1 * b1 + b2 * b2) + v.R * 1.5f;
+                // шар жилы задевает куб?
+                float dist2 = 0.0f;
+                const float lo[3] = {float(bx), float(by), float(bz)};
+                for (int i = 0; i < 3; ++i) {
+                    const float q = std::clamp(v.c[i], lo[i], lo[i] + float(side));
+                    dist2 += (v.c[i] - q) * (v.c[i] - q);
                 }
+                if (dist2 <= v.reach * v.reach) out.push_back(v);
             }
+}
+
+float veinRichness(const Vein& v, int32_t x, int32_t y, int32_t z) {
+    const float p[3] = {float(x) + 0.5f - v.c[0], float(y) + 0.5f - v.c[1], float(z) + 0.5f - v.c[2]};
+    const float s = p[0] * v.d[0] + p[1] * v.d[1] + p[2] * v.d[2];
+    if (std::abs(s) > v.half) return 0.0f;
+    const float t = s / v.half, arc = 1.0f - t * t;
+    // сечение сужается к концам жилы
+    const float r = v.R * std::pow(arc, 0.35f);
+    float q[3];
+    for (int i = 0; i < 3; ++i) q[i] = p[i] - v.d[i] * s - v.bend[i] * arc;
+    const float u = q[0] * v.n1[0] + q[1] * v.n1[1] + q[2] * v.n1[2];
+    const float w = (q[0] * v.n2[0] + q[1] * v.n2[1] + q[2] * v.n2[2]) / v.flat;
+    const float e0 = (u * u + w * w) / (r * r * 2.0f);
+    if (e0 > 1.0f) return 0.0f;   // заведомо вне: шум сдвигает край не больше чем на 0.4
+    const float e = std::sqrt(u * u + w * w) / r;
+    // рваный край: трёхмерный шум ~8 блоков
+    const float n = float(gen::simplex3(x * 16, y * 16, z * 16, 7, v.seed)) / float(fx::ONE);
+    return std::clamp(1.0f - e + 0.4f * n, 0.0f, 1.0f);
 }
 
 }  // namespace world

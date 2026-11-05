@@ -43,6 +43,8 @@ std::string nameOf(world::Material m) {
     if (m >= world::SOIL_FIRST && m <= world::SOIL_LAST) return world::soilDef(int(m) - world::SOIL_FIRST).name;   // Р87
     if (m >= world::ORE_FIRST && m <= world::ORE_LAST) return world::oreDef(int(m) - world::ORE_FIRST).name;      // Р88
     if (m == world::GRASS_SIDE || m == world::GRASS_SNOWY_SIDE) return "дёрн";
+    if (m >= world::GRASS_FIRST && m < world::MATERIAL_COUNT)   // Р89: дёрн своей почвы
+        return std::string("дёрн (") + world::soilDef((int(m) - world::GRASS_FIRST) % 9).name + ")";
     return plainName(m);
 }
 

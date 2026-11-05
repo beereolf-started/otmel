@@ -33,8 +33,9 @@ inline uint64_t editKey(int32_t x, int32_t y, int32_t z) {
 
 class Edits {
 public:
-    std::shared_ptr<const EditMap> snapshot() const {
+    std::shared_ptr<const EditMap> snapshot(uint64_t* version = nullptr) const {
         std::lock_guard lk(mu_);
+        if (version) *version = version_;
         return map_;
     }
     void set(int32_t x, int32_t y, int32_t z, Material m) {
@@ -42,6 +43,7 @@ public:
         auto next = std::make_shared<EditMap>(*map_);
         (*next)[editKey(x, y, z)] = Edit{x, y, z, m};
         map_ = std::move(next);
+        ++version_;
     }
     bool get(int32_t x, int32_t y, int32_t z, Material& out) const {
         const auto snap = snapshot();
@@ -51,10 +53,17 @@ public:
         return true;
     }
     size_t size() const { return snapshot()->size(); }
+    // Номер правки: растёт с КАЖДОЙ правкой, в том числе повторной в ту же точку (размер таблицы
+    // при этом не меняется - поэтому по размеру устаревание и не узнать).
+    uint64_t version() const {
+        std::lock_guard lk(mu_);
+        return version_;
+    }
 
 private:
     mutable std::mutex mu_;
     std::shared_ptr<const EditMap> map_ = std::make_shared<EditMap>();
+    uint64_t version_ = 0;
 };
 
 // Материал вокселя мира с учётом пещер, среза земли (Р79), снежного слоя (Р82) и правок игрока.
@@ -72,7 +81,7 @@ private:
     const TerrainParams& p_;
     const Edits* edits_;
     std::shared_ptr<const EditMap> snap_;   // свой снимок правок - брать его на каждый воксель дорого
-    size_t snapSize_ = 0;
+    uint64_t snapVer_ = UINT64_MAX;
     // Несколько столбцов кусков разом. Один не годится: тело игрока шириной меньше блока всё равно
     // стоит на границе двух столбцов, и на каждый воксель пересчитывался бы целый кусок 34×34 -
     // это миллисекунды на кадр вместо микросекунд.
