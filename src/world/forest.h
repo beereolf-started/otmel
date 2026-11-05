@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "world/terrain.h"
+#include "world/tree.h"
 
 namespace world {
 
@@ -19,8 +20,17 @@ struct TreeCandidate {
     int32_t x, z;      // блок
     int fx, fz;        // сдвиг ствола в мелких вокселях внутри блока
     uint32_t seed;     // семя дуба
-    float roll;        // бросок 0..1 (дерево - если меньше густоты)
+    float roll;        // бросок 0..1 (дерево - если меньше густоты); 2 - место занято кроной великана
+    TreeAge age;       // Р91: молодой, взрослый, вековой
 };
+// Р91: размер спрайта по возрасту (блоки): высота и ширина кроны; fr - разброс 0..1
+inline void treeSpriteSize(TreeAge age, float fr, float& h, float& w) {
+    switch (age) {
+        case TreeAge::YOUNG: h = 6.5f + 1.5f * fr; w = 6.0f + 1.5f * fr; break;
+        case TreeAge::ADULT: h = 15.0f + 4.0f * fr; w = 13.0f + 3.0f * fr; break;
+        default: h = 23.0f + 4.0f * fr; w = 26.0f + 5.0f * fr; break;
+    }
+}
 TreeCandidate forestCandidate(const TerrainParams& p, int32_t ci, int32_t cj);
 
 // густота леса 0..1 в точке (блоки) с высотой земли h (воксели = блоки, Р54)

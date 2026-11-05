@@ -60,11 +60,13 @@ using clock_t_ = std::chrono::steady_clock;
 
 // Р62: дуб в сетки мелких кусков (32³ мелких вокселей = 2×2×2 блока) от блока-основы; корни, чей мелкий воксель
 // внутри блока земли (ground - верх земли блока-столбца), не рисуются. Только процессор - можно в фоне.
-struct OakChunk { std::vector<uint32_t> verts; glm::ivec3 fineOff; };
-// Р63: scale - уровень детализации (размер вокселя в мелких вокселях: 1, 2, 4, 8, 16); fineShift - сдвиг ствола
-// в мелких вокселях внутри блока-основы (не центр блока); куски - 32³ вокселей своего размера
+struct OakChunk { std::vector<uint32_t> verts; glm::ivec3 fineOff; int scale = 1; };
+// Р91: дерево (world/tree) в сетки кусков 32³ вокселей размера scale от блока-основы; fineShift - сдвиг ствола в
+// мелких вокселях внутри блока-основы. Листва у крупных деревьев - не мельче treeLeafScale: у великана она иначе
+// уходит в десятки миллионов вокселей. Корни в толще земли не рисуются (ground - верх земли блока-столбца).
 template <class Ground>
-int buildOakChunks(uint32_t seed, glm::ivec3 base, glm::ivec3 fineShift, Ground ground, std::vector<OakChunk>& out, int scale = 1) {
+int buildTreeChunks(const world::TreeSkel& sk, glm::ivec3 base, glm::ivec3 fineShift, Ground ground, std::vector<OakChunk>& out,
+                    int scale, bool leaves) {
     static thread_local world::ColumnHeights air;
     static thread_local bool airReady = false;
     if (!airReady) {
@@ -74,40 +76,51 @@ int buildOakChunks(uint32_t seed, glm::ivec3 base, glm::ivec3 fineShift, Ground 
     }
     const auto fdiv = [](int32_t v, int32_t d) { return v >= 0 ? v / d : -((-v + d - 1) / d); };
     constexpr int SINK = 3;   // комель утоплен на 3 мелких вокселя
-    world::OakVoxels ov;
-    world::growOak(seed, ov, scale);
+    static thread_local std::vector<world::Material> vox(32 * 32 * 32);
+    static thread_local std::vector<uint16_t> br(32 * 32 * 32);
     int quads = 0;
     auto c = std::make_unique<world::Chunk>();
-    for (int cz = 0; cz * 32 < ov.sz; ++cz)
-        for (int cx = 0; cx * 32 < ov.sx; ++cx)
-            for (int cy = 0; cy * 32 < ov.sy; ++cy) {
-                c->pos = {cx, cy, cz};
-                c->edited = true;
-                c->voxels.fill(world::AIR);
-                const glm::ivec3 off((ov.x0 + cx * 32) * scale + fineShift.x, (ov.y0 + cy * 32) * scale - SINK, (ov.z0 + cz * 32) * scale + fineShift.z);
-                bool any = false;
-                for (int y = 0; y < 32 && cy * 32 + y < ov.sy; ++y)
-                    for (int z = 0; z < 32 && cz * 32 + z < ov.sz; ++z)
-                        for (int x = 0; x < 32 && cx * 32 + x < ov.sx; ++x) {
-                            const size_t k = (size_t(cy * 32 + y) * ov.sz + cz * 32 + z) * ov.sx + cx * 32 + x;
-                            const world::Material m = ov.v[k];
-                            if (m == world::AIR) continue;
-                            if (ov.root[k]) {   // корень в толще земли - не рисуем (середина вокселя)
-                                const int fx = off.x + x * scale + scale / 2, fy = off.y + y * scale + scale / 2, fz = off.z + z * scale + scale / 2;
-                                if (base.y + fdiv(fy, 16) <= ground(base.x + fdiv(fx, 16), base.z + fdiv(fz, 16))) continue;
+    const int leafScale = std::max(scale, world::treeLeafScale(sk.age));
+    // проход 0 - древесина своим размером (и листва, если её размер тот же); проход 1 - листва крупнее
+    for (int pass = 0; pass < 2; ++pass) {
+        if (pass == 1 && !(leaves && leafScale != scale)) break;
+        const bool wood = pass == 0;
+        const bool leafHere = leaves && (leafScale == scale ? pass == 0 : pass == 1);
+        const int s = pass == 0 ? scale : leafScale;
+        int lo[3], hi[3];
+        world::treeChunkRange(sk, s, lo, hi);
+        const world::TreeIndex ix = world::treeIndex(sk, s);
+        for (int cz = lo[2]; cz <= hi[2]; ++cz)
+            for (int cx = lo[0]; cx <= hi[0]; ++cx)
+                for (int cy = lo[1]; cy <= hi[1]; ++cy) {
+                    if (!world::treeChunk(sk, ix, cx, cy, cz, wood, leafHere, vox.data(), br.data())) continue;
+                    c->pos = {cx, cy, cz};
+                    c->edited = true;
+                    const glm::ivec3 off(cx * 32 * s + fineShift.x, cy * 32 * s - SINK, cz * 32 * s + fineShift.z);
+                    bool any = false;
+                    for (int y = 0; y < 32; ++y)
+                        for (int z = 0; z < 32; ++z)
+                            for (int x = 0; x < 32; ++x) {
+                                const size_t k = (size_t(y) * 32 + z) * 32 + x;
+                                world::Material m = vox[k];
+                                if (m != world::AIR && br[k] != 0xFFFF && sk.branches[br[k]].root) {
+                                    const int fx = off.x + x * s + s / 2, fy = off.y + y * s + s / 2, fz = off.z + z * s + s / 2;
+                                    if (base.y + fdiv(fy, 16) <= ground(base.x + fdiv(fx, 16), base.z + fdiv(fz, 16))) m = world::AIR;
+                                }
+                                c->at(x, y, z) = m;
+                                any |= m != world::AIR;
                             }
-                            c->at(x, y, z) = m;
-                            any = true;
-                        }
-                if (!any) continue;
-                OakChunk oc;
-                world::MeshStats ms;
-                world::buildMesh(*c, air, oc.verts, ms);
-                if (oc.verts.empty()) continue;
-                quads += ms.quads;
-                oc.fineOff = off;
-                out.push_back(std::move(oc));
-            }
+                    if (!any) continue;
+                    OakChunk oc;
+                    world::MeshStats ms;
+                    world::buildMesh(*c, air, oc.verts, ms);
+                    if (oc.verts.empty()) continue;
+                    quads += ms.quads;
+                    oc.fineOff = off;
+                    oc.scale = s;
+                    out.push_back(std::move(oc));
+                }
+    }
     return quads;
 }
 double msSince(clock_t_::time_point t) { return std::chrono::duration<double, std::milli>(clock_t_::now() - t).count(); }
@@ -313,6 +326,7 @@ int main(int argc, char** argv) {
     float recordSec = 0;   // со --shot: запись кадров rec_NNN.bmp 15 раз в секунду столько секунд
     int voxelBlocks = 128;
     float atX = 0, atZ = 0, flySpeed = 0, spinRate = 0;
+    bool winter = false;
     world::LodSettings lod;
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
@@ -324,6 +338,7 @@ int main(int argc, char** argv) {
         if (a == "--at" && i + 2 < argc) { atX = std::stof(argv[i + 1]); atZ = std::stof(argv[i + 2]); }
         if (a == "--fly" && i + 1 < argc) flySpeed = std::stof(argv[i + 1]);
         if (a == "--record" && i + 1 < argc) recordSec = std::stof(argv[i + 1]);
+        if (a == "--winter") winter = true;   // Р91: деревья без листвы
         if (a == "--spin" && i + 1 < argc) spinRate = std::stof(argv[i + 1]);   // со --shot: поворот камеры, рад/с
     }
     if (!SDL_Init(SDL_INIT_VIDEO)) { journal::error("окно", "SDL не запустился: {}", SDL_GetError()); return 1; }
@@ -615,11 +630,13 @@ int main(int argc, char** argv) {
     std::unique_ptr<LipData> lipData;
     glm::ivec2 lipAt(INT32_MIN / 2);
     // Р62: лес в генерации - зона 7×7 кусков (224 блока) вокруг куска камеры; места - в фоне, деревья - в фоне по 6
-    struct ForestSpot { uint64_t key; glm::ivec3 base; glm::ivec3 shift; uint32_t seed; };
+    struct ForestSpot { uint64_t key; glm::ivec3 base; glm::ivec3 shift; uint32_t seed; world::TreeAge age; };
     struct ForestZone { glm::ivec2 origin; int side; std::shared_ptr<std::vector<int32_t>> ground; std::vector<float> skyTop; std::vector<ForestSpot> spots; int nWet = 0, nSteep = 0, nSnow = 0, nSparse = 0, nCave = 0; float rainSum = 0, groveSum = 0; int nC = 0; };
-    struct ForestBuilt { uint64_t key; int level; glm::ivec3 base; std::vector<OakChunk> chunks; };
+    struct ForestBuilt { uint64_t key; int level; glm::ivec3 base; std::vector<OakChunk> chunks; std::shared_ptr<const world::TreeSkel> skel; bool leaves; };
     // Р63: дерево леса - текущий уровень детализации (-1 - нет), какой строится, его сетки
-    struct ForestTree { ForestSpot spot; int level = -1, building = -1; std::vector<OakMesh> meshes; };
+    // Р91: skel - выращенный скелет (держим: по нему же потом рубка); leaves - с листвой ли нынешняя сетка
+    struct ForestTree { ForestSpot spot; int level = -1, building = -1; std::vector<OakMesh> meshes; std::shared_ptr<const world::TreeSkel> skel; bool leaves = true; };
+    bool leavesOn = !winter;   // Р91: листва (времена года - потом; пока L переключает для проверки)
     std::future<std::unique_ptr<ForestZone>> forestJob;
     glm::ivec2 forestAt(INT32_MIN / 2);
     std::shared_ptr<std::vector<int32_t>> forestGround;
@@ -732,6 +749,7 @@ int main(int argc, char** argv) {
                 buildOaks();
             }
             if (ev.type == SDL_EVENT_KEY_DOWN && ev.key.key == SDLK_R) { hideRoots = !hideRoots; buildOaks(); }
+            if (ev.type == SDL_EVENT_KEY_DOWN && ev.key.key == SDLK_L) leavesOn = !leavesOn;   // Р91: листва - для проверки зимы
             if (ev.type == SDL_EVENT_MOUSE_WHEEL) speedScale = std::clamp(speedScale * std::pow(1.25f, ev.wheel.y), 0.1f, 100.0f);
             if (ev.type == SDL_EVENT_MOUSE_MOTION) {
                 yaw += ev.motion.xrel * 0.0025f;
@@ -1269,7 +1287,7 @@ int main(int argc, char** argv) {
                             if (cave) { ++z->nCave; continue; }
                             int32_t g0 = INT32_MAX;
                             for (const auto [dx, dy] : {std::pair{0, 0}, {1, 0}, {0, 1}, {1, 1}}) g0 = std::min(g0, H(x + dx, y + dy));
-                            z->spots.push_back({(uint64_t(uint32_t(ci)) << 32) | uint32_t(cj), glm::ivec3(x, g0 + 1, y), glm::ivec3(tc.fx, 0, tc.fz), tc.seed});
+                            z->spots.push_back({(uint64_t(uint32_t(ci)) << 32) | uint32_t(cj), glm::ivec3(x, g0 + 1, y), glm::ivec3(tc.fx, 0, tc.fz), tc.seed, tc.age});
                         }
                     // Р85: КАРТА ТЕНЕВЫХ ВЫСОТ. Сперва верхи: на каждый столбец высота того, что
                     // закрывает небо. Дерева в блочной маске нет, оно живёт отдельной сеткой,
@@ -1279,7 +1297,10 @@ int main(int argc, char** argv) {
                     for (size_t i = 0; i < top.size(); ++i) top[i] = float((*g)[i]);
                     for (const ForestSpot& sp : z->spots) {
                         const int cxp = sp.base.x - z->origin.x, czp = sp.base.z - z->origin.y;
-                        const int canopy = sp.base.y + 10, r = 4;   // крона примерно там же, где у спрайта
+                        // Р91: крона по возрасту - та же мера, что у спрайта
+                        float shh, sww;
+                        world::treeSpriteSize(sp.age, float(sp.seed & 0xFFFF) / 65535.0f, shh, sww);
+                        const int canopy = sp.base.y + int(shh * 0.8f), r = int(sww * 0.42f);
                         for (int dz = -r; dz <= r; ++dz)
                             for (int dx = -r; dx <= r; ++dx) {
                                 if (dx * dx + dz * dz > r * r) continue;
@@ -1353,7 +1374,7 @@ int main(int argc, char** argv) {
                 for (auto& [key, t] : forest) {
                     if (t.building >= 0) continue;
                     const int want = levelOf(t);
-                    if (t.level == want) continue;
+                    if (t.level == want && t.leaves == leavesOn) continue;
                     const int dx = t.spot.base.x - eb.x, dz = t.spot.base.z - eb.y, d2 = dx * dx + dz * dz;
                     need.push_back({(t.level < 0 ? 0 : 1 << 30) + d2, &t});   // без сетки - первыми
                 }
@@ -1368,12 +1389,14 @@ int main(int argc, char** argv) {
                     const int lvl = t.level < 0 ? 4 : levelOf(t);
                     t.building = lvl;
                     const ForestSpot sp = t.spot;
-                    forestRunning.push_back(treeJobs.submit([sp, lvl, gr, go, gs] {
-                        ForestBuilt fb{sp.key, lvl, sp.base, {}};
-                        buildOakChunks(sp.seed, sp.base, sp.shift, [&](int32_t bx, int32_t bz) {
+                    const auto skel = t.skel;
+                    const bool lv = leavesOn;
+                    forestRunning.push_back(treeJobs.submit([sp, lvl, gr, go, gs, skel, lv] {
+                        ForestBuilt fb{sp.key, lvl, sp.base, {}, skel ? skel : world::growTree(sp.seed, sp.age), lv};
+                        buildTreeChunks(*fb.skel, sp.base, sp.shift, [&](int32_t bx, int32_t bz) {
                             const int i = bx - go.x, j = bz - go.y;
                             return i < 0 || j < 0 || i >= gs || j >= gs ? INT32_MIN : (*gr)[size_t(j) * gs + i];
-                        }, fb.chunks, 1 << lvl);
+                        }, fb.chunks, 1 << lvl, lv);
                         return fb;
                     }));
                 }
@@ -1390,7 +1413,9 @@ int main(int argc, char** argv) {
                 ForestTree& t = ft->second;
                 for (const OakMesh& m : t.meshes) gpu->destroyMesh(m.mesh);   // старая сетка - только теперь
                 t.meshes.clear();
-                for (const OakChunk& oc : fb.chunks) t.meshes.push_back({gpu->uploadChunkMesh(oc.verts, 0), fb.base, oc.fineOff, 1 << fb.level});
+                for (const OakChunk& oc : fb.chunks) t.meshes.push_back({gpu->uploadChunkMesh(oc.verts, 0), fb.base, oc.fineOff, oc.scale});
+                t.skel = fb.skel;
+                t.leaves = fb.leaves;
                 forestUploads += int(fb.chunks.size());
                 if (t.level < 0) spritesDirty = true;   // был спрайтом - теперь сетка
                 t.level = fb.level;
@@ -1488,9 +1513,11 @@ int main(int argc, char** argv) {
                     if (t.level >= 0) continue;
                     const ForestSpot& sp = t.spot;
                     const float fr = float(sp.seed & 0xFFFF) / 65535.0f;
+                    float sh, sw;
+                    world::treeSpriteSize(sp.age, fr, sh, sw);
                     inst.insert(inst.end(), {(float(sp.base.x) + (sp.shift.x + 0.5f) / 16.0f) / 16.0f, (float(sp.base.y) - 0.2f) / 16.0f,
-                                             (float(sp.base.z) + (sp.shift.z + 0.5f) / 16.0f) / 16.0f, (10.0f + 3.0f * fr) / 16.0f,
-                                             (8.0f + 3.0f * fr) / 16.0f, float(sp.seed & 0x7FFF), 0.0f, 0.0f});
+                                             (float(sp.base.z) + (sp.shift.z + 0.5f) / 16.0f) / 16.0f, sh / 16.0f,
+                                             sw / 16.0f, float(sp.seed & 0x7FFF), 0.0f, 0.0f});
                 }
                 gpu->setTreeSprites(inst);
                 spriteCount = inst.size() / 8;

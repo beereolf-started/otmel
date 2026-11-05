@@ -24,6 +24,23 @@ TreeCandidate forestCandidate(const TerrainParams& p, int32_t ci, int32_t cj) {
     c.fx = int(next() % 16);
     c.fz = int(next() % 16);
     c.seed = next();
+    // Р91: ВОЗРАСТ. Великан - только в ячейке редкой сетки (через три ячейки), и вокруг него ячейки
+    // пусты: крона у него в тридцать блоков, рядом другим деревьям не место. Остальные - молодые и
+    // взрослые вперемешку.
+    const auto giantCell = [&](int32_t i, int32_t j) {
+        if (((i % 3) + 3) % 3 != 0 || ((j % 3) + 3) % 3 != 0) return false;
+        uint32_t g = uint32_t(i) * 0x9E3779B1u ^ uint32_t(j) * 0x85EBCA77u ^ p.seed * 0xC2B2AE3Du ^ 0x1B873593u;
+        g ^= g >> 15; g *= 0x2C1B3C6Du; g ^= g >> 12;
+        return (g & 0xFF) < 56;   // ~22% узлов редкой сетки
+    };
+    if (giantCell(ci, cj)) c.age = TreeAge::GIANT;
+    else {
+        bool near = false;
+        for (int dj = -1; dj <= 1 && !near; ++dj)
+            for (int di = -1; di <= 1; ++di) if ((di || dj) && giantCell(ci + di, cj + dj)) { near = true; break; }
+        if (near) c.roll = 2.0f;
+        c.age = (next() & 0xFF) < 115 ? TreeAge::ADULT : TreeAge::YOUNG;
+    }
     return c;
 }
 
@@ -106,8 +123,10 @@ std::vector<float> buildSpriteRegion(const TerrainParams& tp, int rx, int rz, in
                 base = h + 1.0f - 0.5f;   // верх верхнего вокселя; полблока в землю - на плитке без шва
             }
             const float fr = float(tc.seed & 0xFFFF) / 65535.0f;
+            float sh, sw;
+            treeSpriteSize(tc.age, fr, sh, sw);
             inst.insert(inst.end(), {(float(tc.x) + (tc.fx + 0.5f) / 16.0f) / 16.0f, base / 16.0f, (float(tc.z) + (tc.fz + 0.5f) / 16.0f) / 16.0f,
-                                     (10.0f + 3.0f * fr) / 16.0f, (8.0f + 3.0f * fr) * (even ? 1.6f : 1.0f) / 16.0f,
+                                     sh / 16.0f, sw * (even ? 1.6f : 1.0f) / 16.0f,
                                      float(tc.seed & 0x7FFF), 0.0f, 0.0f});
         }
     return inst;

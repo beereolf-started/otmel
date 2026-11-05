@@ -35,6 +35,7 @@ add_library(otmel_world STATIC
     src/world/spread.cpp
     src/world/oak.cpp
     src/world/forest.cpp
+    src/world/tree.cpp
     src/world/rocks.cpp
     src/world/rock_table.cpp
     src/world/soil_table.cpp
@@ -108,6 +109,9 @@ add_dependencies(otmel otmel_shaders)
 # Замер цены столбца (долг по цене из Р77): мс на столбец куска, мкс на столбец мира
 add_executable(otmel_bench tools/column_bench.cpp)
 target_link_libraries(otmel_bench PRIVATE otmel_world)
+# Р91: дерево сбоку без игры - три возраста, лето и зима
+add_executable(otmel_treeview tools/tree_view.cpp)
+target_link_libraries(otmel_treeview PRIVATE otmel_world)
 
 # Карта мира сверху - тем же кодом генерации (Р19)
 add_executable(otmel_map tools/biome_map.cpp)
