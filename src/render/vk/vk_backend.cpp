@@ -194,9 +194,22 @@ public:
         free_.push_back(id);
     }
 
-    // Панель отладки: в пути Vulkan пока не рисуется - нужен свой проход с текстурой и набором
-    // привязок. Делается следующим шагом; до тех пор панель видна в пути OpenGL (ключ --gl).
-    void setOverlay(int, int, std::span<const uint8_t>) override {}
+    // Р99: картинка поверх экрана (панель, подсказки, окна) - в Vulkan тоже: текстура RGBA и прямоугольник
+    // в конце кадра, без глубины. Прежде здесь была заглушка, и панель была видна только в пути OpenGL.
+    void setOverlay(int w, int h, std::span<const uint8_t> rgba) override {
+        if (w <= 0 || h <= 0 || rgba.empty()) { overlayW_ = overlayH_ = 0; return; }
+        ensureFrame();
+        if (w != overlayTexW_ || h != overlayTexH_) {
+            drop(overlayTex_);
+            overlayTex_ = makeImage(w, h, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                                    VK_SAMPLE_COUNT_1_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
+            overlayTexW_ = w;
+            overlayTexH_ = h;
+        }
+        uploadImage(overlayTex_, rgba.data(), size_t(w) * h * 4);
+        overlayW_ = w;
+        overlayH_ = h;
+    }
 
     void setDebug(int mode) override { debug_ = mode; }
     void setVsync(bool on) override { if (vsync_ != on) { vsync_ = on; swapDirty_ = true; } }
@@ -495,6 +508,16 @@ public:
             const VkDeviceSize off = 0;
             vkCmdBindVertexBuffers(c, 0, 1, &dyn_.per[slot_].buf, &off);
             vkCmdDraw(c, dynCount_, 1, 0, 0);
+            ++stats.drawCalls;
+        }
+        // Р99: картинка поверх экрана - левый верхний угол с полем 12 точек (как в OpenGL)
+        if (overlayW_ > 0 && overlayTex_.img) {
+            vkCmdBindPipeline(c, VK_PIPELINE_BIND_POINT_GRAPHICS, pOverlay_);
+            const float m = 12.0f;
+            const float x0 = -1.0f + 2.0f * m / float(extent_.width), y0 = 1.0f - 2.0f * m / float(extent_.height);
+            const float rect[4] = {x0, y0, x0 + 2.0f * float(overlayW_) / float(extent_.width), y0 - 2.0f * float(overlayH_) / float(extent_.height)};
+            vkCmdPushConstants(c, layout_, PUSH_STAGES, 0, sizeof(rect), rect);
+            vkCmdDraw(c, 6, 1, 0, 0);
             ++stats.drawCalls;
         }
         vkCmdEndRendering(c);
@@ -866,8 +889,8 @@ private:
         ensureAtlas();   // Р80: атлас текстур блоков - один раз за запуск
         VkDescriptorBufferInfo ubo{s.ubo.buf, 0, sizeof(FrameUbo)};
         VkDescriptorBufferInfo ssbo{fineBlocks_.per[slot_].buf, 0, VK_WHOLE_SIZE};
-        VkWriteDescriptorSet w[18];
-        VkDescriptorImageInfo img[2][7];
+        VkWriteDescriptorSet w[20];
+        VkDescriptorImageInfo img[2][8];
         for (int k = 0; k < 2; ++k) {
             const VkDescriptorSet set = k ? s.setWater : s.setOpaque;
             const VkImageLayout ro = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
@@ -878,19 +901,20 @@ private:
             img[k][4] = {nearest_, maskTex_.view, ro};
             img[k][5] = {atlasSmp_, atlasTex_.img ? atlasTex_.view : dummyFloat_.view, ro};   // Р80
             img[k][6] = {linear_, skyTex_.img ? skyTex_.view : dummyFloat_.view, ro};   // Р85
-            const uint32_t imgBinding[7] = {1, 2, 4, 5, 6, 7, 8};
-            VkWriteDescriptorSet* o = &w[k * 9];
-            for (int i = 0; i < 9; ++i) o[i] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+            img[k][7] = {nearest_, overlayTex_.img ? overlayTex_.view : dummyFloat_.view, ro};   // Р99: картинка поверх экрана
+            const uint32_t imgBinding[8] = {1, 2, 4, 5, 6, 7, 8, 9};
+            VkWriteDescriptorSet* o = &w[k * 10];
+            for (int i = 0; i < 10; ++i) o[i] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
             o[0].dstSet = set; o[0].dstBinding = 0; o[0].descriptorCount = 1;
             o[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; o[0].pBufferInfo = &ubo;
             o[1].dstSet = set; o[1].dstBinding = 3; o[1].descriptorCount = 1;
             o[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; o[1].pBufferInfo = &ssbo;
-            for (int i = 0; i < 7; ++i) {
+            for (int i = 0; i < 8; ++i) {
                 o[2 + i].dstSet = set; o[2 + i].dstBinding = imgBinding[i]; o[2 + i].descriptorCount = 1;
                 o[2 + i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; o[2 + i].pImageInfo = &img[k][i];
             }
         }
-        vkUpdateDescriptorSets(dev_, 18, w, 0, nullptr);
+        vkUpdateDescriptorSets(dev_, 20, w, 0, nullptr);
     }
 
     void beginRendering(VkCommandBuffer c, const VkRenderingAttachmentInfo& col, const VkRenderingAttachmentInfo& dep) {
@@ -1184,7 +1208,7 @@ private:
         const VkShaderStageFlags st = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
         // 0 кадр, 1 течения, 2 глубина сцены, 3 блоки мелкой воды, 4 мелкая вода, 5 её маска,
         // 6 маска вокселей, 7 текстуры блоков (Р80), 8 карта верхних высот для теней (Р85)
-        VkDescriptorSetLayoutBinding b[9] = {
+        VkDescriptorSetLayoutBinding b[10] = {
             {0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, st, nullptr},
             {1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, st, nullptr},
             {2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, st, nullptr},
@@ -1194,9 +1218,10 @@ private:
             {6, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, st, nullptr},
             {7, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, st, nullptr},
             {8, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, st, nullptr},
+            {9, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, st, nullptr},   // Р99: картинка поверх экрана
         };
         VkDescriptorSetLayoutCreateInfo lci{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-        lci.bindingCount = 9;
+        lci.bindingCount = 10;
         lci.pBindings = b;
         if (!vkOk(vkCreateDescriptorSetLayout(dev_, &lci, nullptr, &setLayout_), "vkCreateDescriptorSetLayout")) return false;
         const VkPushConstantRange pr{PUSH_STAGES, 0, PUSH_BYTES};
@@ -1207,7 +1232,7 @@ private:
         plci.pPushConstantRanges = &pr;
         if (!vkOk(vkCreatePipelineLayout(dev_, &plci, nullptr, &layout_), "vkCreatePipelineLayout")) return false;
         const VkDescriptorPoolSize sizes[3] = {{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, FRAMES * 2},
-                                               {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, FRAMES * 2 * 7},
+                                               {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, FRAMES * 2 * 8},
                                                {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, FRAMES * 2}};
         VkDescriptorPoolCreateInfo dpci{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
         dpci.maxSets = FRAMES * 2;
@@ -1227,7 +1252,8 @@ private:
         return m;
     }
     enum Input { NONE, CHUNK, TILE_IN, INSTANCED, DYN };
-    VkPipeline makePipeline(const std::string& dir, const char* vs, const char* fs, Input input, bool blend, bool depthWrite, bool cull) {
+    VkPipeline makePipeline(const std::string& dir, const char* vs, const char* fs, Input input, bool blend, bool depthWrite, bool cull,
+                            bool depthTest = true) {
         const VkShaderModule v = loadModule(dir + "/" + vs + ".vert.vk.spv");
         const VkShaderModule f = loadModule(dir + "/" + fs + ".frag.vk.spv");
         if (!v || !f) return VK_NULL_HANDLE;
@@ -1269,7 +1295,7 @@ private:
         VkPipelineMultisampleStateCreateInfo ms{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
         ms.rasterizationSamples = SAMPLES;
         VkPipelineDepthStencilStateCreateInfo ds{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
-        ds.depthTestEnable = VK_TRUE;
+        ds.depthTestEnable = depthTest ? VK_TRUE : VK_FALSE;
         ds.depthWriteEnable = depthWrite ? VK_TRUE : VK_FALSE;
         ds.depthCompareOp = VK_COMPARE_OP_GREATER;   // обратная глубина: ближе - больше
         VkPipelineColorBlendAttachmentState ba{};
@@ -1319,7 +1345,8 @@ private:
         pFine_ = makePipeline(dir, "finewater", "terrain", NONE, true, false, false);            // Р58
         pSpray_ = makePipeline(dir, "spray", "terrain", INSTANCED, true, false, false);          // Р59
         pDyn_ = makePipeline(dir, "dynwater", "terrain", DYN, true, false, false);               // Р45
-        return pTerrain_ && pTerrainWater_ && pTile_ && pTileWater_ && pTree_ && pFine_ && pSpray_ && pDyn_;
+        pOverlay_ = makePipeline(dir, "overlay", "overlay", NONE, true, false, false, false);    // Р99: поверх всего
+        return pTerrain_ && pTerrainWater_ && pTile_ && pTileWater_ && pTree_ && pFine_ && pSpray_ && pDyn_ && pOverlay_;
     }
 
     void shutdown() {
@@ -1341,10 +1368,10 @@ private:
             for (HostBuf& b : d->per) destroyHost(b);
         destroyHost(readback_);
         for (Block& b : blocks_) { vkDestroyBuffer(dev_, b.buf, nullptr); vkFreeMemory(dev_, b.mem, nullptr); }
-        for (Image* im : {&maskTex_, &flowTex_, &fineTex_, &fineMask_, &dummyFloat_, &dummyUint_, &atlasTex_, &skyTex_}) destroyImage(*im);
+        for (Image* im : {&maskTex_, &flowTex_, &fineTex_, &fineMask_, &dummyFloat_, &dummyUint_, &atlasTex_, &skyTex_, &overlayTex_}) destroyImage(*im);
         destroySwapchainParts();
         if (swapchain_) vkDestroySwapchainKHR(dev_, swapchain_, nullptr);
-        for (VkPipeline p : {pTerrain_, pTerrainWater_, pTile_, pTileWater_, pTree_, pFine_, pSpray_, pDyn_})
+        for (VkPipeline p : {pTerrain_, pTerrainWater_, pTile_, pTileWater_, pTree_, pFine_, pSpray_, pDyn_, pOverlay_})
             if (p) vkDestroyPipeline(dev_, p, nullptr);
         if (layout_) vkDestroyPipelineLayout(dev_, layout_, nullptr);
         if (descPool_) vkDestroyDescriptorPool(dev_, descPool_, nullptr);
@@ -1390,7 +1417,9 @@ private:
     VkPipelineLayout layout_ = VK_NULL_HANDLE;
     VkDescriptorPool descPool_ = VK_NULL_HANDLE;
     VkPipeline pTerrain_ = VK_NULL_HANDLE, pTerrainWater_ = VK_NULL_HANDLE, pTile_ = VK_NULL_HANDLE, pTileWater_ = VK_NULL_HANDLE;
-    VkPipeline pTree_ = VK_NULL_HANDLE, pFine_ = VK_NULL_HANDLE, pSpray_ = VK_NULL_HANDLE, pDyn_ = VK_NULL_HANDLE;
+    VkPipeline pTree_ = VK_NULL_HANDLE, pFine_ = VK_NULL_HANDLE, pSpray_ = VK_NULL_HANDLE, pDyn_ = VK_NULL_HANDLE, pOverlay_ = VK_NULL_HANDLE;
+    Image overlayTex_;
+    int overlayTexW_ = 0, overlayTexH_ = 0, overlayW_ = 0, overlayH_ = 0;
     Slot slots_[FRAMES];
     int slot_ = 0;
     bool recording_ = false, acquired_ = false, waited_ = false;
