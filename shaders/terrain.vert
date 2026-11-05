@@ -18,7 +18,11 @@ layout(std140, binding = 0) uniform Frame {
     vec4 skyArea;      // Р85: карта верхних высот для теней - угол x, z (блоки), сторона, 0
 };
 #ifdef VULKAN   // Р73: в Vulkan параметры вызова - push-константы
-layout(push_constant) uniform Push { ivec4 chunk; ivec4 fineOff; ivec4 flags; } pc;
+layout(push_constant) uniform Push { ivec4 chunk; ivec4 fineOff; ivec4 flags; vec4 xf[3]; } pc;
+#define uXf pc.flags.z
+#define uXf0 pc.xf[0]
+#define uXf1 pc.xf[1]
+#define uXf2 pc.xf[2]
 #define uChunk pc.chunk.xyz
 #define uFineOff pc.fineOff.xyz
 #define uFine pc.flags.x
@@ -29,6 +33,10 @@ layout(location = 0) uniform ivec3 uChunk;   // начало куска в во�
 layout(location = 1) uniform ivec3 uFineOff; // Р56: мелкий кусок - сдвиг от основы в мелких вокселях (1/16 блока)
 layout(location = 2) uniform int uFine;      // Р56: 1 - мелкий кусок (дерево и прочее мельче блока)
 layout(location = 3) uniform int uFineScale; // Р63: размер вокселя мелкого куска в мелких вокселях
+layout(location = 4) uniform int uXf;        // Р92: предмет с поворотом
+layout(location = 5) uniform vec4 uXf0;
+layout(location = 6) uniform vec4 uXf1;
+layout(location = 7) uniform vec4 uXf2;
 #endif
 
 layout(location = 0) out vec4 vColor;
@@ -42,7 +50,7 @@ layout(location = 7) out vec3 vBlock;          // Р80: точка в блока
 
 // цвета материалов, пока без текстур: 0 воздух, 1 камень, 2 земля, 3 трава, 4 песок, 5 снег, 6 вода (Р28)
 // Р53: 7 кора, 8 древесина, 9 листва, 10 листва светлее; Р71: кора серо-бурая, 11 - кора в трещине
-const vec3 COLORS[146] = vec3[](vec3(1, 0, 1), vec3(0.47, 0.47, 0.5), vec3(0.45, 0.32, 0.2), vec3(0.36, 0.58, 0.25), vec3(0.85, 0.8, 0.55), vec3(0.93, 0.95, 0.98), vec3(0.3, 0.62, 0.92),
+const vec3 COLORS[153] = vec3[](vec3(1, 0, 1), vec3(0.47, 0.47, 0.5), vec3(0.45, 0.32, 0.2), vec3(0.36, 0.58, 0.25), vec3(0.85, 0.8, 0.55), vec3(0.93, 0.95, 0.98), vec3(0.3, 0.62, 0.92),
                               vec3(0.36, 0.31, 0.25), vec3(0.68, 0.53, 0.33), vec3(0.22, 0.42, 0.14), vec3(0.32, 0.53, 0.2), vec3(0.17, 0.13, 0.1),
     // Р77: породы - гранит, диорит, габбро, риолит, базальт, андезит, дацит, аргиллитовый сланец, аргиллит, известняк,
     // конгломерат, доломит, кремень, мел, кварцит, кровельный сланец, филлит, кристаллический сланец, гнейс, мрамор
@@ -91,7 +99,13 @@ const vec3 COLORS[146] = vec3[](vec3(1, 0, 1), vec3(0.47, 0.47, 0.5), vec3(0.45,
     // Р89: дёрн по почвам (порядок почв - src/world/soil_table.cpp): верх, бок, бок под снегом
     vec3(0.50, 0.60, 0.30), vec3(0.44, 0.60, 0.27), vec3(0.36, 0.58, 0.25), vec3(0.40, 0.60, 0.28), vec3(0.47, 0.62, 0.33), vec3(0.31, 0.53, 0.23), vec3(0.28, 0.49, 0.22), vec3(0.30, 0.47, 0.24), vec3(0.25, 0.40, 0.18),
     vec3(0.71, 0.72, 0.45), vec3(0.55, 0.54, 0.31), vec3(0.41, 0.42, 0.22), vec3(0.47, 0.49, 0.29), vec3(0.55, 0.56, 0.37), vec3(0.41, 0.43, 0.27), vec3(0.41, 0.44, 0.32), vec3(0.35, 0.39, 0.26), vec3(0.24, 0.27, 0.16),
-    vec3(0.87, 0.84, 0.68), vec3(0.71, 0.64, 0.53), vec3(0.59, 0.51, 0.43), vec3(0.64, 0.58, 0.50), vec3(0.70, 0.65, 0.57), vec3(0.61, 0.54, 0.50), vec3(0.63, 0.56, 0.56), vec3(0.55, 0.52, 0.49), vec3(0.45, 0.42, 0.39));  // графит
+    vec3(0.87, 0.84, 0.68), vec3(0.71, 0.64, 0.53), vec3(0.59, 0.51, 0.43), vec3(0.64, 0.58, 0.50), vec3(0.70, 0.65, 0.57), vec3(0.61, 0.54, 0.50), vec3(0.63, 0.56, 0.56), vec3(0.55, 0.52, 0.49), vec3(0.45, 0.42, 0.39),
+    // Р92: железо инструментов
+    vec3(0.56, 0.58, 0.62),
+    // Р92: кожа обмотки - светлая и тёмная полосы
+    vec3(0.62, 0.42, 0.26), vec3(0.42, 0.27, 0.16),
+    // Р92: кремень и рукояти - по два оттенка
+    vec3(0.50, 0.50, 0.47), vec3(0.40, 0.41, 0.39), vec3(0.80, 0.66, 0.46), vec3(0.70, 0.56, 0.38));  // графит
 // Р34: вода полупрозрачная голубая - сквозь неё видно дно; та же доля - у дальних плиток (tile.vert)
 const float WATER_ALPHA = 0.55;
 const vec3 NORMALS[6] = vec3[](vec3(1, 0, 0), vec3(-1, 0, 0), vec3(0, 1, 0), vec3(0, -1, 0), vec3(0, 0, 1), vec3(0, 0, -1));
@@ -131,6 +145,18 @@ void main() {
     // малые, и дробная часть остаётся точной. От начала мира (сотни тысяч блоков) у float шаг
     // доходит до четверти точки рисунка, и земля вдали расползалась полосами.
     vBlock = rel * 16.0;
+    // Р92: ПРЕДМЕТ С ПОВОРОТОМ (лежащий сук, падающий ствол, топор в руке). Сетка построена вокруг
+    // блока-основы (uChunk); строки xyz - поворот, w - куда эту основу поставить (прежние меры,
+    // от начала видеокарты - числа малые). Рисунок остаётся привязан к самому предмету.
+    vec3 xfN = vec3(0);
+    bool xf = uFine == 1 && uXf == 1;
+    vec3 xq = rel - vec3(rc) / 16.0;
+    vec3 xDst = vec3(uXf0.w, uXf1.w, uXf2.w);
+    if (xf) {
+        vec3 n0 = NORMALS[normal];
+        xfN = normalize(vec3(dot(uXf0.xyz, n0), dot(uXf1.xyz, n0), dot(uXf2.xyz, n0)));   // строки несут и масштаб
+        rel = xDst + vec3(dot(uXf0.xyz, xq), dot(uXf1.xyz, xq), dot(uXf2.xyz, xq));
+    }
     // Р66: щели Т-стыков. Склеенные прямоугольники сходятся вершиной посреди чужого ребра - при растеризации остаются
     // щели меньше пикселя, сквозь них видно небо (на силуэтах деревьев, краях блоков). Непрозрачный прямоугольник
     // раздвигается за свои края на ~полпикселя на любом расстоянии; угол - по номеру вершины (4 на прямоугольник:
@@ -140,14 +166,19 @@ void main() {
         du[AX[ai].y] = cu == 1 ? 1.0 : -1.0;
         dv[AX[ai].z] = cv == 1 ? 1.0 : -1.0;
         float eps = 0.0009 * distance(eye.xyz - originOld.xyz, rel);   // полпикселя при обзоре 70° на 720 строк
-        rel += (du + dv) * eps;
+        // Р92: у предмета с поворотом края раздвигаются в ЕГО осях (иначе стыки вокселей рвутся щелями), а мера
+        // - с поправкой на масштаб модели (воксель 1/64 блока)
+        if (xf) {
+            vec3 q2 = xq + (du + dv) * (eps / max(length(uXf0.xyz), 1e-4));
+            rel = xDst + vec3(dot(uXf0.xyz, q2), dot(uXf1.xyz, q2), dot(uXf2.xyz, q2));
+        } else rel += (du + dv) * eps;
     }
     gl_Position = viewProj * vec4(rel, 1.0);
     vec3 world = rel + originOld.xyz;   // для шума и расстояний - абсолютно
     // свет: рассеянный по нормали плюс постоянная подсветка неба
-    float light = 0.35 + 0.65 * max(dot(NORMALS[normal], normalize(sunDir.xyz)), 0.0);
-    vColor = vec4(COLORS[min(material, 145u)] * light, material == 6u ? WATER_ALPHA : 1.0);
-    vMat = min(material, 145u);
+    float light = 0.35 + 0.65 * max(dot(uXf == 1 && uFine == 1 ? xfN : NORMALS[normal], normalize(sunDir.xyz)), 0.0);
+    vColor = vec4(COLORS[min(material, 152u)] * light, material == 6u ? WATER_ALPHA : 1.0);
+    vMat = min(material, 152u);
     vLight = light;
     vWorld = world;
     vNormal = normal;

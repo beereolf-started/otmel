@@ -40,7 +40,9 @@ struct CmdCamera {
 };
 // Р56: fine - мелкий кусок (воксель = 1/16 блока, тексель): originVoxels - блок-основа, fineOff - сдвиг куска от
 // неё в мелких вокселях (так нет больших дробных чисел - мелкий воксель не дрожит)
-struct CmdDrawChunk { MeshId mesh; glm::ivec3 originVoxels; glm::ivec3 fineOff{0}; bool fine = false; int fineScale = 1; };
+// Р92: xf - мелкий кусок с поворотом: строки xyz - поворот, w - куда поставить блок-основу (блоки, от начала
+// видеокарты originV): предметы, падающий ствол, инструмент в руке
+struct CmdDrawChunk { MeshId mesh; glm::ivec3 originVoxels; glm::ivec3 fineOff{0}; bool fine = false; int fineScale = 1; bool xf = false; glm::vec4 rot[3]{}; };
 // Плитка дальнего уровня (Р20): начало в блоках, шаг узлов в блоках, где идёт морфинг, какие четверти
 struct CmdDrawTile {
     MeshId mesh;
@@ -58,6 +60,11 @@ struct CommandList {
     void drawChunk(MeshId m, glm::ivec3 origin) { commands.push_back(CmdDrawChunk{m, origin}); }
     // Р63: scale - размер вокселя куска в мелких вокселях (уровень детализации)
     void drawFineChunk(MeshId m, glm::ivec3 baseBlock, glm::ivec3 fineOff, int scale = 1) { commands.push_back(CmdDrawChunk{m, baseBlock, fineOff, true, scale}); }
+    void drawFineChunkXf(MeshId m, glm::ivec3 baseBlock, glm::ivec3 fineOff, const glm::vec4 (&rot)[3]) {
+        CmdDrawChunk c{m, baseBlock, fineOff, true, 1, true};
+        for (int i = 0; i < 3; ++i) c.rot[i] = rot[i];
+        commands.push_back(c);
+    }
     void drawTile(const CmdDrawTile& t) { commands.push_back(t); }
     void reset() { commands.clear(); }
 };

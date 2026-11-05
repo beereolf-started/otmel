@@ -381,6 +381,8 @@ public:
                 glProgramUniform3i(program_, 1, d->fineOff.x, d->fineOff.y, d->fineOff.z);
                 glProgramUniform1i(program_, 2, d->fine ? 1 : 0);
                 glProgramUniform1i(program_, 3, d->fineScale);
+                glProgramUniform1i(program_, 4, d->xf ? 1 : 0);   // Р92: предмет с поворотом
+                for (int i = 0; i < 3; ++i) glProgramUniform4f(program_, 5 + i, d->rot[i].x, d->rot[i].y, d->rot[i].z, d->rot[i].w);
                 glVertexArrayVertexBuffer(vao_, 0, m.vbo, 0, 4);
                 glDrawElements(GL_TRIANGLES, (m.quads - m.water) * 6, GL_UNSIGNED_INT, nullptr);
                 ++stats.drawCalls;
@@ -521,6 +523,7 @@ private:
                 glProgramUniform3i(program_, 1, d->fineOff.x, d->fineOff.y, d->fineOff.z);
                 glProgramUniform1i(program_, 2, d->fine ? 1 : 0);
                 glProgramUniform1i(program_, 3, d->fineScale);
+                glProgramUniform1i(program_, 4, 0);
                 glVertexArrayVertexBuffer(vao_, 0, m.vbo, 0, 4);
                 glDrawElements(GL_TRIANGLES, m.water * 6, GL_UNSIGNED_INT,
                                reinterpret_cast<const void*>(static_cast<uintptr_t>((m.quads - m.water) * 6 * 4)));

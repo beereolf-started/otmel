@@ -66,9 +66,9 @@ struct FrameUbo {
     float skyArea[4];
 };
 // push-константы шейдеров (#ifdef VULKAN): кусок и плитка - по 48 байт, мелкая вода - 16
-struct PushChunk { int32_t chunk[4], fineOff[4], flags[4]; };
+struct PushChunk { int32_t chunk[4], fineOff[4], flags[4]; float xf[12]; };
 struct PushTile { int32_t i0[4]; float f0[4]; int32_t i1[4]; };
-constexpr uint32_t PUSH_BYTES = 64;
+constexpr uint32_t PUSH_BYTES = 96;   // Р92: + поворот предмета
 constexpr VkShaderStageFlags PUSH_STAGES = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
 
 struct Image {
@@ -943,9 +943,11 @@ private:
         current = p;
     }
     void drawChunk(VkCommandBuffer c, const CmdDrawChunk& d, const Mesh& m, uint32_t firstQuad, uint32_t quads) {
-        const PushChunk pc{{d.originVoxels.x, d.originVoxels.y, d.originVoxels.z, 0},
-                           {d.fineOff.x, d.fineOff.y, d.fineOff.z, 0},
-                           {d.fine ? 1 : 0, d.fineScale, 0, 0}};
+        PushChunk pc{{d.originVoxels.x, d.originVoxels.y, d.originVoxels.z, 0},
+                     {d.fineOff.x, d.fineOff.y, d.fineOff.z, 0},
+                     {d.fine ? 1 : 0, d.fineScale, d.xf ? 1 : 0, 0}, {}};
+        for (int i = 0; i < 3; ++i)
+            for (int j = 0; j < 4; ++j) pc.xf[i * 4 + j] = d.rot[i][j];
         vkCmdPushConstants(c, layout_, PUSH_STAGES, 0, sizeof(pc), &pc);
         bindVertexBlock(c, m.a);
         vkCmdDrawIndexed(c, quads * 6, 1, firstQuad * 6, int32_t(m.a.offset / 4), 0);

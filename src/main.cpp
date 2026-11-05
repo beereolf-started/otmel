@@ -50,6 +50,8 @@
 
 #include "builder.h"
 #include "player.h"
+#include "game/items.h"
+#include <optional>
 #include "dev_text.h"
 #include "devinfo.h"
 #include "voxel_zone.h"
@@ -326,7 +328,8 @@ int main(int argc, char** argv) {
     float recordSec = 0;   // со --shot: запись кадров rec_NNN.bmp 15 раз в секунду столько секунд
     int voxelBlocks = 128;
     float atX = 0, atZ = 0, flySpeed = 0, spinRate = 0;
-    bool winter = false;
+    bool winter = false, hold = false;
+    float startPitch = -0.35f;
     world::LodSettings lod;
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
@@ -338,7 +341,9 @@ int main(int argc, char** argv) {
         if (a == "--at" && i + 2 < argc) { atX = std::stof(argv[i + 1]); atZ = std::stof(argv[i + 2]); }
         if (a == "--fly" && i + 1 < argc) flySpeed = std::stof(argv[i + 1]);
         if (a == "--record" && i + 1 < argc) recordSec = std::stof(argv[i + 1]);
-        if (a == "--winter") winter = true;   // Р91: деревья без листвы
+        if (a == "--winter") winter = true;
+        if (a == "--hold") hold = true;
+        if (a == "--pitch" && i + 1 < argc) startPitch = std::stof(argv[i + 1]);   // наклон камеры на старте   // Р92: топор в правой руке с начала (для снимка)   // Р91: деревья без листвы
         if (a == "--spin" && i + 1 < argc) spinRate = std::stof(argv[i + 1]);   // со --shot: поворот камеры, рад/с
     }
     if (!SDL_Init(SDL_INIT_VIDEO)) { journal::error("окно", "SDL не запустился: {}", SDL_GetError()); return 1; }
@@ -409,7 +414,15 @@ int main(int argc, char** argv) {
     player.flying = shot;   // снимок не должен падать на землю; живая игра начинается пешком
     bool jumpWas = false;
     const auto eyeF = [&eye] { return glm::vec3(eye); };
-    float yaw = -0.6f, pitch = -0.35f, speedScale = 1.0f;
+    float yaw = -0.6f, pitch = startPitch, speedScale = 1.0f;
+    // Р92: предметы в мире и руки (0 - левая, 1 - правая). На старте рядом лежат инструменты.
+    game::Items items;
+    std::optional<game::Item> hands[2];
+    if (hold) hands[1] = game::makeTool(game::ItemKind::AXE);
+    struct HandMesh { const game::ItemModel* model = nullptr; std::vector<render::MeshId> meshes; std::vector<glm::ivec3> offs; };
+    HandMesh handMesh[2];
+    bool toolsSpawned = false;
+    float handTime = 0, walkPhase = 0, walkAmp = 0;   // покачивание предмета в руке
     // Подсказки разработчика (devinfo.h): что под прицелом и переход по координатам
     dev::Aim aim;
     std::string gotoText;
@@ -724,6 +737,25 @@ int main(int argc, char** argv) {
                 (ev.button.button == SDL_BUTTON_RIGHT || ev.button.button == SDL_BUTTON_LEFT)) {
                 const glm::dvec3 start = eye * 16.0;                       // прежние меры -> блоки (Р54)
                 const glm::dvec3 dir(std::cos(pitch) * std::cos(yaw), std::sin(pitch), std::cos(pitch) * std::sin(yaw));
+                // Р92: ЛКМ - левая рука, ПКМ - правая. Предмет под прицелом (ближе блока) - взять, если рука
+                // свободна. Пустая рука по блоку - сломать, как прежде. В руке предмет - его действие (рубка, Р93).
+                const int hand = ev.button.button == SDL_BUTTON_LEFT ? 0 : 1;
+                double tItem = 0, tBlock = 1e9;
+                const int picked = items.pick(start, dir, 4.5, tItem);
+                for (int i = 1; i <= 6 * 8; ++i) {
+                    const glm::dvec3 v = start + dir * (double(i) / 8.0);
+                    if (voxelQuery.solid(int32_t(std::floor(v.x)), int32_t(std::floor(v.y)), int32_t(std::floor(v.z)))) { tBlock = double(i) / 8.0; break; }
+                }
+                if (picked >= 0 && tItem < tBlock) {
+                    if (!hands[hand]) {
+                        game::WorldItem& w = items.list[size_t(picked)];
+                        hands[hand] = w.item;
+                        for (uint32_t m : w.meshes) gpu->destroyMesh(m);
+                        journal::info("руки", "взят в {} руку: {}", hand ? "правую" : "левую", game::itemName(w.item));
+                        items.wake(w.body.pos, 2.0);
+                        items.list.erase(items.list.begin() + picked);
+                    }
+                } else if (!hands[hand])
                 for (int i = 1; i <= 6 * 8; ++i) {                          // до 6 блоков, шаг 1/8
                     const glm::dvec3 v = start + dir * (double(i) / 8.0);
                     const int32_t vx = int32_t(std::floor(v.x)), vy = int32_t(std::floor(v.y)), vz = int32_t(std::floor(v.z));
@@ -738,6 +770,7 @@ int main(int argc, char** argv) {
                             if (fd(vx + dx) == cx + dx && fd(vz + dz) == cz + dz) voxels.invalidate(cx + dx, cz + dz);
                     voxels.invalidate(cx, cz);
                     journal::info("мир", "сломан блок: {} в ({}, {}, {})", dev::materialName(m), vx, vy, vz);
+                    items.wake(glm::dvec3(vx + 0.5, vy + 0.5, vz + 0.5), 4.0);   // Р92: лежавшее на нём падает
                     break;
                 }
             }
@@ -749,7 +782,48 @@ int main(int argc, char** argv) {
                 buildOaks();
             }
             if (ev.type == SDL_EVENT_KEY_DOWN && ev.key.key == SDLK_R) { hideRoots = !hideRoots; buildOaks(); }
-            if (ev.type == SDL_EVENT_KEY_DOWN && ev.key.key == SDLK_L) leavesOn = !leavesOn;   // Р91: листва - для проверки зимы
+            if (ev.type == SDL_EVENT_KEY_DOWN && ev.key.key == SDLK_L) leavesOn = !leavesOn;
+            // Р92: V - положить к вокселю под прицелом, Q - выбросить. Из правой руки, если она пуста - из левой.
+            if (ev.type == SDL_EVENT_KEY_DOWN && !typing && (ev.key.key == SDLK_V || ev.key.key == SDLK_Q)) {
+                const int hand = hands[1] ? 1 : (hands[0] ? 0 : -1);
+                if (hand >= 0) {
+                    const game::Item it = *hands[hand];
+                    const game::ItemModel& md = *it.model;
+                    const glm::dvec3 start = eye * 16.0;
+                    const glm::dvec3 dir(std::cos(pitch) * std::cos(yaw), std::sin(pitch), std::cos(pitch) * std::sin(yaw));
+                    if (ev.key.key == SDLK_V) {
+                        glm::ivec3 prev(INT32_MIN);
+                        bool hit = false;
+                        for (int i = 1; i <= 6 * 8 && !hit; ++i) {
+                            const glm::dvec3 v = start + dir * (double(i) / 8.0);
+                            const glm::ivec3 b(int(std::floor(v.x)), int(std::floor(v.y)), int(std::floor(v.z)));
+                            if (voxelQuery.solid(b.x, b.y, b.z)) hit = true;
+                            else prev = b;
+                        }
+                        if (hit && prev.x != INT32_MIN) {
+                            // длинной стороной - вдоль земли, поворот - к игроку, с шагом в четверть круга
+                            glm::quat rq(1, 0, 0, 0);
+                            if (md.sy >= md.sx && md.sy >= md.sz) rq = glm::angleAxis(1.5707963f, glm::vec3(1, 0, 0));
+                            const float ys = std::round(yaw / 1.5707963f) * 1.5707963f;
+                            rq = glm::angleAxis(-ys, glm::vec3(0, 1, 0)) * rq;
+                            const glm::mat3 R = glm::mat3_cast(rq);
+                            float low = 1e9f;
+                            for (int c = 0; c < 8; ++c) {
+                                const glm::vec3 k(c & 1 ? md.hi.x : md.lo.x, c & 2 ? md.hi.y : md.lo.y, c & 4 ? md.hi.z : md.lo.z);
+                                low = std::min(low, (R * k).y);
+                            }
+                            items.spawn(it, glm::dvec3(prev.x + 0.5, prev.y - low + 0.002, prev.z + 0.5), rq, {}, {}, true);
+                            hands[hand].reset();
+                        }
+                    } else {
+                        static uint32_t spin = 12345u;
+                        spin = spin * 1664525u + 1013904223u;
+                        const glm::vec3 ang(float(spin & 255) / 64.0f - 2.0f, float((spin >> 8) & 255) / 64.0f - 2.0f, float((spin >> 16) & 255) / 64.0f - 2.0f);
+                        items.spawn(it, start + dir * 0.7, glm::angleAxis(-yaw, glm::vec3(0, 1, 0)), glm::vec3(dir) * 6.0f + glm::vec3(0, 1.5f, 0), ang);
+                        hands[hand].reset();
+                    }
+                }
+            }   // Р91: листва - для проверки зимы
             if (ev.type == SDL_EVENT_MOUSE_WHEEL) speedScale = std::clamp(speedScale * std::pow(1.25f, ev.wheel.y), 0.1f, 100.0f);
             if (ev.type == SDL_EVENT_MOUSE_MOTION) {
                 yaw += ev.motion.xrel * 0.0025f;
@@ -785,6 +859,24 @@ int main(int argc, char** argv) {
             player.flySpeed = speedScale;
             game::step(player, voxelQuery, in, yaw, dt, std::chrono::duration<float>(now - startAt).count());
             eye = player.eye;
+        }
+        // Р92: на старте рядом с игроком - инструменты (падают на землю сами)
+        if (!toolsSpawned) {
+            toolsSpawned = true;
+            const glm::dvec3 f = glm::normalize(glm::dvec3(fwd.x, 0, fwd.z)), sd(-f.z, 0, f.x);
+            const game::ItemKind kinds[4] = {game::ItemKind::AXE, game::ItemKind::SAW, game::ItemKind::DRAWKNIFE, game::ItemKind::SHOVEL};
+            for (int k = 0; k < 4; ++k)
+                items.spawn(game::makeTool(kinds[k]), eye * 16.0 + f * 3.0 + sd * (double(k) - 1.5) * 0.9 - glm::dvec3(0, 0.6, 0),
+                            glm::angleAxis(1.5707963f, glm::vec3(1, 0, 0)), {}, glm::vec3(0.3f * k, 0, 0.2f));
+        }
+        items.step(voxelQuery, dt, eye * 16.0, 96.0);
+        // Р92: шаг для покачивания предмета в руке - по пройденному пешком пути
+        {
+            handTime += dt;
+            const float hs = glm::length(glm::vec2(player.vel.x, player.vel.z));
+            const bool walking = !player.flying && player.onGround && hs > 0.5f;
+            walkPhase += hs * dt * 1.9f;
+            walkAmp += ((walking ? std::min(1.0f, hs / 4.3f) : 0.0f) - walkAmp) * std::min(1.0f, dt * 6.0f);
         }
         if (shot && warm && spinRate != 0) yaw += spinRate * dt;
         if (shot && warm && flySpeed > 0) eye += glm::dvec3(glm::normalize(glm::vec3(fwd.x, 0, fwd.z))) * double(flySpeed * dt);
@@ -1531,6 +1623,56 @@ int main(int argc, char** argv) {
                       std::chrono::duration<float>(now - startAt).count(), flowArea, simArea, skyArea, originV});
         chunksDrawn = voxels.draw(fr, frame);
         for (const OakMesh& m : oakMeshes) frame.drawFineChunk(m.mesh, m.base, m.fineOff);
+        // Р92: предметы - сетка вокруг центра масс, поворот и место - в вызове
+        const auto drawItem = [&](glm::dvec3 pos, glm::quat rq, const std::vector<render::MeshId>& ms, const std::vector<glm::ivec3>& offs,
+                                  int res) {
+            const glm::ivec3 base(int(std::floor(pos.x)), int(std::floor(pos.y)), int(std::floor(pos.z)));
+            const glm::mat3 R = glm::mat3_cast(rq) * (16.0f / float(res));   // воксель модели - 1/res блока
+            const glm::vec3 dst((pos - glm::dvec3(originV)) / 16.0);
+            const glm::vec4 rows[3] = {glm::vec4(R[0][0], R[1][0], R[2][0], dst.x), glm::vec4(R[0][1], R[1][1], R[2][1], dst.y),
+                                       glm::vec4(R[0][2], R[1][2], R[2][2], dst.z)};
+            for (size_t i = 0; i < ms.size(); ++i) frame.drawFineChunkXf(ms[i], base, offs[i], rows);
+        };
+        for (game::WorldItem& w : items.list) {
+            if (w.meshes.empty()) {
+                std::vector<game::ItemMeshChunk> ch;
+                game::meshItem(*w.item.model, ch);
+                for (const game::ItemMeshChunk& c : ch) { w.meshes.push_back(gpu->uploadChunkMesh(c.verts, 0)); w.offs.push_back(c.off); }
+            }
+            drawItem(w.body.pos, w.body.rot, w.meshes, w.offs, w.item.model->res);
+        }
+        // Р92: в руках - у камеры: правая справа внизу, левая слева; черенок наклонён от себя
+        for (int hnd = 0; hnd < 2; ++hnd) {
+            HandMesh& hm = handMesh[hnd];
+            const game::ItemModel* want = hands[hnd] ? hands[hnd]->model.get() : nullptr;
+            if (hm.model != want) {
+                for (render::MeshId m : hm.meshes) gpu->destroyMesh(m);
+                hm.meshes.clear();
+                hm.offs.clear();
+                hm.model = want;
+                if (want) {
+                    std::vector<game::ItemMeshChunk> ch;
+                    game::meshItem(*want, ch);
+                    for (const game::ItemMeshChunk& c : ch) { hm.meshes.push_back(gpu->uploadChunkMesh(c.verts, 0)); hm.offs.push_back(c.off); }
+                }
+            }
+            if (!want) continue;
+            // Р92: ХВАТ. Рука держит предмет за рукоять (grip), рукоять уходит от игрока вперёд-вверх, лезвие
+            // смотрит внутрь. Покачивание: на месте - еле заметное дыхание, на ходу - шаг (по пройденному пути).
+            const glm::vec3 up = glm::cross(right, fwd);
+            const float sway = std::sin(handTime * 1.3f) * 0.012f;
+            const float stepA = std::sin(walkPhase) * walkAmp, stepB = std::fabs(std::cos(walkPhase)) * walkAmp;
+            const float side = hnd ? 1.0f : -1.0f;
+            const glm::vec3 hand = fwd * 0.42f + right * (0.27f * side + stepA * 0.05f) - up * (0.30f + stepB * 0.035f + sway);
+            const glm::mat3 cam(right, up, -fwd);
+            const glm::quat rq = glm::quat_cast(cam) * glm::angleAxis(side * 0.28f + sway * 2.0f + stepA * 0.06f, glm::vec3(0, 0, 1)) *
+                                 glm::angleAxis(-0.55f + stepB * 0.05f, glm::vec3(1, 0, 0)) *
+                                 glm::angleAxis(side * (1.5708f + 0.45f), glm::vec3(0, 1, 0));   // лезвие - вперёд, от игрока
+            const game::ItemModel& im = *want;
+            const glm::vec3 gl = (im.grip - (glm::vec3(im.center) + 0.5f)) / float(im.res);   // хват от центра, блоки
+            const glm::dvec3 hp = eye * 16.0 + glm::dvec3(hand - glm::mat3_cast(rq) * gl);
+            drawItem(hp, rq, hm.meshes, hm.offs, im.res);
+        }
         for (const auto& [key, t] : forest)
             for (const OakMesh& m : t.meshes) frame.drawFineChunk(m.mesh, m.base, m.fineOff, m.scale);
         for (const auto& [mesh, origin] : rulerMeshes) frame.drawChunk(mesh, origin);
@@ -1647,6 +1789,8 @@ int main(int argc, char** argv) {
                                         : std::string("под прицелом: пусто (64 бл.)"));
                 if (aim.hit && !aim.detail.empty()) fresh.push_back("состав: " + aim.detail);
                 fresh.push_back(std::format("земля под камерой: {:.0f} бл.", dev::groundAt(tp, eye.x, eye.z)));
+                fresh.push_back(std::format("руки: левая - {}, правая - {}   (ЛКМ/ПКМ взять, V положить, Q бросить)",
+                                            hands[0] ? game::itemName(*hands[0]) : "пусто", hands[1] ? game::itemName(*hands[1]) : "пусто"));
                 fresh.push_back(std::format("воксели: столбцов {} (ждут {}), кусков {}   плиток {}",
                                             voxels.stats().ready, voxels.stats().pending, chunksDrawn, fs.tiles));
                 fresh.push_back(typing ? std::format("перейти: {}_   (Enter - идти, Esc - отмена)", gotoText)

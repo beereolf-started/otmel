@@ -53,6 +53,7 @@ add_executable(otmel
     src/voxel_zone.cpp
     src/builder.cpp
     src/player.cpp
+    src/game/items.cpp
     src/render/gl/gl_backend.cpp
     src/render/vk/vk_backend.cpp
 )
