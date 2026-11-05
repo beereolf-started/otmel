@@ -855,7 +855,8 @@ int main(int argc, char** argv) {
                 const int picked = items.pick(start, dir, 4.5, tItem);
                 for (int i = 1; i <= 6 * 8; ++i) {
                     const glm::dvec3 v = start + dir * (double(i) / 8.0);
-                    if (voxelQuery.solid(int32_t(std::floor(v.x)), int32_t(std::floor(v.y)), int32_t(std::floor(v.z)))) { tBlock = double(i) / 8.0; break; }
+                    // Р94: луч прицела - по рельефу: блоки стволов (осязаемость) кору заслонять не должны
+                    if (voxelQuery.solidTerrain(int32_t(std::floor(v.x)), int32_t(std::floor(v.y)), int32_t(std::floor(v.z)))) { tBlock = double(i) / 8.0; break; }
                 }
                 if (picked >= 0 && tItem < tBlock) {
                     if (!hands[hand]) {

@@ -34,7 +34,21 @@ bool blocked(world::VoxelQuery& q, const glm::dvec3& f) {
     return false;
 }
 
-// Движение по одной оси с упором: малыми шагами, на упоре возвращаемся и гасим скорость по этой оси
+// то же, но только рельеф - без стволов
+bool blockedTerrain(world::VoxelQuery& q, const glm::dvec3& f) {
+    const int32_t x0 = ifloor(f.x - HALF_W), x1 = ifloor(f.x + HALF_W);
+    const int32_t z0 = ifloor(f.z - HALF_W), z1 = ifloor(f.z + HALF_W);
+    const int32_t y0 = ifloor(f.y), y1 = ifloor(f.y + HEIGHT - 1e-4);
+    for (int32_t vy = y0; vy <= y1; ++vy)
+        for (int32_t vz = z0; vz <= z1; ++vz)
+            for (int32_t vx = x0; vx <= x1; ++vx)
+                if (q.solidTerrain(vx, vy, vz)) return true;
+    return false;
+}
+
+// Движение по одной оси с упором: малыми шагами, на упоре возвращаемся и гасим скорость по этой оси.
+// Р94: упёрся в ствол (не в рельеф) по горизонтали - взбираемся на него, если хватает блока: так влезают
+// на лежащее бревно, не подпрыгивая на каждом шагу.
 bool slide(world::VoxelQuery& q, glm::dvec3& feet, double delta, int axis) {
     if (delta == 0.0) return false;
     const double dir = delta > 0 ? 1.0 : -1.0;
@@ -45,6 +59,15 @@ bool slide(world::VoxelQuery& q, glm::dvec3& feet, double delta, int axis) {
         const double was = feet[axis];
         feet[axis] += d;
         if (blocked(q, feet)) {
+            if (axis != 1 && !blockedTerrain(q, feet)) {
+                glm::dvec3 up = feet;
+                bool climbed = false;
+                for (double h = 0.25; h <= 1.05 && !climbed; h += 0.25) {
+                    up.y = feet.y + h;
+                    if (!blocked(q, up)) { feet = up; climbed = true; }
+                }
+                if (climbed) continue;
+            }
             feet[axis] = was;
             return true;
         }
