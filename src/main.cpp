@@ -845,7 +845,8 @@ int main(int argc, char** argv) {
             // Р83: кнопка мыши (любая) - сломать блок под прицелом. Он уходит в правки мира, затронутые
             // столбцы перестраиваются, и грани соседей, прежде закрытые, открываются сами.
             if (ev.type == SDL_EVENT_MOUSE_BUTTON_DOWN &&
-                (ev.button.button == SDL_BUTTON_RIGHT || ev.button.button == SDL_BUTTON_LEFT)) {
+                (ev.button.button == SDL_BUTTON_RIGHT || ev.button.button == SDL_BUTTON_LEFT) &&
+                !SDL_GetKeyboardState(nullptr)[SDL_SCANCODE_V] && !SDL_GetKeyboardState(nullptr)[SDL_SCANCODE_Q]) {
                 const glm::dvec3 start = eye * 16.0;                       // прежние меры -> блоки (Р54)
                 const glm::dvec3 dir(std::cos(pitch) * std::cos(yaw), std::sin(pitch), std::cos(pitch) * std::sin(yaw));
                 // Р92: ЛКМ - левая рука, ПКМ - правая. Предмет под прицелом (ближе блока) - взять, если рука
@@ -900,14 +901,17 @@ int main(int argc, char** argv) {
             if (ev.type == SDL_EVENT_KEY_DOWN && ev.key.key == SDLK_R) { hideRoots = !hideRoots; buildOaks(); }
             if (ev.type == SDL_EVENT_KEY_DOWN && ev.key.key == SDLK_L) leavesOn = !leavesOn;
             // Р92: V - положить к вокселю под прицелом, Q - выбросить. Из правой руки, если она пуста - из левой.
-            if (ev.type == SDL_EVENT_KEY_DOWN && !typing && (ev.key.key == SDLK_V || ev.key.key == SDLK_Q)) {
-                const int hand = hands[1] ? 1 : (hands[0] ? 0 : -1);
+            // Р95: зажатая V + ЛКМ/ПКМ - положить из левой/правой руки; зажатая Q + ЛКМ/ПКМ - выбросить
+            if (ev.type == SDL_EVENT_MOUSE_BUTTON_DOWN && !typing && (ev.button.button == SDL_BUTTON_LEFT || ev.button.button == SDL_BUTTON_RIGHT) &&
+                (SDL_GetKeyboardState(nullptr)[SDL_SCANCODE_V] || SDL_GetKeyboardState(nullptr)[SDL_SCANCODE_Q])) {
+                const bool placeKey = SDL_GetKeyboardState(nullptr)[SDL_SCANCODE_V];
+                const int hand = ev.button.button == SDL_BUTTON_LEFT ? (hands[0] ? 0 : -1) : (hands[1] ? 1 : -1);
                 if (hand >= 0) {
                     const game::Item it = *hands[hand];
                     const game::ItemModel& md = *it.model;
                     const glm::dvec3 start = eye * 16.0;
                     const glm::dvec3 dir(std::cos(pitch) * std::cos(yaw), std::sin(pitch), std::cos(pitch) * std::sin(yaw));
-                    if (ev.key.key == SDLK_V) {
+                    if (placeKey) {
                         glm::ivec3 prev(INT32_MIN);
                         bool hit = false;
                         for (int i = 1; i <= 6 * 8 && !hit; ++i) {
@@ -1018,8 +1022,9 @@ int main(int argc, char** argv) {
             in.jumpHeld = keys[SDL_SCANCODE_SPACE];
             in.jumpPressed = in.jumpHeld && !jumpWas;
             jumpWas = in.jumpHeld;
-            in.sprint = keys[SDL_SCANCODE_LSHIFT];
-            in.down = keys[SDL_SCANCODE_LCTRL];
+            in.sprint = keys[SDL_SCANCODE_LCTRL];    // Р95: бег - Ctrl
+            in.crouch = keys[SDL_SCANCODE_LSHIFT];   // присесть - Shift
+            in.prone = keys[SDL_SCANCODE_C];         // лечь - C
             player.eye = eye;
             player.flySpeed = speedScale;
             game::step(player, voxelQuery, in, yaw, dt, std::chrono::duration<float>(now - startAt).count());
@@ -1939,6 +1944,27 @@ int main(int argc, char** argv) {
             if (ft.contour >= 0 && ft.cModel)
                 drawItem(tb.toWorld(ft.cCorner + glm::vec3(ft.cModel->center) + 0.5f), tb.body.rot, ft.cMeshes, ft.cOffs, 16);
         }
+        // Р95: ПРИЦЕЛ - крестик посреди экрана: крошечная модель (воксель 1/512 блока) в 0.4 блока перед глазами
+        {
+            static std::shared_ptr<game::ItemModel> cross;
+            static std::vector<render::MeshId> cm;
+            static std::vector<glm::ivec3> co;
+            if (!cross) {
+                cross = std::make_shared<game::ItemModel>();
+                cross->res = 512;
+                cross->sx = 9; cross->sy = 9; cross->sz = 1;
+                cross->v.assign(81, world::AIR);
+                for (int k = 0; k < 9; ++k) if (k < 3 || k > 5) { cross->at(k, 4, 0) = world::HIGHLIGHT; cross->at(4, k, 0) = world::HIGHLIGHT; }
+                cross->at(4, 4, 0) = world::HIGHLIGHT;
+                cross->finish();
+                std::vector<game::ItemMeshChunk> ch;
+                game::meshItem(*cross, ch);
+                for (const game::ItemMeshChunk& c : ch) { cm.push_back(gpu->uploadChunkMesh(c.verts, 0)); co.push_back(c.off); }
+            }
+            const glm::vec3 up = glm::cross(right, fwdV);
+            const glm::mat3 cam(glm::normalize(glm::cross(fwdV, up)), up, -fwdV);
+            drawItem(eye * 16.0 + glm::dvec3(fwdV * 0.4f), glm::quat_cast(cam), cm, co, 512);
+        }
         // Р92: в руках - у камеры: правая справа внизу, левая слева; черенок наклонён от себя
         for (int hnd = 0; hnd < 2; ++hnd) {
             HandMesh& hm = handMesh[hnd];
@@ -2101,7 +2127,7 @@ int main(int argc, char** argv) {
                                         : std::string("под прицелом: пусто (64 бл.)"));
                 if (aim.hit && !aim.detail.empty()) fresh.push_back("состав: " + aim.detail);
                 fresh.push_back(std::format("земля под камерой: {:.0f} бл.", dev::groundAt(tp, eye.x, eye.z)));
-                fresh.push_back(std::format("руки: левая - {}, правая - {}   (ЛКМ/ПКМ взять, V положить, Q бросить)",
+                fresh.push_back(std::format("руки: левая - {}, правая - {}   (ЛКМ/ПКМ взять; V+ЛКМ/ПКМ положить, Q+ЛКМ/ПКМ бросить; Shift присесть, C лечь, Ctrl бег)",
                                             hands[0] ? game::itemName(*hands[0]) : "пусто", hands[1] ? game::itemName(*hands[1]) : "пусто"));
                 fresh.push_back(std::format("воксели: столбцов {} (ждут {}), кусков {}   плиток {}",
                                             voxels.stats().ready, voxels.stats().pending, chunksDrawn, fs.tiles));

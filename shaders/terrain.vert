@@ -179,6 +179,7 @@ void main() {
     vec3 world = rel + originOld.xyz;   // для шума и расстояний - абсолютно
     // свет: рассеянный по нормали плюс постоянная подсветка неба
     float light = 0.35 + 0.65 * max(dot(uXf == 1 && uFine == 1 ? xfN : NORMALS[normal], normalize(sunDir.xyz)), 0.0);
+    if (material == 153u) light = 1.15;   // Р95: контур вырубки и прицел - всегда ярко
     vColor = vec4(COLORS[min(material, 153u)] * light, material == 6u ? WATER_ALPHA : 1.0);
     vMat = min(material, 153u);
     vLight = light;
