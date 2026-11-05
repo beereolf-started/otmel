@@ -16,6 +16,16 @@ TreeBody makeTreeBody(uint64_t key, glm::ivec3 base, glm::ivec3 shift, const wor
     // корни остаются у пня
     for (size_t i = 1; i < tb.skel->nodes.size(); ++i)
         if (skel.branches[size_t(skel.nodes[i].branch)].root) tb.skel->nodes[i].r = 0;
+    // Р96: высота на стволе, от которой растёт каждый сук (через предков) - по ней кусок ствола владеет сучьями
+    tb.attachY.assign(skel.branches.size(), 0.0f);
+    for (size_t b = 1; b < skel.branches.size(); ++b) {
+        const world::TreeBranch& br = skel.branches[b];
+        if (br.root || br.first < 0) continue;
+        const world::TreeNode& at = skel.nodes[size_t(skel.nodes[size_t(br.first)].parent)];
+        tb.attachY[b] = at.branch == 0 ? at.p[1] : tb.attachY[size_t(at.branch)];
+    }
+    tb.debarked.assign(256, 0);
+    tb.yLo = cut.y0;
     tb.hinge = startFall(skel, cut, fallDir);
     tb.body.rot = tb.hinge.rot();
     reshape(tb);
@@ -86,7 +96,7 @@ void reshape(TreeBody& tb) {
     if (oldCom != glm::vec3(0)) tb.body.pos = oldWorld + glm::dvec3(tb.R() * ((tb.com - oldCom) / 16.0f));
 }
 
-int hitBranch(const TreeBody& tb, glm::dvec3 from, glm::dvec3 dir, float maxBlocks, float& tBlocks) {
+int hitBranch(const TreeBody& tb, glm::dvec3 from, glm::dvec3 dir, float maxBlocks, float& tBlocks, glm::vec3* localHit) {
     const world::TreeSkel& t = *tb.skel;
     const glm::vec3 o = tb.toLocal(from);
     const glm::vec3 d = glm::transpose(tb.R()) * glm::vec3(dir);
@@ -117,7 +127,7 @@ int hitBranch(const TreeBody& tb, glm::dvec3 from, glm::dvec3 dir, float maxBloc
             const float k = std::clamp(glm::dot(q - a, ab) / std::max(1e-6f, glm::dot(ab, ab)), 0.0f, 1.0f);
             const float r = std::max(pa.r + (n.r - pa.r) * k, 0.9f);
             if (glm::distance(q, a + ab * k) <= r) {
-                if (s < bestT) { bestT = s; best = n.branch; }
+                if (s < bestT) { bestT = s; best = n.branch; if (localHit) *localHit = q; }
                 break;
             }
         }
@@ -257,6 +267,127 @@ std::shared_ptr<ItemModel> limbContour(const TreeBody& tb, int branch, glm::vec3
     m->finish();
     cornerLocal = corner;
     return m;
+}
+
+std::shared_ptr<ItemModel> trunkContour(const TreeBody& tb, float ym, glm::vec3& cornerLocal) {
+    glm::vec2 c;
+    float R;
+    if (!trunkAt(*tb.skel, ym, c, R)) return nullptr;
+    R = std::max(R, 0.8f);
+    const int half = int(std::ceil(R + 2.5f));
+    auto m = std::make_shared<ItemModel>();
+    m->res = 16;
+    m->sx = m->sz = 2 * half + 1;
+    m->sy = 3;
+    m->v.assign(size_t(m->sx) * m->sy * m->sz, world::AIR);
+    const glm::vec3 corner(std::floor(c.x) - half, std::floor(ym) - 1, std::floor(c.y) - half);
+    bool any = false;
+    for (int y = 0; y < m->sy; ++y)
+        for (int z = 0; z < m->sz; ++z)
+            for (int x = 0; x < m->sx; ++x) {
+                const glm::vec3 q = corner + glm::vec3(x + 0.5f, y + 0.5f, z + 0.5f);
+                const float rad = glm::length(glm::vec2(q.x, q.z) - c);
+                if (rad < R - 0.2f || rad > R + 1.1f) continue;
+                m->at(x, y, z) = world::HIGHLIGHT;
+                any = true;
+            }
+    if (!any) return nullptr;
+    m->finish();
+    cornerLocal = corner;
+    return m;
+}
+
+bool splitBody(TreeBody& tb, float ym, TreeBody& upper) {
+    if (ym <= tb.yLo + 8 || ym >= tb.yHi - 8) return false;
+    upper = tb;
+    upper.skel = std::make_shared<world::TreeSkel>(*tb.skel);
+    upper.yLo = ym;
+    tb.yHi = ym;
+    for (TreeBody* b : {&tb, &upper}) {
+        reshape(*b);
+        b->body.asleep = false;
+        b->body.still = 0;
+        b->meshDirty = true;
+        b->chopMark = -1;
+        b->markHits = 0;
+        b->chopBranch = -1;
+    }
+    return true;
+}
+
+bool isLog(const TreeBody& tb) {
+    const world::TreeSkel& t = *tb.skel;
+    float top = tb.yLo;
+    for (size_t i = 1; i < t.nodes.size(); ++i) {
+        const world::TreeNode& n = t.nodes[i];
+        if (n.r <= 0 || !tb.owns(n.branch, n.p[1])) continue;
+        if (n.branch != 0) return false;   // ещё есть сучья
+        top = std::max(top, n.p[1]);
+    }
+    for (const world::TreeLeaf& l : t.leaves) if (tb.owns(l.branch, l.c[1])) return false;
+    return std::min(top, tb.yHi) - tb.yLo <= 96.0f;
+}
+
+bool bodyToLog(const TreeBody& tb, Severed& out) {
+    glm::vec3 corner;
+    auto m = voxelModel(*tb.skel, [&tb](float x, float y, float z, int b) -> int {
+        if (tb.cut.inNotch(x, y, z) || !tb.owns(b, y)) return 0;
+        return tb.debarkedAt(y) ? 2 : 1;
+    }, corner);
+    if (!m) return false;
+    glm::vec2 c;
+    float R = 4;
+    trunkAt(*tb.skel, (tb.yLo + std::min(tb.yHi, tb.yLo + 96.0f)) * 0.5f, c, R);
+    const float d = 2.0f * R;
+    Item it;
+    it.kind = ItemKind::LOG;
+    it.size = d >= 16.0f ? ItemSize::LARGE : (d >= 8.0f ? ItemSize::MEDIUM : ItemSize::SMALL);
+    it.model = m;
+    out.item = it;
+    out.rot = tb.body.rot;
+    out.pos = tb.toWorld(corner + glm::vec3(m->center) + 0.5f);
+    out.vel = tb.body.vel;
+    return true;
+}
+
+int debarkBody(TreeBody& tb, float y) {
+    const int mi = int(std::floor((y - tb.cut.y0) / 16.0f));
+    if (mi < 0 || mi >= int(tb.debarked.size()) || tb.debarked[size_t(mi)]) return 0;
+    tb.debarked[size_t(mi)] = 1;
+    tb.meshDirty = true;
+    glm::vec2 c;
+    float R = 2;
+    trunkAt(*tb.skel, y, c, R);
+    return std::max(1, int(2.0f * R / 4.0f + 0.5f));   // стружка на метр на каждую четверть метра толщины
+}
+
+int debarkItem(ItemModel& m, glm::vec3 p) {
+    const int dims[3] = {m.sx, m.sy, m.sz};
+    const int a = dims[0] >= dims[1] && dims[0] >= dims[2] ? 0 : (dims[1] >= dims[2] ? 1 : 2);
+    const int s0 = int(std::floor(p[a] / 16.0f)) * 16;
+    int changed = 0;
+    for (int y = 0; y < m.sy; ++y)
+        for (int z = 0; z < m.sz; ++z)
+            for (int x = 0; x < m.sx; ++x) {
+                const int c[3] = {x, y, z};
+                if (c[a] < s0 || c[a] >= s0 + 16) continue;
+                world::Material& v = m.at(x, y, z);
+                if (v == world::BARK || v == world::BARK2) { v = world::WOOD; ++changed; }
+            }
+    if (!changed) return 0;
+    const int thick = std::max(dims[(a + 1) % 3], dims[(a + 2) % 3]);
+    return std::max(1, int(float(thick) / 4.0f + 0.5f));
+}
+
+Item makeBark() {
+    auto m = std::make_shared<ItemModel>();
+    m->res = 16;
+    m->sx = 3; m->sy = 1; m->sz = 16;
+    m->v.assign(48, world::BARK);
+    m->at(0, 0, 0) = world::AIR;
+    m->at(2, 0, 15) = world::AIR;
+    m->finish();
+    return Item{ItemKind::BARK, ItemSize::SMALL, m};
 }
 
 }  // namespace game

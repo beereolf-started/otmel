@@ -21,6 +21,14 @@ bool TreeCut::inNotch(float x, float y, float z) const {
 
 void TreeCut::computeParts(const world::TreeSkel& t) {
     part.assign(t.branches.size(), 0);
+    rootOf.assign(t.branches.size(), -1);
+    roots = 0;
+    for (size_t b = 1; b < t.branches.size(); ++b) {
+        const world::TreeBranch& br = t.branches[b];
+        if (!br.root || br.first < 0) continue;
+        const int owner = t.nodes[size_t(t.nodes[size_t(br.first)].parent)].branch;
+        rootOf[b] = owner == 0 ? roots++ : rootOf[size_t(owner)];
+    }
     for (size_t b = 1; b < t.branches.size(); ++b) {
         const world::TreeBranch& br = t.branches[b];
         if (br.root || br.first < 0) continue;
@@ -49,10 +57,11 @@ bool trunkAt(const world::TreeSkel& t, float y, glm::vec2& center, float& r) {
     return false;
 }
 
-bool hitTrunk(const world::TreeSkel& t, glm::vec3 o, glm::vec3 d, float maxT, float& tHit, glm::vec3& p) {
+bool hitTrunk(const world::TreeSkel& t, glm::vec3 o, glm::vec3 d, float maxT, float& tHit, glm::vec3& p, float maxY) {
     // шаг в полвокселя; по отрезкам ствола и крупных сучьев (рубим ствол, но и попасть по нему надо честно)
     for (float s = 0; s <= maxT; s += 0.5f) {
         const glm::vec3 q = o + d * s;
+        if (q.y > maxY) continue;
         for (size_t i = 1; i < t.nodes.size(); ++i) {
             const world::TreeNode& n = t.nodes[i];
             if (n.branch != 0) continue;

@@ -39,6 +39,14 @@ struct TreeCut {
     // Р94: какие ветви падают вместе со стволом - по скелету: сук, растущий от ствола выше реза, и всё на нём
     std::vector<char> part;
     void computeParts(const world::TreeSkel& t);
+    // Р96: пень - перерубленные корни (бит на ветвь-корень по порядку корней), выкопан ли
+    uint32_t rootsCut = 0;
+    std::vector<int> rootOf;   // ветвь -> номер корня от комля, к которому она принадлежит (-1 - не корень)
+    int roots = 0;             // корней от комля
+    bool allRootsCut() const { return roots > 0 && rootsCut == (roots >= 32 ? 0xFFFFFFFFu : ((1u << roots) - 1u)); }
+    int rootTarget = -1, rootHits = 0;
+    bool dug = false;
+    int digHits = 0;
     bool falls(int branch, float y) const {
         if (branch == 0) return y >= y0;
         return branch > 0 && branch < int(part.size()) && part[size_t(branch)];
@@ -48,7 +56,7 @@ struct TreeCut {
 /** Ось и радиус ствола на высоте y (по отрезкам ветви 0). */
 bool trunkAt(const world::TreeSkel& t, float y, glm::vec2& center, float& r);
 /** Луч (мелкие воксели от основания) по стволу: точка попадания. */
-bool hitTrunk(const world::TreeSkel& t, glm::vec3 o, glm::vec3 d, float maxT, float& tHit, glm::vec3& p);
+bool hitTrunk(const world::TreeSkel& t, glm::vec3 o, glm::vec3 d, float maxT, float& tHit, glm::vec3& p, float maxY = 1e9f);
 
 struct Falling {
     glm::vec3 hinge{0};      // шарнир, мелкие воксели от основания

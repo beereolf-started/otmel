@@ -40,6 +40,17 @@ struct TreeBody {
     bool crushed = false, meshDirty = true;
     std::vector<char> removed;  // ветвь отрублена
     int chopBranch = -1, chopHits = 0;
+    // Р96: раскряжёвка - тело владеет куском ствола [yLo, yHi) (мелкие воксели вдоль ствола) и сучьями,
+    // что от него растут; окорка - по метрам от реза
+    float yLo = 0, yHi = 1e9f;
+    std::vector<float> attachY;   // на какой высоте ствола растёт сук (через предков)
+    std::vector<char> debarked;   // метр от реза окорён
+    float chopMark = -1;          // где пилим (высота на стволе)
+    int markHits = 0;
+    bool debarkedAt(float y) const {
+        const int m = int(std::floor((y - cut.y0) / 16.0f));
+        return m >= 0 && m < int(debarked.size()) && debarked[size_t(m)];
+    }
 
     glm::dvec3 origin() const { return glm::dvec3(base) * 16.0 + glm::dvec3(shift.x, -3, shift.z); }   // мелкие воксели
     glm::mat3 R() const { return glm::mat3_cast(body.rot); }
@@ -49,7 +60,9 @@ struct TreeBody {
     bool owns(int b, float y) const {
         if (b < 0 || b >= int(skel->branches.size()) || skel->branches[size_t(b)].root) return false;
         if (b < int(removed.size()) && removed[size_t(b)]) return false;
-        return cut.falls(b, y);
+        if (!cut.falls(b, y)) return false;
+        const float a = b == 0 ? y : attachY[size_t(b)];
+        return a >= yLo && a < yHi;
     }
 };
 
@@ -62,16 +75,69 @@ template <class Solid> void stepTreeBody(TreeBody& tb, Solid solid, float dt);
 template <class Solid> void crushTreeBody(TreeBody& tb, Solid solid);
 
 /** Какая ветвь тела на луче (блоки); -1 - мимо. */
-int hitBranch(const TreeBody& tb, glm::dvec3 from, glm::dvec3 dir, float maxBlocks, float& tBlocks);
+int hitBranch(const TreeBody& tb, glm::dvec3 from, glm::dvec3 dir, float maxBlocks, float& tBlocks, glm::vec3* localHit = nullptr);
 /** Сколько ударов нужно, чтобы отрубить сук. */
 int limbHits(const TreeBody& tb, int branch);
 struct Severed { Item item; glm::dvec3 pos; glm::quat rot; glm::vec3 vel; };
 /** Отрубить сук со всем, что на нём: предмет и его место в мире. */
 bool severBranch(TreeBody& tb, int branch, Severed& out);
+/** Р96: модель из вокселей скелета (воксели 1/16), keep(x, y, z, ветвь) -> 0 нет, 1 как есть, 2 древесиной (окорено). */
+template <class Keep>
+std::shared_ptr<ItemModel> voxelModel(const world::TreeSkel& s, Keep keep, glm::vec3& cornerLocal);
+/** Р96: кольцо на стволе на высоте ym - отметка раскряжёвки. */
+std::shared_ptr<ItemModel> trunkContour(const TreeBody& tb, float ym, glm::vec3& cornerLocal);
+/** Р96: распилить тело на высоте ym; верхняя часть - новым телом. */
+bool splitBody(TreeBody& tb, float ym, TreeBody& upper);
+/** Р96: тело - голый кусок ствола (без сучьев) не длиннее 6 м: пора стать бревном-предметом. */
+bool isLog(const TreeBody& tb);
+bool bodyToLog(const TreeBody& tb, Severed& out);
+/** Р96: снять кору с метра под точкой (локально); сколько стружек коры. 0 - уже снята. */
+int debarkBody(TreeBody& tb, float y);
+/** Р96: окорка бревна-предмета: метр вдоль длинной оси у точки p (воксели модели). Сколько стружек. */
+int debarkItem(ItemModel& m, glm::vec3 p);
+Item makeBark();
 /** Контур вырубки у основания сука: модель-кольцо (воксели 1/16) и угол модели в осях дерева. */
 std::shared_ptr<ItemModel> limbContour(const TreeBody& tb, int branch, glm::vec3& cornerLocal);
 
 // ─── шаблоны
+template <class Keep>
+std::shared_ptr<ItemModel> voxelModel(const world::TreeSkel& s, Keep keep, glm::vec3& cornerLocal) {
+    struct V { int x, y, z; world::Material m; };
+    std::vector<V> got;
+    int lo[3] = {INT32_MAX, INT32_MAX, INT32_MAX}, hi[3] = {INT32_MIN, INT32_MIN, INT32_MIN};
+    const world::TreeIndex ix = world::treeIndex(s, 1);
+    std::vector<world::Material> vox(32 * 32 * 32);
+    std::vector<uint16_t> bo(32 * 32 * 32);
+    for (const auto& [key, cell] : ix.cells) {
+        const int cx = int(key >> 42 & 0x1FFFFF) - 4096, cy = int(key >> 21 & 0x1FFFFF) - 4096, cz = int(key & 0x1FFFFF) - 4096;
+        if (!world::treeChunk(s, ix, cx, cy, cz, true, true, vox.data(), bo.data())) continue;
+        for (int y = 0; y < 32; ++y)
+            for (int z = 0; z < 32; ++z)
+                for (int x = 0; x < 32; ++x) {
+                    const size_t k = (size_t(y) * 32 + z) * 32 + x;
+                    world::Material m = vox[k];
+                    if (m == world::AIR) continue;
+                    const int fx = cx * 32 + x, fy = cy * 32 + y, fz = cz * 32 + z;
+                    const int kv = int(keep(fx + 0.5f, fy + 0.5f, fz + 0.5f, bo[k] == 0xFFFF ? -1 : int(bo[k])));
+                    if (!kv) continue;
+                    if (kv == 2 && (m == world::BARK || m == world::BARK2)) m = world::WOOD;
+                    got.push_back({fx, fy, fz, m});
+                    lo[0] = std::min(lo[0], fx); lo[1] = std::min(lo[1], fy); lo[2] = std::min(lo[2], fz);
+                    hi[0] = std::max(hi[0], fx); hi[1] = std::max(hi[1], fy); hi[2] = std::max(hi[2], fz);
+                }
+    }
+    if (got.empty()) return nullptr;
+    auto m = std::make_shared<ItemModel>();
+    m->res = 16;
+    m->sx = hi[0] - lo[0] + 1; m->sy = hi[1] - lo[1] + 1; m->sz = hi[2] - lo[2] + 1;
+    if (size_t(m->sx) * m->sy * m->sz > 48u * 1024 * 1024) return nullptr;
+    m->v.assign(size_t(m->sx) * m->sy * m->sz, world::AIR);
+    for (const V& v : got) m->at(v.x - lo[0], v.y - lo[1], v.z - lo[2]) = v.m;
+    m->finish();
+    cornerLocal = glm::vec3(lo[0], lo[1], lo[2]);
+    return m;
+}
+
 template <class Solid>
 void stepTreeBody(TreeBody& tb, Solid solid, float dt) {
     if (!tb.free) {

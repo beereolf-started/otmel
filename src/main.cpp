@@ -113,9 +113,12 @@ int buildTreeChunks(const world::TreeSkel& sk, glm::ivec3 base, glm::ivec3 fineS
                                     const int fx = off.x + x * s + s / 2, fy = off.y + y * s + s / 2, fz = off.z + z * s + s / 2;
                                     if (base.y + fdiv(fy, 16) <= ground(base.x + fdiv(fx, 16), base.z + fdiv(fz, 16))) m = world::AIR;
                                 }
-                                if (m != world::AIR && !keep(float((cx * 32 + x) * s) + s * 0.5f, float((cy * 32 + y) * s) + s * 0.5f,
-                                                             float((cz * 32 + z) * s) + s * 0.5f, br[k] == 0xFFFF ? -1 : int(br[k])))
-                                    m = world::AIR;
+                                if (m != world::AIR) {
+                                    const int kv = int(keep(float((cx * 32 + x) * s) + s * 0.5f, float((cy * 32 + y) * s) + s * 0.5f,
+                                                            float((cz * 32 + z) * s) + s * 0.5f, br[k] == 0xFFFF ? -1 : int(br[k])));
+                                    if (!kv) m = world::AIR;
+                                    else if (kv == 2 && (m == world::BARK || m == world::BARK2)) m = world::WOOD;   // Р96: окорено
+                                }
                                 c->at(x, y, z) = m;
                                 any |= m != world::AIR;
                             }
@@ -714,28 +717,45 @@ int main(int argc, char** argv) {
     double sect[NSECT] = {};
     auto lapAt = clock_t_::now();
     const auto lap = [&](int i) { const auto t = clock_t_::now(); sect[i] += std::chrono::duration<double, std::milli>(t - lapAt).count(); lapAt = t; };
-    // Р93: удар топором из руки hand по лучу (start, dir - блоки); tBlock - где луч упёрся в блок
+    // Р93-Р96: УДАР ИНСТРУМЕНТОМ из руки hand по лучу (start, dir - блоки); tBlock - где луч упёрся в рельеф.
+    //   топор: сук лежащего дерева - обрубка; его ствол - раскряжёвка (медленно); стоящее - зарубка; пень - корни;
+    //   пила: ствол лежащего - раскряжёвка; стоящее - зарубка (быстрее топора);
+    //   скобель: ствол лежащего или бревно - окорка метра;
+    //   лопата: пень без корней - выкопать.
     const auto chopTree = [&](int hand, glm::dvec3 start, glm::dvec3 dir, double tBlock) {
         static uint32_t cr = 777u;
         const auto rnd = [] { cr = cr * 1664525u + 1013904223u; return float(cr >> 8) / 16777216.0f; };
-        // Р94: ОБРУБКА - сук лежащего дерева под прицелом. Ударов - по толщине сука; отрубленное - предмет.
+        if (!hands[hand]) return;
+        const game::ItemKind tool = hands[hand]->kind;
+        const auto spray = [&](glm::vec3 wp, glm::vec3 away, int n) {
+            for (int k = 0; k < n; ++k)
+                chips.push_back({wp, away * (1.5f + 2.5f * rnd()) + glm::vec3(rnd() - 0.5f, 0.8f + rnd() * 1.5f, rnd() - 0.5f) * 3.0f, 1.0f + rnd()});
+        };
+        // поверхность над точкой (блоки): чтобы выпавшее из-под земли не застряло в ней
+        const auto surfaceAbove = [&](glm::dvec3 p) {
+            int32_t y = int32_t(std::floor(p.y));
+            for (int k = 0; k < 48 && voxelQuery.solidTerrain(int32_t(std::floor(p.x)), y, int32_t(std::floor(p.z))); ++k) ++y;
+            return std::max(p.y, double(y) + 0.6);
+        };
+        // ─── лежащие деревья
         {
             FallenTree* bf = nullptr;
             int bb = -1;
             float bt = 3.2f;
+            glm::vec3 lp(0);
             for (FallenTree& ft : fallen) {
                 if (!ft.tb.free) continue;
                 float tt;
-                const int b = game::hitBranch(ft.tb, start, dir, bt, tt);
-                if (b >= 0 && tt < bt) { bt = tt; bb = b; bf = &ft; }
+                glm::vec3 l;
+                const int b = game::hitBranch(ft.tb, start, dir, bt, tt, &l);
+                if (b >= 0 && tt < bt) { bt = tt; bb = b; bf = &ft; lp = l; }
             }
             if (bf && double(bt) < tBlock) {
                 const glm::vec3 wp = glm::vec3(start + dir * double(bt));
-                for (int k = 0; k < 10; ++k)
-                    chips.push_back({wp, glm::vec3(-dir) * (1.5f + 2.0f * rnd()) + glm::vec3(rnd() - 0.5f, 0.8f + rnd() * 1.5f, rnd() - 0.5f) * 3.0f, 1.0f + rnd()});
-                kick = 0.03f;
                 game::TreeBody& tb = bf->tb;
-                if (bb > 0) {   // ствол (0) - раскряжёвка, позже
+                kick = 0.03f;
+                if (bb > 0 && tool == game::ItemKind::AXE) {   // обрубка сука
+                    spray(wp, -glm::vec3(dir), 10);
                     if (tb.chopBranch != bb) { tb.chopBranch = bb; tb.chopHits = 0; }
                     ++tb.chopHits;
                     const int need = game::limbHits(tb, bb);
@@ -747,14 +767,50 @@ int main(int argc, char** argv) {
                             journal::info("рубка", "отрублено: {}", game::itemName(sv.item));
                         }
                         tb.chopBranch = -1;
-                        bf->contour = -2;   // контур - заново
+                        bf->contour = -2;
                     }
+                } else if (bb == 0 && (tool == game::ItemKind::AXE || tool == game::ItemKind::SAW)) {   // раскряжёвка
+                    spray(wp, -glm::vec3(dir), tool == game::ItemKind::SAW ? 6 : 10);
+                    const float ym = tb.yLo + std::round((lp.y - tb.yLo) / 16.0f) * 16.0f;
+                    glm::vec2 c;
+                    float R = 2;
+                    if (!game::trunkAt(*tb.skel, ym, c, R)) return;
+                    if (tb.chopMark != ym) { tb.chopMark = ym; tb.markHits = 0; }
+                    ++tb.markHits;
+                    const int need = tool == game::ItemKind::SAW ? std::max(2, int(2.0f * R / 3.0f + 0.5f)) : std::max(3, int(2.0f * R / 1.5f + 0.5f));
+                    journal::info("рубка", "раскряжёвка: {} из {}", tb.markHits, need);
+                    if (tb.markHits >= need) {
+                        FallenTree up;
+                        if (game::splitBody(tb, ym, up.tb)) {
+                            bf->contour = -2;
+                            journal::info("рубка", "ствол распилен на высоте {:.0f} м от реза", (ym - tb.cut.y0) / 16.0f);
+                            fallen.push_back(std::move(up));   // tb и bf дальше недействительны
+                            // голые куски ствола до 6 м - брёвна-предметы
+                            for (size_t i = 0; i < fallen.size();) {
+                                game::Severed sv;
+                                if (game::isLog(fallen[i].tb) && game::bodyToLog(fallen[i].tb, sv)) {
+                                    items.spawn(sv.item, sv.pos, sv.rot, sv.vel, glm::vec3(0));
+                                    journal::info("рубка", "бревно: {}", game::itemName(sv.item));
+                                    for (render::MeshId m : fallen[i].meshes) gpu->destroyMesh(m);
+                                    for (render::MeshId m : fallen[i].cMeshes) gpu->destroyMesh(m);
+                                    fallen.erase(fallen.begin() + long(i));
+                                } else ++i;
+                            }
+                        }
+                    }
+                } else if (bb == 0 && tool == game::ItemKind::DRAWKNIFE) {   // окорка метра
+                    const int strips = game::debarkBody(tb, lp.y);
+                    for (int k = 0; k < strips; ++k)
+                        items.spawn(game::makeBark(), glm::dvec3(wp) + glm::dvec3(rnd() - 0.5, 0.3, rnd() - 0.5),
+                                    glm::angleAxis(rnd() * 6.28f, glm::vec3(0, 1, 0)), glm::vec3(rnd() - 0.5f, 1.5f, rnd() - 0.5f), glm::vec3(rnd(), rnd(), rnd()));
+                    if (strips) journal::info("рубка", "окорено: стружек коры {}", strips);
                 }
                 return;
             }
         }
-        // Р93: УДАР ТОПОРОМ. Ищем ствол на луче у деревьев рядом (по скелету), углубляем зарубку.
+        // ─── стоящие деревья и пни
         ForestTree* best = nullptr;
+        bool stump = false;
         float bestT = 3.2f * 16.0f;
         glm::vec3 hitP(0);
         for (auto& [key, t] : forest) {
@@ -763,40 +819,108 @@ int main(int argc, char** argv) {
             const glm::dvec3 o = start * 16.0 - org;
             if (o.x * o.x + o.z * o.z > 80.0 * 80.0) continue;
             const auto ci = treeCuts.find(key);
-            if (ci != treeCuts.end() && ci->second.felled) continue;
+            const bool felled = ci != treeCuts.end() && ci->second.felled;
+            if (felled && ci->second.dug) continue;
             float th;
             glm::vec3 hp;
-            if (game::hitTrunk(*t.skel, glm::vec3(o), glm::vec3(dir), bestT, th, hp) && th < bestT) { bestT = th; best = &t; hitP = hp; }
+            if (game::hitTrunk(*t.skel, glm::vec3(o), glm::vec3(dir), bestT, th, hp, felled ? ci->second.y0 + 1.0f : 1e9f) && th < bestT) {
+                bestT = th; best = &t; hitP = hp; stump = felled;
+            }
         }
-        if (best && bestT / 16.0f < tBlock) {
-            game::TreeCut& cut = treeCuts[best->spot.key];
-            const glm::dvec3 org = glm::dvec3(best->spot.base) * 16.0 + glm::dvec3(best->spot.shift.x, -3, best->spot.shift.z);
-            if (!cut.notched) {
-                cut.notched = true;
-                cut.y0 = std::max(hitP.y, 6.0f);
-                if (!game::trunkAt(*best->skel, cut.y0, cut.center, cut.R)) { cut.center = glm::vec2(0); cut.R = best->skel->nodes[0].r; }
-                const glm::vec2 toMe = glm::vec2(float(start.x * 16.0 - org.x), float(start.z * 16.0 - org.z)) - cut.center;
-                cut.dir = glm::length(toMe) > 1e-3f ? glm::normalize(toMe) : glm::vec2(1, 0);
+        if (!best || bestT / 16.0f >= tBlock) return;
+        game::TreeCut& cut = treeCuts[best->spot.key];
+        const glm::dvec3 org = glm::dvec3(best->spot.base) * 16.0 + glm::dvec3(best->spot.shift.x, -3, best->spot.shift.z);
+        const glm::vec3 wp = glm::vec3((org + glm::dvec3(hitP)) / 16.0);
+        const world::TreeSkel& sk = *best->skel;
+        if (stump) {
+            if (tool == game::ItemKind::AXE && !cut.allRootsCut()) {
+                // корни: ближайший по направлению удара ещё целый корень от комля
+                const glm::vec2 h = glm::vec2(hitP.x, hitP.z) - cut.center;
+                int bestR = -1, bestBr = -1;
+                float bd = -2;
+                for (size_t b = 1; b < sk.branches.size(); ++b) {
+                    const world::TreeBranch& br = sk.branches[b];
+                    if (!br.root || br.first < 0 || b >= cut.rootOf.size()) continue;
+                    const world::TreeNode& at = sk.nodes[size_t(sk.nodes[size_t(br.first)].parent)];
+                    if (at.branch != 0) continue;
+                    const int ri = cut.rootOf[b];
+                    if (ri < 0 || (cut.rootsCut >> ri & 1u)) continue;
+                    const world::TreeNode& f = sk.nodes[size_t(br.first)];
+                    const glm::vec2 rd = glm::normalize(glm::vec2(f.p[0], f.p[2]) - cut.center + glm::vec2(1e-3f));
+                    const float dd = glm::length(h) > 1e-3f ? glm::dot(glm::normalize(h), rd) : 0.0f;
+                    if (dd > bd) { bd = dd; bestR = ri; bestBr = int(b); }
+                }
+                if (bestR < 0) return;
+                spray(wp, -glm::vec3(dir), 8);
+                kick = 0.03f;
+                if (cut.rootTarget != bestR) { cut.rootTarget = bestR; cut.rootHits = 0; }
+                ++cut.rootHits;
+                const int need = std::max(1, int(2.0f * sk.branches[size_t(bestBr)].baseR / 1.6f + 0.5f));
+                journal::info("рубка", "корень {}: удар {} из {}", bestR + 1, cut.rootHits, need);
+                if (cut.rootHits >= need) {
+                    cut.rootsCut |= 1u << bestR;
+                    cut.rootTarget = -1;
+                    best->dirty = true;
+                    glm::vec3 corner;
+                    const auto& rootOf = cut.rootOf;
+                    auto m = game::voxelModel(sk, [&rootOf, bestR](float, float, float, int b) -> int {
+                        return b > 0 && b < int(rootOf.size()) && rootOf[size_t(b)] == bestR ? 1 : 0;
+                    }, corner);
+                    if (m) {
+                        const float d = 2.0f * sk.branches[size_t(bestBr)].baseR;
+                        game::Item it{game::ItemKind::SNAG, d >= 8.0f ? game::ItemSize::LARGE : (d >= 4.0f ? game::ItemSize::MEDIUM : game::ItemSize::SMALL), m};
+                        glm::dvec3 p = (org + glm::dvec3(corner + glm::vec3(m->center) + 0.5f)) / 16.0;
+                        p.y = surfaceAbove(p);
+                        items.spawn(it, p, glm::quat(1, 0, 0, 0), glm::vec3(0, 1.0f, 0), glm::vec3(0));
+                        journal::info("рубка", "корень перерублен: {}", game::itemName(it));
+                    }
+                }
+            } else if (tool == game::ItemKind::SHOVEL && cut.allRootsCut()) {
+                spray(wp, -glm::vec3(dir), 6);
+                if (++cut.digHits >= 4) {   // пень выкопан - коряга по толщине ствола
+                    cut.dug = true;
+                    best->dirty = true;
+                    glm::vec3 corner;
+                    const game::TreeCut cc = cut;
+                    auto m = game::voxelModel(sk, [&cc, &sk](float x, float y, float z, int b) -> int {
+                        if (b < 0 || cc.inNotch(x, y, z)) return 0;
+                        if (sk.branches[size_t(b)].root) return 0;
+                        return cc.falls(b, y) ? 0 : 1;
+                    }, corner);
+                    if (m) {
+                        const float d = 2.0f * cut.R;
+                        game::Item it{game::ItemKind::SNAG, d >= 16.0f ? game::ItemSize::LARGE : (d >= 8.0f ? game::ItemSize::MEDIUM : game::ItemSize::SMALL), m};
+                        glm::dvec3 p = (org + glm::dvec3(corner + glm::vec3(m->center) + 0.5f)) / 16.0;
+                        p.y = surfaceAbove(p) + 0.3;
+                        items.spawn(it, p, glm::quat(1, 0, 0, 0), glm::vec3(0, 1.5f, 0), glm::vec3(0.4f, 0, 0.2f));
+                        journal::info("рубка", "пень выкопан: {}", game::itemName(it));
+                    }
+                }
             }
-            cut.depth += cut.perHit();
-            ++cut.hits;
-            best->dirty = true;
-            kick = 0.035f;   // отдача: камера вздрагивает
-            // щепки: из места удара - к игроку и в стороны
-            const glm::vec3 wp = glm::vec3((org + glm::dvec3(hitP)) / 16.0);
-            for (int k = 0; k < 14; ++k)
-                chips.push_back({wp, glm::vec3(cut.dir.x, 0, cut.dir.y) * (2.0f + 3.0f * rnd()) +
-                                         glm::vec3(rnd() - 0.5f, 0.8f + rnd() * 1.6f, rnd() - 0.5f) * 3.0f, 1.0f + rnd()});
-            journal::info("рубка", "удар {}: зарубка {:.1f} из {:.1f} мелких вокселей", cut.hits, cut.depth, 2.0f * cut.R * 0.75f);
-            if (cut.ready()) {
-                // Р93: ДЕРЕВО ПАДАЕТ - от игрока. Падающая часть - своей сеткой (выше реза), на месте - пень.
-                cut.felled = true;
-                cut.computeParts(*best->skel);
-                FallenTree ft;
-                ft.tb = game::makeTreeBody(best->spot.key, best->spot.base, best->spot.shift, *best->skel, cut, -cut.dir);
-                fallen.push_back(std::move(ft));
-                journal::info("рубка", "дерево падает: {} ударов", cut.hits);
-            }
+            return;
+        }
+        if (tool != game::ItemKind::AXE && tool != game::ItemKind::SAW) return;
+        if (!cut.notched) {
+            cut.notched = true;
+            cut.y0 = std::max(hitP.y, 6.0f);
+            if (!game::trunkAt(sk, cut.y0, cut.center, cut.R)) { cut.center = glm::vec2(0); cut.R = sk.nodes[0].r; }
+            const glm::vec2 toMe = glm::vec2(float(start.x * 16.0 - org.x), float(start.z * 16.0 - org.z)) - cut.center;
+            cut.dir = glm::length(toMe) > 1e-3f ? glm::normalize(toMe) : glm::vec2(1, 0);
+        }
+        cut.depth += cut.perHit() * (tool == game::ItemKind::SAW ? 1.5f : 1.0f);
+        ++cut.hits;
+        best->dirty = true;
+        kick = 0.035f;
+        spray(wp, glm::vec3(cut.dir.x, 0, cut.dir.y), 14);
+        journal::info("рубка", "удар {}: зарубка {:.1f} из {:.1f} мелких вокселей", cut.hits, cut.depth, 2.0f * cut.R * 0.75f);
+        if (cut.ready()) {
+            // Р93: ДЕРЕВО ПАДАЕТ - от игрока. Падающая часть - телом (выше реза, по скелету), на месте - пень.
+            cut.felled = true;
+            cut.computeParts(sk);
+            FallenTree ft;
+            ft.tb = game::makeTreeBody(best->spot.key, best->spot.base, best->spot.shift, sk, cut, -cut.dir);
+            fallen.push_back(std::move(ft));
+            journal::info("рубка", "дерево падает: {} ударов", cut.hits);
         }
     };
     while (running) {
@@ -859,7 +983,28 @@ int main(int argc, char** argv) {
                     // Р94: луч прицела - по рельефу: блоки стволов (осязаемость) кору заслонять не должны
                     if (voxelQuery.solidTerrain(int32_t(std::floor(v.x)), int32_t(std::floor(v.y)), int32_t(std::floor(v.z)))) { tBlock = double(i) / 8.0; break; }
                 }
-                if (picked >= 0 && tItem < tBlock) {
+                if (picked >= 0 && tItem < tBlock && hands[hand] && hands[hand]->kind == game::ItemKind::DRAWKNIFE &&
+                    items.list[size_t(picked)].item.kind == game::ItemKind::LOG) {
+                    // Р96: окорка бревна-предмета скобелем: метр вдоль бревна под прицелом
+                    game::WorldItem& w = items.list[size_t(picked)];
+                    auto m = std::make_shared<game::ItemModel>(*w.item.model);
+                    const glm::vec3 lp = glm::transpose(glm::mat3_cast(w.body.rot)) * glm::vec3(start + dir * tItem - w.body.pos) * float(m->res) +
+                                         glm::vec3(m->center) + 0.5f;
+                    const int strips = game::debarkItem(*m, lp);
+                    if (strips) {
+                        m->finish();
+                        w.item.model = m;
+                        for (uint32_t id : w.meshes) gpu->destroyMesh(id);
+                        w.meshes.clear();
+                        w.offs.clear();
+                        const glm::dvec3 at = start + dir * tItem;
+                        for (int k = 0; k < strips; ++k)
+                            items.spawn(game::makeBark(), at + glm::dvec3(0, 0.3, 0), glm::angleAxis(float(k) * 1.3f, glm::vec3(0, 1, 0)),
+                                        glm::vec3(0.3f * float(k % 3) - 0.3f, 1.5f, 0.2f), glm::vec3(1, 0.5f, 0));
+                        journal::info("рубка", "бревно окорено: стружек коры {}", strips);
+                    }
+                    swing[hand] = SWING;
+                } else if (picked >= 0 && tItem < tBlock) {
                     if (!hands[hand]) {
                         game::WorldItem& w = items.list[size_t(picked)];
                         hands[hand] = w.item;
@@ -868,7 +1013,7 @@ int main(int argc, char** argv) {
                         items.wake(w.body.pos, 2.0);
                         items.list.erase(items.list.begin() + picked);
                     }
-                } else if (hands[hand] && hands[hand]->kind == game::ItemKind::AXE && swing[hand] <= 0.15f) {
+                } else if (hands[hand] && hands[hand]->tool() && swing[hand] <= 0.15f) {
                     // замах вбок; удар засчитывается в середине прохода, а не в миг нажатия
                     swing[hand] = SWING;
                     pendingChop = PendingChop{hand, start, dir, tBlock, SWING * 0.42f};   // середина прохода
@@ -986,6 +1131,7 @@ int main(int argc, char** argv) {
                 if (glm::distance(glm::dvec2(org.x, org.z) / 16.0, glm::dvec2(eb.x, eb.z)) > 14.0) continue;
                 const auto ci = treeCuts.find(key);
                 const game::TreeCut* cut = ci != treeCuts.end() ? &ci->second : nullptr;
+                if (cut && cut->dug) continue;
                 const world::TreeSkel& sk = *t.skel;
                 for (size_t i = 1; i < sk.nodes.size(); ++i) {
                     const world::TreeNode& n = sk.nodes[i];
@@ -1098,7 +1244,10 @@ int main(int argc, char** argv) {
                 std::vector<OakChunk> ch;
                 const game::TreeBody& tb = ft.tb;
                 buildTreeChunks(*tb.skel, tb.base, tb.shift, [](int32_t, int32_t) { return INT32_MIN; }, ch, 1, leavesOn,
-                                [&tb](float x, float y, float z, int b) { return !tb.cut.inNotch(x, y, z) && tb.owns(b, y); });
+                                [&tb](float x, float y, float z, int b) -> int {
+                                    if (tb.cut.inNotch(x, y, z) || !tb.owns(b, y)) return 0;
+                                    return b == 0 && tb.debarkedAt(y) ? 2 : 1;   // окорено - древесина
+                                });
                 for (render::MeshId m : ft.meshes) gpu->destroyMesh(m);
                 ft.meshes.clear(); ft.offs.clear(); ft.scales.clear();
                 for (const OakChunk& oc : ch) { ft.meshes.push_back(gpu->uploadChunkMesh(oc.verts, 0)); ft.offs.push_back(oc.fineOff); ft.scales.push_back(oc.scale); }
@@ -1119,28 +1268,36 @@ int main(int argc, char** argv) {
         }
         // Р94: контур вырубки - у сука лежащего дерева под прицелом, если в руке топор
         {
-            const bool axe = (hands[0] && hands[0]->kind == game::ItemKind::AXE) || (hands[1] && hands[1]->kind == game::ItemKind::AXE);
+            const auto has = [&](game::ItemKind k) { return (hands[0] && hands[0]->kind == k) || (hands[1] && hands[1]->kind == k); };
+            const bool axe = has(game::ItemKind::AXE), saw = has(game::ItemKind::SAW);
             FallenTree* bf = nullptr;
             int bb = -1;
-            if (axe) {
+            glm::vec3 lp(0);
+            if (axe || saw) {
                 const glm::dvec3 st = eye * 16.0;
                 const glm::dvec3 dr(std::cos(pitch) * std::cos(yaw), std::sin(pitch), std::cos(pitch) * std::sin(yaw));
                 float bt = 3.2f;
                 for (FallenTree& ft : fallen) {
                     if (!ft.tb.free) continue;
                     float tt;
-                    const int b = game::hitBranch(ft.tb, st, dr, bt, tt);
-                    if (b >= 0 && tt < bt) { bt = tt; bb = b; bf = &ft; }
+                    glm::vec3 l;
+                    const int b = game::hitBranch(ft.tb, st, dr, bt, tt, &l);
+                    if (b >= 0 && tt < bt) { bt = tt; bb = b; bf = &ft; lp = l; }
                 }
             }
+            // ключ контура: сук - его номер; отметка раскряжёвки на стволе - 100000 + высота
+            float markY = -1;
+            if (bf && bb == 0) markY = bf->tb.yLo + std::round((lp.y - bf->tb.yLo) / 16.0f) * 16.0f;
             for (FallenTree& ft : fallen) {
-                const int want = (&ft == bf && bb > 0) ? bb : -1;
+                int want = -1;
+                if (&ft == bf && bb > 0 && axe) want = bb;
+                if (&ft == bf && bb == 0 && markY > ft.tb.yLo + 8 && markY < ft.tb.yHi - 8) want = 100000 + int(markY);
                 if (ft.contour == want) continue;
                 for (render::MeshId m : ft.cMeshes) gpu->destroyMesh(m);
                 ft.cMeshes.clear(); ft.cOffs.clear(); ft.cModel = nullptr; ft.cHold.reset();
                 ft.contour = want;
                 if (want < 0) continue;
-                ft.cHold = game::limbContour(ft.tb, want, ft.cCorner);
+                ft.cHold = want >= 100000 ? game::trunkContour(ft.tb, float(want - 100000), ft.cCorner) : game::limbContour(ft.tb, want, ft.cCorner);
                 if (!ft.cHold) continue;
                 ft.cModel = ft.cHold.get();
                 std::vector<game::ItemMeshChunk> ch;
@@ -1775,7 +1932,9 @@ int main(int argc, char** argv) {
                             const int i = bx - go.x, j = bz - go.y;
                             return i < 0 || j < 0 || i >= gs || j >= gs ? INT32_MIN : (*gr)[size_t(j) * gs + i];
                         }, fb.chunks, cut.notched ? 1 : 1 << lvl, lv, [&cut](float x, float y, float z, int b) {
-                            if (cut.inNotch(x, y, z)) return false;
+                            if (cut.inNotch(x, y, z) || cut.dug) return false;
+                            // Р96: перерубленные корни ушли корягами
+                            if (b > 0 && b < int(cut.rootOf.size()) && cut.rootOf[size_t(b)] >= 0 && (cut.rootsCut >> cut.rootOf[size_t(b)] & 1u)) return false;
                             return !cut.felled || !cut.falls(b, y);   // Р94: у пня - всё, что не упало (по скелету)
                         });
                         return fb;
