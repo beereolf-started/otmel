@@ -9,7 +9,7 @@ namespace game {
 namespace {
 
 constexpr uint32_t MAGIC = 0x4C4D544Fu;   // "OTML"
-constexpr uint32_t VERSION = 4;   // Р106: вид дерева
+constexpr uint32_t VERSION = 5;   // Р107: срезанные растения, возраст предмета
 
 struct W {
     std::vector<uint8_t> b;
@@ -150,8 +150,10 @@ bool saveWorld(const std::string& path, const SaveData& d) {
         putItem(w, it.item);
         putBody(w, it.body);
         w.pod(it.placed);
+        w.pod(it.age);
     }
     w.vec(d.taken);
+    w.vec(d.plantsCut);
     std::error_code ec;
     std::filesystem::create_directories(std::filesystem::path(path).parent_path(), ec);
     const std::string tmp = path + ".tmp";
@@ -214,9 +216,11 @@ bool loadWorld(const std::string& path, SaveData& d) {
         it.item = getItem(r);
         it.body = getBody(r);
         r.pod(it.placed);
+        r.pod(it.age);
         d.items.push_back(std::move(it));
     }
     r.vec(d.taken);
+    r.vec(d.plantsCut);
     return r.ok;
 }
 

@@ -36,6 +36,7 @@ add_library(otmel_world STATIC
     src/world/oak.cpp
     src/world/forest.cpp
     src/world/tree.cpp
+    src/world/plants.cpp
     src/world/rocks.cpp
     src/world/rock_table.cpp
     src/world/soil_table.cpp

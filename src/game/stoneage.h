@@ -20,6 +20,8 @@ Item makeStone(world::Material rock, uint32_t seed);   // камушек 5-9 с�
 Item makeStick(uint32_t seed);                         // сухая ветка 0.6-1 м, с изломами
 Item makeFiber();                                      // пучок волокна
 Item makeClay();                                       // ком глины
+Item makeCutGrass(uint32_t seed);                      // Р107: охапка срезанной травы
+Item dryGrass(const Item& grass);                      // Р107: высохла - сено
 
 struct Knap {
     int hand = 1;

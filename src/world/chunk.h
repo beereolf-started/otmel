@@ -46,7 +46,10 @@ enum : Material { AIR = 0, STONE = 1, DIRT = 2, GRASS = 3, SAND = 4, SNOW = 5, W
                     WILLOW_BARK = 160, HAZEL_BARK = 161, LINDEN_BARK = 162, ALDER_BARK = 163,
                     LEAF_BIRCH = 164, LEAF_BIRCH2 = 165, NEEDLE = 166, NEEDLE2 = 167, LEAF_WILLOW = 168, LEAF_WILLOW2 = 169,
                     LEAF_LIGHT = 170, LEAF_LIGHT2 = 171, BERRY = 172,
-                    MATERIAL_COUNT = 173,
+                    // Р107: травы и цветы (палитра), сено
+                    GRASS_BLADE = 173, GRASS_BLADE2 = 174, FLOWER_Y = 175, FLOWER_B = 176, FLOWER_R = 177, FLOWER_W = 178,
+                    CLOVER = 179, NETTLE = 180, FERN = 181, MOSS = 182, REED = 183, CATTAIL = 184, HAY = 185,
+                    MATERIAL_COUNT = 186,
                     // Р89: снег в сетке - верхние 16 номеров 11-битного поля, в номере его толщина
                     SNOW_MESH = 2032 };
 inline bool isGrass(Material m) { return m == GRASS || (m >= GRASS_FIRST && m <= GRASS_LAST); }

@@ -27,8 +27,8 @@ TFC = os.path.join(GAME, "mods", "TerraFirmaCraft-Forge-1.20.1-3.2.21.jar")
 VANILLA = os.path.join(GAME, "versions", "Forge 1.20.1", "Forge 1.20.1.jar")
 
 TILE = 16          # сторона рисунка, точек
-LAYERS = 173       # материалы 0..172 (world/chunk.h)
-COLS, ROWS = 8, 22  # раскладка только для картинки-образца atlas.png
+LAYERS = 186       # материалы 0..185 (world/chunk.h)
+COLS, ROWS = 8, 24  # раскладка только для картинки-образца atlas.png
 
 # ── чтение PNG без сторонних библиотек: нам нужны только 16×16 RGBA и палитровые ────────────────
 

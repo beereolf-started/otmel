@@ -26,7 +26,9 @@ namespace game {
 
 enum class ItemKind : uint8_t { AXE, SAW, DRAWKNIFE, SHOVEL, LOG, LIMB, TWIG, BARK, SNAG, STUMP,
                                 // Р99: каменный век - камень, волокно, глина, выточенные головки, новые орудия
-                                STONE, FIBER, CLAY, HEAD_AXE, HEAD_KNIFE, HEAD_SHOVEL, HEAD_SPEAR, KNIFE, SPEAR };
+                                STONE, FIBER, CLAY, HEAD_AXE, HEAD_KNIFE, HEAD_SHOVEL, HEAD_SPEAR, KNIFE, SPEAR,
+                                // Р107: срезанная трава (сохнет в сено)
+                                GRASS_CUT, HAY };
 enum class ItemSize : uint8_t { LARGE, MEDIUM, SMALL };
 
 struct ItemModel {
@@ -63,6 +65,7 @@ void meshItem(const ItemModel& m, std::vector<ItemMeshChunk>& out);
 struct WorldItem {
     uint32_t id = 0;
     uint64_t nat = 0;           // Р99: лежит от природы (камушек, сушняк): ключ места; 0 - тронут игроком
+    float age = 0;              // Р107: сколько пролежал (трава сохнет в сено)
     Item item;
     Body body;
     bool placed = false;        // положен клавишей V: неподвижен

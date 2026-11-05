@@ -82,7 +82,7 @@ float shadeFactor() {
 
 vec4 groundColor() {
     // Листва текстуру пока не берёт: у неё свой принцип, это отдельная работа.
-    if (vMat == 9u || vMat == 10u || (vMat >= 164u && vMat <= 172u)) return vec4(vColor.rgb * shadeFactor(), vColor.a);   // Р106: листва видов
+    if (vMat == 9u || vMat == 10u || (vMat >= 164u && vMat <= 185u)) return vec4(vColor.rgb * shadeFactor(), vColor.a);   // Р106: листва видов
     // Р88: у руды текстуры нет вовсе - только палитра, цвет минерала. Вкрапление размером в один
     // мелкий воксель рисунком 16×16 не раскрасишь.
     if ((vMat >= 59u && vMat <= 118u) || (vMat >= 146u && vMat <= 153u)) return vec4(vColor.rgb * shadeFactor(), vColor.a);

@@ -31,6 +31,7 @@ struct SaveData {
     std::vector<TreeBody> bodies;
     std::vector<WorldItem> items;
     std::vector<uint64_t> taken;   // Р99: подобранные природные камни и сушняк
+    std::vector<uint64_t> plantsCut;   // Р107: срезанные растения (блок)
 };
 
 bool saveWorld(const std::string& path, const SaveData& d);

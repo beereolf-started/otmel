@@ -94,6 +94,28 @@ Item makeClay() {
     return Item{ItemKind::CLAY, ItemSize::SMALL, m, clay};
 }
 
+Item makeCutGrass(uint32_t seed) {
+    uint32_t h = mix(seed ^ 0x6A55u);
+    auto m = blank(22, 4, 8, 32);
+    for (int b = 0; b < 14; ++b) {   // стебли вдоль, концы расходятся
+        const int z0 = 1 + int(unit(h) * 6.0f), y = int(unit(h) * 3.0f), len = 14 + int(unit(h) * 6.0f), x0 = int(unit(h) * 3.0f);
+        for (int x = x0; x < std::min(22, x0 + len); ++x) {
+            const int z = std::clamp(z0 + (x > 15 ? (b & 1 ? 1 : -1) : 0), 0, 7);
+            m->at(x, y, z) = (b & 1) ? world::GRASS_BLADE : world::GRASS_BLADE2;
+        }
+    }
+    for (int y = 0; y < 4; ++y) for (int z = 0; z < 8; ++z) m->at(10, y, z) = world::REED;   // перевязь
+    m->finish();
+    return Item{ItemKind::GRASS_CUT, ItemSize::SMALL, m, world::AIR};
+}
+
+Item dryGrass(const Item& grass) {
+    auto m = std::make_shared<ItemModel>(*grass.model);
+    for (world::Material& v : m->v) if (v == world::GRASS_BLADE || v == world::GRASS_BLADE2) v = world::HAY;
+    m->finish();
+    return Item{ItemKind::HAY, ItemSize::SMALL, m, world::AIR};
+}
+
 ItemKind knapResult(const Knap& k) {
     for (const Pattern& p : PATTERNS)
         for (int mirror = 0; mirror < 2; ++mirror) {

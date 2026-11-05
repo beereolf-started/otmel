@@ -98,6 +98,8 @@ std::string itemName(const Item& it) {
         case ItemKind::HEAD_SPEAR: return "наконечник копья";
         case ItemKind::KNIFE: return "нож";
         case ItemKind::SPEAR: return "копьё";
+        case ItemKind::GRASS_CUT: return "охапка травы";
+        case ItemKind::HAY: return "сено";
     }
     return "предмет";
 }
