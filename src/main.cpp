@@ -986,7 +986,7 @@ int main(int argc, char** argv) {
                     const world::TreeNode& n = sk.nodes[i];
                     const world::TreeNode& pa = sk.nodes[size_t(n.parent)];
                     if (sk.branches[size_t(n.branch)].root) continue;
-                    if (n.branch != 0 && n.r < 2.5f) continue;
+                    if (n.branch != 0) continue;   // твёрд только ствол: сучья не должны отгораживать дерево
                     if (cut && cut->felled && (n.branch != 0 || pa.p[1] >= cut->y0)) continue;   // от срубленного - только пень
                     glm::vec3 b(n.p[0], n.p[1], n.p[2]);
                     if (cut && cut->felled && b.y > cut->y0) b.y = cut->y0;
@@ -1000,7 +1000,7 @@ int main(int argc, char** argv) {
                 const world::TreeSkel& sk = *tb.skel;
                 for (size_t i = 1; i < sk.nodes.size(); ++i) {
                     const world::TreeNode& n = sk.nodes[i];
-                    if (!tb.owns(n.branch, n.p[1]) || n.r <= 0 || (n.branch != 0 && n.r < 2.5f)) continue;
+                    if (!tb.owns(n.branch, n.p[1]) || n.r <= 0 || n.branch != 0) continue;   // только ствол - на него можно встать
                     const world::TreeNode& pa = sk.nodes[size_t(n.parent)];
                     raster(allTrunks, tb.toWorld(glm::vec3(pa.p[0], std::max(pa.p[1], n.branch == 0 ? tb.cut.y0 : pa.p[1]), pa.p[2])),
                            tb.toWorld(glm::vec3(n.p[0], n.p[1], n.p[2])), double(n.r) / 16.0);
