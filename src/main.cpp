@@ -452,6 +452,7 @@ int main(int argc, char** argv) {
     std::unordered_map<uint64_t, int> fiberHits;            // соскоблено с дерева (по месту)
     float naturalAt = 1e9f;
     float handTime = 0, walkPhase = 0, walkAmp = 0;   // покачивание предмета в руке
+    float handAge[2] = {0, 0};   // Р104: сколько предмет в руке - двойным щелчком только что взятое не бросаем
     // Р93: рубка. Зарубки деревьев (по месту в лесу - переживают перестройку зоны), падающие и лежащие стволы,
     // щепки, замах топора.
     std::unordered_map<uint64_t, game::TreeCut> treeCuts;
@@ -1143,11 +1144,15 @@ int main(int argc, char** argv) {
             // Р99: зажатая R + клик - второе действие: камнем соскоблить волокно с молодого дерева, топором - окорить
             // лежащий ствол. Зажатая X + клик - метнуть предмет из этой руки.
             if (ev.type == SDL_EVENT_MOUSE_BUTTON_DOWN && (ev.button.button == SDL_BUTTON_LEFT || ev.button.button == SDL_BUTTON_RIGHT) &&
-                (SDL_GetKeyboardState(nullptr)[SDL_SCANCODE_R] || SDL_GetKeyboardState(nullptr)[SDL_SCANCODE_X])) {
+                (SDL_GetKeyboardState(nullptr)[SDL_SCANCODE_R] || SDL_GetKeyboardState(nullptr)[SDL_SCANCODE_X] ||
+                 (ev.button.clicks >= 2 && hands[ev.button.button == SDL_BUTTON_LEFT ? 0 : 1] && !craft.stage &&
+                  handAge[ev.button.button == SDL_BUTTON_LEFT ? 0 : 1] > 0.5f))) {
                 const int hand = ev.button.button == SDL_BUTTON_LEFT ? 0 : 1;
                 const glm::dvec3 st = eye * 16.0;
                 const glm::dvec3 dr(std::cos(pitch) * std::cos(yaw), std::sin(pitch), std::cos(pitch) * std::sin(yaw));
-                if (SDL_GetKeyboardState(nullptr)[SDL_SCANCODE_X]) {
+                // Р104: метнуть - двойной щелчок кнопкой этой руки (или X + клик); удар первого щелчка отменяется
+                if (SDL_GetKeyboardState(nullptr)[SDL_SCANCODE_X] || ev.button.clicks >= 2) {
+                    if (pendingChop && pendingChop->hand == hand) pendingChop.reset();
                     if (hands[hand]) {
                         static uint32_t sp = 99u;
                         sp = sp * 1664525u + 1013904223u;
@@ -1632,6 +1637,7 @@ int main(int argc, char** argv) {
         // Р92: шаг для покачивания предмета в руке - по пройденному пешком пути
         {
             handTime += dt;
+            for (int h = 0; h < 2; ++h) handAge[h] = hands[h] ? handAge[h] + dt : 0.0f;
             const float hs = glm::length(glm::vec2(player.vel.x, player.vel.z));
             const bool walking = !player.flying && player.onGround && hs > 0.5f;
             walkPhase += hs * dt * 1.9f;
@@ -2709,7 +2715,7 @@ int main(int argc, char** argv) {
                                                      : "КРАФТ: V+клик - положить в ячейку, ЛКМ/ПКМ - взять; F2 - убрать рамку. Лежит: " + (in.empty() ? std::string("ничего") : in));
                     fresh.push_back(craft.stage == 2 && !name.empty() ? "Готово: " + name + " - возьмите из ячейки справа пустой рукой" : game::recipesHint());
                 }
-                fresh.push_back("E - тёска камня в руке, F2 - крафт на земле, R+клик - второе действие (камень: волокно с молодого дерева; топор: окорка), X+клик - метнуть");
+                fresh.push_back("E - тёска камня в руке, F2 - крафт на земле, R+клик - второе действие (камень: волокно с молодого дерева; топор: окорка), двойной щелчок - метнуть");
                 fresh.push_back(std::format("руки: левая - {}, правая - {}   (ЛКМ/ПКМ взять; V+ЛКМ/ПКМ положить, Q+ЛКМ/ПКМ бросить; Shift присесть, C лечь, Ctrl бег)",
                                             hands[0] ? game::itemName(*hands[0]) : "пусто", hands[1] ? game::itemName(*hands[1]) : "пусто"));
                 fresh.push_back(std::format("воксели: столбцов {} (ждут {}), кусков {}   плиток {}",

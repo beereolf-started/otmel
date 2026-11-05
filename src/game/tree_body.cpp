@@ -179,7 +179,7 @@ bool severBranch(TreeBody& tb, int branch, Severed& out) {
     }
     s.leaves.clear();
     for (const world::TreeLeaf& l : t.leaves)
-        if (in[size_t(l.branch)]) {
+        if (in[size_t(l.branch)] && tb.cut.leafStays(l.branch)) {   // Р103: опавшее не возвращается
             s.leaves.push_back(l);
             for (int a = 0; a < 3; ++a) { lo[a] = std::min(lo[a], l.c[a] - l.r * 1.3f - 1); hi[a] = std::max(hi[a], l.c[a] + l.r * 1.3f + 1); }
         }
