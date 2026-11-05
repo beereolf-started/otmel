@@ -72,6 +72,33 @@ const AgeDef AGES[3] = {
     {320, 416, 0.14f, 0.22f, 0.62f, 8.0f, 12, 1200, 11, 17, 150, 0.6f},
 };
 
+// Р106: вид - поправки к возрасту и свои материалы
+//   shape: 0 - лиственное (перекошенный эллипсоид), 1 - ель (конус от низа, ствол до макушки),
+//          2 - сосна (голый ствол, зонтик наверху), 3 - куст (стволы от земли)
+struct SpeciesDef {
+    const char* name;
+    int shape;
+    float hK, rK, crownK, forkK;   // высота, толщина, ширина кроны, высота развилки
+    float zig, sagK, attrK;        // зигзаг побега, провисание, густота облака кроны
+    float leafK, leafP, tipLeaf;   // размер комка листвы, доля кончиков с листвой, до какой толщины побега листва
+    int stems;                     // кусты: стволов от земли
+    Material bark, bark2, leaf, leaf2;
+    bool berries;
+};
+const SpeciesDef SPECIES[int(TreeSpecies::COUNT)] = {
+    {"дуб", 0, 1.00f, 1.00f, 1.00f, 1.00f, 0.42f, 1.0f, 1.0f, 1.0f, 0.55f, 3.0f, 0, BARK, BARK2, LEAVES, LEAVES2, false},
+    {"берёза", 0, 1.10f, 0.75f, 0.70f, 1.30f, 0.16f, 1.9f, 0.9f, 0.75f, 0.60f, 3.0f, 0, BIRCH_BARK, BIRCH_BARK2, LEAF_BIRCH, LEAF_BIRCH2, false},
+    {"осина", 0, 1.15f, 0.70f, 0.50f, 1.50f, 0.12f, 0.6f, 0.8f, 0.80f, 0.60f, 3.0f, 0, ASPEN_BARK, ASPEN_BARK, LEAF_LIGHT, LEAF_LIGHT2, false},
+    {"липа", 0, 1.00f, 1.00f, 1.05f, 1.00f, 0.25f, 0.8f, 1.2f, 1.10f, 0.65f, 3.0f, 0, LINDEN_BARK, LINDEN_BARK, LEAF_LIGHT, LEAF_LIGHT2, false},
+    {"ольха", 0, 0.85f, 0.70f, 0.70f, 1.20f, 0.30f, 0.9f, 0.9f, 0.90f, 0.60f, 3.0f, 0, ALDER_BARK, ALDER_BARK, LEAVES, LEAVES2, false},
+    {"ель", 1, 1.30f, 0.85f, 0.32f, 0.10f, 0.10f, 1.6f, 1.3f, 0.60f, 0.85f, 7.0f, 0, SPRUCE_BARK, SPRUCE_BARK, NEEDLE, NEEDLE2, false},
+    {"сосна", 2, 1.35f, 0.85f, 0.28f, 0.62f, 0.30f, 0.8f, 0.8f, 0.70f, 0.75f, 5.0f, 0, PINE_BARK, PINE_BARK, NEEDLE2, NEEDLE, false},
+    {"лозняк", 3, 0.38f, 0.30f, 0.30f, 0.00f, 0.08f, 0.5f, 0.35f, 0.55f, 0.85f, 3.0f, 9, WILLOW_BARK, WILLOW_BARK, LEAF_WILLOW, LEAF_WILLOW2, false},
+    {"лещина", 3, 0.42f, 0.35f, 0.55f, 0.00f, 0.25f, 0.9f, 0.6f, 0.90f, 0.70f, 3.0f, 6, HAZEL_BARK, HAZEL_BARK, LEAVES, LEAVES2, false},
+    {"малина", 3, 0.16f, 0.22f, 0.60f, 0.00f, 0.20f, 2.2f, 0.30f, 0.60f, 0.80f, 3.0f, 8, HAZEL_BARK, HAZEL_BARK, LEAF_LIGHT, LEAF_LIGHT2, true},
+    {"шиповник", 3, 0.22f, 0.25f, 0.65f, 0.00f, 0.30f, 1.8f, 0.35f, 0.60f, 0.75f, 3.0f, 7, ALDER_BARK, ALDER_BARK, LEAVES, LEAVES2, true},
+};
+
 struct Grow {
     Rng rng;
     std::vector<TreeNode> nodes;
@@ -92,38 +119,67 @@ struct Grow {
 }  // namespace
 
 int treeLeafScale(TreeAge age) { return age == TreeAge::YOUNG ? 1 : 2; }
+const char* speciesName(TreeSpecies s) { return SPECIES[int(s)].name; }
 
-std::shared_ptr<const TreeSkel> growTree(uint32_t seed, TreeAge age) {
+std::shared_ptr<const TreeSkel> growTree(uint32_t seed, TreeAge age, TreeSpecies species) {
     auto t = std::make_shared<TreeSkel>();
+    const SpeciesDef& Sp = SPECIES[int(species)];
+    if (Sp.shape == 3) age = TreeAge::YOUNG;   // куст - без возрастов
     t->age = age;
+    t->species = species;
     t->seed = seed;
-    const AgeDef& A = AGES[int(age)];
-    Grow g(uint64_t(seed) * 3 + uint64_t(age));
+    AgeDef A = AGES[int(age)];
+    A.rBase *= Sp.rK;
+    A.attractors = int(float(A.attractors) * Sp.attrK);
+    A.leafMin *= Sp.leafK;
+    A.leafMax *= Sp.leafK;
+    if (Sp.shape == 3) { A.step = 3; A.rootLen *= 0.3f; }
+    if (Sp.shape == 1 || Sp.shape == 2) A.attractors = 0;   // хвойные - мутовками по правилу, не облаком
+    Grow g(uint64_t(seed) * 3 + uint64_t(age) + uint64_t(species) * 7919);
     Rng& rng = g.rng;
-    const float H = rng.r(A.hMin, A.hMax);
-    const float fork = H * rng.r(A.forkMin, A.forkMax);
+    const float H = rng.r(A.hMin, A.hMax) * Sp.hK;
+    // у хвойных ствол-лидер идёт до самой макушки, у куста ствола нет
+    const float fork = Sp.shape == 1 || Sp.shape == 2 ? H * 0.96f : Sp.shape == 3 ? 0.0f : H * rng.r(A.forkMin, A.forkMax) * Sp.forkK;
     const float D = A.step;
 
     // ─── ствол до развилки: наклон и изгиб (стволы в поле не стоят столбом)
-    const float leanAz = rng.r(0, 6.2831853f), lean = rng.r(0.05f, 0.22f);
+    const float leanAz = rng.r(0, 6.2831853f), lean = Sp.shape == 1 || Sp.shape == 2 ? rng.r(0.01f, 0.05f) : rng.r(0.05f, 0.22f);
     const V3 leanDir{std::cos(leanAz), 0, std::sin(leanAz)};
     V3 d = norm(UP + leanDir * lean);
     V3 p{0, 0, 0};
     int at = g.add(p, -1, d, 1);
     const V3 bendDir = norm(cross(UP, leanDir) * rng.r(-1, 1) + leanDir * rng.r(-0.6f, 0.4f));
-    while (p.y < fork) {
+    // Р106: куст - стволы от земли врозь и вверх, длинные прутья (у лозняка почти прямые)
+    if (Sp.shape == 3)
+        for (int s = 0; s < Sp.stems; ++s) {
+            const float az = rng.r(0, 6.2831853f), tilt = rng.r(0.1f, 0.55f);
+            V3 sd = norm(V3{std::cos(az) * std::sin(tilt), std::cos(tilt), std::sin(az) * std::sin(tilt)});
+            V3 sp = p;
+            int sat = at;
+            const float L = H * rng.r(0.6f, 1.0f);
+            for (float l = 0; l < L; l += D) {
+                sd = norm(sd + rng.unit() * (Sp.zig * 0.3f) + V3{0, -0.04f * Sp.sagK * (l / L), 0});
+                sp = sp + sd * D;
+                sat = g.add(sp, sat, sd, 1);
+            }
+        }
+    while (Sp.shape != 3 && p.y < fork) {
         const float t = p.y / std::max(1.0f, fork);
         // изгиб: в середине ствол уходит вбок, к развилке выпрямляется к свету
-        d = norm(d + bendDir * (0.10f * std::sin(t * 3.1416f)) + UP * 0.08f + rng.unit() * 0.03f);
+        d = norm(d + bendDir * ((Sp.shape == 1 || Sp.shape == 2 ? 0.012f : 0.10f) * std::sin(t * 3.1416f)) + UP * (Sp.shape == 1 || Sp.shape == 2 ? 0.3f : 0.08f) + rng.unit() * 0.03f);
         p = p + d * D;
         at = g.add(p, at, d, 1);
     }
 
     // ─── облако кроны: перекошенный эллипсоид с вмятинами, центр сдвинут вбок
-    const float Rc = H * A.crownW * rng.r(0.85f, 1.15f);
-    const float Ry = (H - fork) * 0.5f;   // крона дуба шире своей высоты, верх приплюснут
+    const float Rc = H * A.crownW * Sp.crownK * rng.r(0.85f, 1.15f);
+    float Ry = (H - fork) * 0.5f;   // крона дуба шире своей высоты, верх приплюснут
+    float cy = fork + Ry * 0.95f;
+    if (Sp.shape == 1) { Ry = H * 0.44f; cy = H * 0.52f; }          // ель: конус от низа ствола
+    if (Sp.shape == 2) { Ry = H * 0.14f; cy = H * 0.84f; }          // сосна: зонтик наверху
+    if (Sp.shape == 3) { Ry = H * 0.45f; cy = H * 0.55f; }          // куст: вокруг стволов
     const float sideAz = leanAz + rng.r(-1.2f, 1.2f);
-    const V3 C = V3{p.x, fork + Ry * 0.95f, p.z} + V3{std::cos(sideAz), 0, std::sin(sideAz)} * (Rc * rng.r(0.1f, 0.3f));
+    const V3 C = V3{p.x, cy, p.z} + V3{std::cos(sideAz), 0, std::sin(sideAz)} * (Rc * rng.r(0.1f, 0.3f) * (Sp.shape == 0 ? 1.0f : 0.3f));
     const uint32_t ns = seed * 0x27D4EB2Du + 0x165667B1u;
     std::vector<V3> pts;
     pts.reserve(size_t(A.attractors));
@@ -138,8 +194,12 @@ std::shared_ptr<const TreeSkel> growTree(uint32_t seed, TreeAge age) {
         const float bump = (0.72f + 0.42f * lit) * (1.0f + 0.5f * noise3(nu * 1.7f + V3{3.1f, 7.7f, 1.3f}, ns));
         if (l > bump) continue;
         V3 q{C.x + u.x * Rc, C.y + u.y * Ry, C.z + u.z * Rc};
-        // низ кроны - плоский, у дуба нижние сучья раскинуты вширь и свисают
-        if (q.y < fork * 0.85f) continue;
+        if (Sp.shape == 1) {   // конус: к макушке уже
+            const float k = std::clamp((q.y - H * 0.08f) / (H * 0.9f), 0.0f, 1.0f);
+            if (std::hypot(q.x - C.x, q.z - C.z) > Rc * (1.0f - k) * 1.1f || q.y < H * 0.08f) continue;
+        } else if (Sp.shape == 3) {
+            if (q.y < H * 0.15f) continue;
+        } else if (q.y < fork * 0.85f) continue;   // низ кроны - плоский, у дуба нижние сучья раскинуты вширь и свисают
         pts.push_back(q);
     }
 
@@ -194,15 +254,87 @@ std::shared_ptr<const TreeSkel> growTree(uint32_t seed, TreeAge age) {
             const V3 side = norm(cross(nd, std::fabs(nd.y) < 0.95f ? UP : V3{1, 0, 0}));
             const float z = -g.zig[n];
             const float horiz = 1.0f - std::fabs(nd.y);
-            nd = norm(nd + side * (z * 0.42f) + rng.unit() * 0.12f + pd * 0.35f
+            nd = norm(nd + side * (z * Sp.zig) + rng.unit() * 0.12f + pd * 0.35f
                       // провисание: пологий побег клонится вниз, сильнее - чем дальше от ствола
-                      + UP * (-0.36f * horiz * std::min(1.0f, len(P(g.nodes[n]) - V3{p.x, P(g.nodes[n]).y, p.z}) / Rc)));
+                      + UP * (-0.36f * Sp.sagK * horiz * std::min(1.0f, len(P(g.nodes[n]) - V3{p.x, P(g.nodes[n]).y, p.z}) / Rc)));
             const V3 q = P(g.nodes[n]) + nd * D;
             const int id = g.add(q, int(n), nd, z);
             grid[cellOf(q)].push_back(id);
             grew = true;
         }
         if (!grew) break;
+    }
+
+    // ─── Р106: ХВОЙНЫЕ - МУТОВКИ И ЛАПНИК «ЁЛОЧКОЙ». Ствол-лидер уже до макушки; от него ярусами по 4-6
+    // лап почти горизонтально, слегка свисают и задирают кончик; вдоль лапы - боковые побеги попеременно
+    // влево и вправо в плоскости лапы, к концу короче. Ель - от низа до верха конусом, сосна - только наверху.
+    if (Sp.shape == 1 || Sp.shape == 2) {
+        const size_t trunkN = g.nodes.size();
+        const float from = Sp.shape == 1 ? H * 0.07f : H * 0.62f, to = H * 0.95f;
+        const float tier = Sp.shape == 1 ? 7.5f : 11.0f;
+        float az0 = rng.r(0, 6.28f);
+        for (float hy = from; hy < to; hy += tier * rng.r(0.85f, 1.15f)) {
+            // ближайший узел ствола на этой высоте
+            int tn = 0;
+            for (size_t i = 0; i < trunkN; ++i) if (g.nodes[i].p[1] <= hy) tn = int(i);
+            const V3 tp = P(g.nodes[size_t(tn)]);
+            const float k = (hy - from) / std::max(1.0f, to - from);
+            const float L = Sp.shape == 1 ? (H * Sp.crownK) * std::pow(1.0f - k, 0.9f) + 4.0f
+                                          : (H * Sp.crownK) * (0.55f + 0.45f * std::sin(k * 3.1416f)) + 4.0f;
+            const int lapy = 4 + int(rng.f() * 3);
+            az0 += 0.7f;
+            for (int b = 0; b < lapy; ++b) {
+                const float az = az0 + 6.2831853f * b / lapy + rng.r(-0.3f, 0.3f);
+                const V3 h{std::cos(az), 0, std::sin(az)};
+                const V3 sideV = norm(cross(UP, h));
+                const float up0 = Sp.shape == 1 ? rng.r(-0.15f, 0.05f) : rng.r(0.15f, 0.45f);
+                V3 bd = norm(h + UP * up0);
+                V3 bp = tp;
+                int bat = tn;
+                float sideSign = 1;
+                const float bl = L * rng.r(0.8f, 1.1f);
+                for (float l = 0; l < bl; l += 3.0f) {
+                    const float t = l / bl;
+                    // провисает к середине и задирает кончик
+                    bd = norm(bd + UP * ((Sp.shape == 1 ? -0.05f : -0.02f) * (1.0f - t) + 0.06f * t * t) + rng.unit() * 0.04f);
+                    bp = bp + bd * 3.0f;
+                    bat = g.add(bp, bat, bd, 1);
+                    // боковые побеги «ёлочкой»: попеременно в плоскости лапы, вперёд под 50°
+                    if (l > 3.0f && t < 0.92f) {
+                        const float sl = (bl - l) * 0.38f + 2.0f;
+                        V3 sdir = norm(bd * 0.65f + sideV * sideSign + UP * 0.05f);
+                        sideSign = -sideSign;
+                        V3 spp = bp;
+                        int sat = bat;
+                        for (float m = 0; m < sl; m += 2.5f) {
+                            sdir = norm(sdir + bd * 0.08f);
+                            spp = spp + sdir * 2.5f;
+                            sat = g.add(spp, sat, sdir, 1);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // ─── Р106: БЕРЁЗА - ПЛАКУЧИЕ ВЕТКИ. С тонких побегов верхней половины кроны свисают длинные тонкие плети
+    // на 1-3 м, почти отвесно и чуть врозь; на них - листва.
+    if (species == TreeSpecies::BIRCH) {
+        const size_t n0 = g.nodes.size();
+        for (size_t i = 1; i < n0; ++i) {
+            if (g.kids[i] != 0) continue;   // кончики
+            const V3 q = P(g.nodes[i]);
+            if (q.y < fork + (H - fork) * 0.35f || rng.f() > 0.55f) continue;
+            V3 hd = norm(V3{rng.r(-0.3f, 0.3f), -1.0f, rng.r(-0.3f, 0.3f)} + g.dir[i] * 0.3f);
+            V3 hp = q;
+            int hat = int(i);
+            const float hl = rng.r(16.0f, 48.0f);
+            for (float l = 0; l < hl; l += 3.0f) {
+                hd = norm(hd + V3{0, -0.15f, 0} + rng.unit() * 0.05f);
+                hp = hp + hd * 3.0f;
+                if (hp.y < 8.0f) break;
+                hat = g.add(hp, hat, hd, 1);
+            }
+        }
     }
 
     // ─── толщина: трубочная модель, от кончиков к комлю, затем подгон под толщину комля
@@ -318,9 +450,9 @@ std::shared_ptr<const TreeSkel> growTree(uint32_t seed, TreeAge age) {
     for (size_t i = 1; i < t->nodes.size(); ++i) {
         const TreeNode& n = t->nodes[i];
         const TreeBranch& br = t->branches[size_t(n.branch)];
-        if (br.root || br.dead || br.order == 0) continue;
-        if (n.r > A.tip * 3.0f) continue;   // листва - на тонких побегах
-        if (rng.f() > 0.55f) continue;
+        if (br.root || br.dead || (br.order == 0 && Sp.shape != 3)) continue;
+        if (n.r > A.tip * Sp.tipLeaf) continue;   // листва - на тонких побегах (хвоя - и на толще)
+        if (rng.f() > Sp.leafP) continue;
         const V3 c = P(n) + UP * rng.r(0.5f, 2.0f) + rng.unit() * 1.5f;
         t->leaves.push_back({{c.x, c.y, c.z}, rng.r(A.leafMin, A.leafMax), n.branch});
     }
@@ -391,6 +523,7 @@ bool treeChunk(const TreeSkel& t, const TreeIndex& ix, int cx, int cy, int cz, b
     bool any = false;
     const auto idx = [](int x, int y, int z) { return (size_t(y) * 32 + size_t(z)) * 32 + size_t(x); };
     const uint32_t ns = t.seed * 0x27D4EB2Du + 0x165667B1u;
+    const SpeciesDef& Sp = SPECIES[int(t.species)];
     if (wood)
         for (const int si : cell->second.segs) {
             const size_t i = size_t(si);
@@ -418,8 +551,14 @@ bool treeChunk(const TreeSkel& t, const TreeIndex& ix, int cx, int cy, int cz, b
                         if (dd >= std::max(rr, 0.75f)) continue;
                         const size_t k = idx(x, y, z);
                         const bool inner = dd < rr - 1.6f * iS - 0.5f && rr > 1.5f;
-                        const Material m = inner ? WOOD : (dead ? BARK2 : BARK);
-                        if (out[k] == AIR || out[k] == LEAVES || out[k] == LEAVES2 || (m == WOOD && out[k] != WOOD)) {
+                        Material m = inner ? WOOD : (dead ? Sp.bark2 : Sp.bark);
+                        // берёза: белая кора с чёрными чечевичками - по жребию вокселя в мире
+                        if (!inner && t.species == TreeSpecies::BIRCH) {
+                            uint32_t hh = uint32_t(x + int(ox)) * 0x8DA6B343u ^ uint32_t(y + int(oy)) * 0xD8163841u ^ uint32_t(z + int(oz)) * 0xCB1AB31Fu;
+                            hh ^= hh >> 13; hh *= 0x5BD1E995u; hh ^= hh >> 15;
+                            m = (hh % 9u == 0u || (dead && hh % 3u == 0u)) ? BIRCH_BARK2 : BIRCH_BARK;
+                        }
+                        if (out[k] == AIR || isLeaf(out[k]) || (m == WOOD && out[k] != WOOD)) {
                             // древесина внутри побеждает кору соседнего отрезка - на стыках нет корки внутри
                             if (!(out[k] == WOOD && m != WOOD)) {
                                 out[k] = m;
@@ -429,7 +568,7 @@ bool treeChunk(const TreeSkel& t, const TreeIndex& ix, int cx, int cy, int cz, b
                         any = true;
                     }
         }
-    if (leaves)
+    if (leaves || Sp.shape == 1 || Sp.shape == 2)   // Р106: хвоя - круглый год
         for (const int li : cell->second.leaves) {
             const TreeLeaf& lf = t.leaves[size_t(li)];
             const V3 c = V3{lf.c[0], lf.c[1], lf.c[2]} * iS - V3{ox, oy, oz};
@@ -451,10 +590,13 @@ bool treeChunk(const TreeSkel& t, const TreeIndex& ix, int cx, int cy, int cz, b
                         if (p.x * p.x + 2.2f * p.y * p.y + p.z * p.z <= 1.0f) break;
                     }
                     p = c + p * r;
-                    const V3 n = norm(lr.unit() + V3{0, 1.3f, 0});
-                    const float rl = lr.r(1.3f, 2.4f);
+                    const bool needles = Sp.shape == 1 || Sp.shape == 2;
+                    // хвоя - плоские лапы, почти горизонтально и пошире; лист - пластинка к свету
+                    const V3 n = norm(lr.unit() + V3{0, needles ? 3.5f : 1.3f, 0});
+                    const bool berry = Sp.berries && lr.f() < 0.07f;
+                    const float rl = berry ? lr.r(0.6f, 1.0f) : needles ? lr.r(2.0f, 3.2f) : lr.r(1.3f, 2.4f);
                     const V3 a = norm(cross(n, std::fabs(n.y) < 0.9f ? V3{0, 1, 0} : V3{1, 0, 0})), bb = cross(n, a);
-                    const Material mat = lr.f() < 0.45f ? LEAVES2 : LEAVES;
+                    const Material mat = berry ? BERRY : (lr.f() < 0.45f ? Sp.leaf2 : Sp.leaf);
                     const float ph = lr.r(0, 6.28f);
                     const int px0 = std::max(0, int(std::floor(p.x - rl - 1))), px1 = std::min(31, int(std::ceil(p.x + rl + 1)));
                     const int py0 = std::max(0, int(std::floor(p.y - rl - 1))), py1 = std::min(31, int(std::ceil(p.y + rl + 1)));
@@ -490,7 +632,7 @@ bool treeChunk(const TreeSkel& t, const TreeIndex& ix, int cx, int cy, int cz, b
                         (void)d;
                         const size_t k = idx(x, y, z);
                         if (out[k] != AIR) continue;
-                        out[k] = noise3(w * (0.15f * S), ns ^ 0x3C3Cu) > 0.1f ? LEAVES2 : LEAVES;
+                        out[k] = noise3(w * (0.15f * S), ns ^ 0x3C3Cu) > 0.1f ? Sp.leaf2 : Sp.leaf;
                         if (branchOut) branchOut[k] = uint16_t(lf.branch);
                         any = true;
                     }

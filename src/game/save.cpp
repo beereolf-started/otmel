@@ -9,7 +9,7 @@ namespace game {
 namespace {
 
 constexpr uint32_t MAGIC = 0x4C4D544Fu;   // "OTML"
-constexpr uint32_t VERSION = 3;   // Р102: листва и содранная кора
+constexpr uint32_t VERSION = 4;   // Р106: вид дерева
 
 struct W {
     std::vector<uint8_t> b;
@@ -92,13 +92,13 @@ Item getItem(R& r) {
 }
 
 void putSkel(W& w, const world::TreeSkel& t) {
-    w.pod(t.age); w.pod(t.seed);
+    w.pod(t.age); w.pod(t.species); w.pod(t.seed);
     w.vec(t.nodes); w.vec(t.branches); w.vec(t.leaves);
     w.pod(t.lo); w.pod(t.hi); w.pod(t.height); w.pod(t.crownR); w.pod(t.roots);
 }
 std::shared_ptr<world::TreeSkel> getSkel(R& r) {
     auto t = std::make_shared<world::TreeSkel>();
-    r.pod(t->age); r.pod(t->seed);
+    r.pod(t->age); r.pod(t->species); r.pod(t->seed);
     r.vec(t->nodes); r.vec(t->branches); r.vec(t->leaves);
     r.pod(t->lo); r.pod(t->hi); r.pod(t->height); r.pod(t->crownR); r.pod(t->roots);
     return t;

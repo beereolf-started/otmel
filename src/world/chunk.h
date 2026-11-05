@@ -41,12 +41,21 @@ enum : Material { AIR = 0, STONE = 1, DIRT = 2, GRASS = 3, SAND = 4, SNOW = 5, W
                     HANDLE = 151, HANDLE2 = 152,     // Р92: светлое дерево рукоятей (палитра)
                     HIGHLIGHT = 153,                 // Р94: контур вырубки (палитра, яркий)
                     GRAVEL = 154,                    // Р101: щебень - выветрелая порода под почвой
-                    MATERIAL_COUNT = 155,
+                    // Р106: виды деревьев и кустов - своя кора (рисунок брёвен TFC) и своя листва (палитра)
+                    BIRCH_BARK = 155, BIRCH_BARK2 = 156, ASPEN_BARK = 157, SPRUCE_BARK = 158, PINE_BARK = 159,
+                    WILLOW_BARK = 160, HAZEL_BARK = 161, LINDEN_BARK = 162, ALDER_BARK = 163,
+                    LEAF_BIRCH = 164, LEAF_BIRCH2 = 165, NEEDLE = 166, NEEDLE2 = 167, LEAF_WILLOW = 168, LEAF_WILLOW2 = 169,
+                    LEAF_LIGHT = 170, LEAF_LIGHT2 = 171, BERRY = 172,
+                    MATERIAL_COUNT = 173,
                     // Р89: снег в сетке - верхние 16 номеров 11-битного поля, в номере его толщина
                     SNOW_MESH = 2032 };
 inline bool isGrass(Material m) { return m == GRASS || (m >= GRASS_FIRST && m <= GRASS_LAST); }
 /** Номер почвы под дёрном (GRASS без почвы - суглинок). */
 inline int grassSoil(Material m) { return m == GRASS ? 2 : int(m) - GRASS_FIRST; }
+
+// Р106: кора и листва любого вида - для рубки, окорки, листопада
+inline bool isBark(Material m) { return m == BARK || m == BARK2 || (m >= BIRCH_BARK && m <= ALDER_BARK); }
+inline bool isLeaf(Material m) { return m == LEAVES || m == LEAVES2 || (m >= LEAF_BIRCH && m <= BERRY); }
 
 struct ChunkPos { int32_t x, y, z; };
 

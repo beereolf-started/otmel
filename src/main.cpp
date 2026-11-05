@@ -117,13 +117,13 @@ int buildTreeChunks(const world::TreeSkel& sk, glm::ivec3 base, glm::ivec3 fineS
                                     if (base.y + fdiv(fy, 16) <= ground(base.x + fdiv(fx, 16), base.z + fdiv(fz, 16))) m = world::AIR;
                                 }
                                 // Р102: листва осыпалась от ударов - у части ветвей её больше нет
-                                if ((m == world::LEAVES || m == world::LEAVES2) && leafCut && br[k] != 0xFFFF && !leafCut->leafStays(int(br[k])))
+                                if (world::isLeaf(m) && leafCut && br[k] != 0xFFFF && !leafCut->leafStays(int(br[k])))
                                     m = world::AIR;
                                 if (m != world::AIR) {
                                     const int kv = int(keep(float((cx * 32 + x) * s) + s * 0.5f, float((cy * 32 + y) * s) + s * 0.5f,
                                                             float((cz * 32 + z) * s) + s * 0.5f, br[k] == 0xFFFF ? -1 : int(br[k])));
                                     if (!kv) m = world::AIR;
-                                    else if (kv == 2 && (m == world::BARK || m == world::BARK2)) m = world::WOOD;   // Р96: окорено
+                                    else if (kv == 2 && world::isBark(m)) m = world::WOOD;   // Р96: окорено
                                 }
                                 c->at(x, y, z) = m;
                                 any |= m != world::AIR;
@@ -694,7 +694,7 @@ int main(int argc, char** argv) {
     std::unique_ptr<LipData> lipData;
     glm::ivec2 lipAt(INT32_MIN / 2);
     // Р62: лес в генерации - зона 7×7 кусков (224 блока) вокруг куска камеры; места - в фоне, деревья - в фоне по 6
-    struct ForestSpot { uint64_t key; glm::ivec3 base; glm::ivec3 shift; uint32_t seed; world::TreeAge age; };
+    struct ForestSpot { uint64_t key; glm::ivec3 base; glm::ivec3 shift; uint32_t seed; world::TreeAge age; world::TreeSpecies species; };
     struct ForestZone { glm::ivec2 origin; int side; std::shared_ptr<std::vector<int32_t>> ground; std::vector<float> skyTop; std::vector<ForestSpot> spots; int nWet = 0, nSteep = 0, nSnow = 0, nSparse = 0, nCave = 0; float rainSum = 0, groveSum = 0; int nC = 0; };
     struct ForestBuilt { uint64_t key; int level; glm::ivec3 base; std::vector<OakChunk> chunks; std::shared_ptr<const world::TreeSkel> skel; bool leaves; };
     // Р63: дерево леса - текущий уровень детализации (-1 - нет), какой строится, его сетки
@@ -2139,6 +2139,7 @@ int main(int argc, char** argv) {
                             if (x < want.x || y < want.y || x >= want.x + 15 * 32 || y >= want.y + 15 * 32) continue;
                             // вода и берег, крутизна
                             bool bad = false;
+                            world::TreeSpecies spc = tc.species;
                             int32_t lo = INT32_MAX, hi = INT32_MIN;
                             for (int dy = -3; dy <= 3 && !bad; ++dy)   // Р74: вода - не ближе 3 блоков
                                 for (int dx = -3; dx <= 3; ++dx) {
@@ -2147,6 +2148,12 @@ int main(int argc, char** argv) {
                                     lo = std::min(lo, H(x + dx, y + dy));
                                     hi = std::max(hi, H(x + dx, y + dy));
                                 }
+                            // Р106: у воды (но не в ней) - лозняк вместо отказа
+                            if (bad && !wet(x, y) && !wet(x + 1, y) && !wet(x, y + 1)) {
+                                bad = false;
+                                spc = world::TreeSpecies::WILLOW_SHRUB;
+                                lo = hi = H(x, y);
+                            }
                             if (bad) { ++z->nWet; continue; }
                             if (hi - lo > 3) { ++z->nSteep; continue; }
                             // Р79: на осыпавшейся земле у выхода шахты дубов нет - там голая порода.
@@ -2169,7 +2176,7 @@ int main(int argc, char** argv) {
                             if (cave) { ++z->nCave; continue; }
                             int32_t g0 = INT32_MAX;
                             for (const auto [dx, dy] : {std::pair{0, 0}, {1, 0}, {0, 1}, {1, 1}}) g0 = std::min(g0, H(x + dx, y + dy));
-                            z->spots.push_back({(uint64_t(uint32_t(ci)) << 32) | uint32_t(cj), glm::ivec3(x, g0 + 1, y), glm::ivec3(tc.fx, 0, tc.fz), tc.seed, tc.age});
+                            z->spots.push_back({(uint64_t(uint32_t(ci)) << 32) | uint32_t(cj), glm::ivec3(x, g0 + 1, y), glm::ivec3(tc.fx, 0, tc.fz), tc.seed, tc.age, spc});
                         }
                     // Р85: КАРТА ТЕНЕВЫХ ВЫСОТ. Сперва верхи: на каждый столбец высота того, что
                     // закрывает небо. Дерева в блочной маске нет, оно живёт отдельной сеткой,
@@ -2181,7 +2188,7 @@ int main(int argc, char** argv) {
                         const int cxp = sp.base.x - z->origin.x, czp = sp.base.z - z->origin.y;
                         // Р91: крона по возрасту - та же мера, что у спрайта
                         float shh, sww;
-                        world::treeSpriteSize(sp.age, float(sp.seed & 0xFFFF) / 65535.0f, shh, sww);
+                        world::treeSpriteSize(sp.age, float(sp.seed & 0xFFFF) / 65535.0f, shh, sww, sp.species);
                         const int canopy = sp.base.y + int(shh * 0.8f), r = int(sww * 0.42f);
                         for (int dz = -r; dz <= r; ++dz)
                             for (int dx = -r; dx <= r; ++dx) {
@@ -2276,7 +2283,7 @@ int main(int argc, char** argv) {
                     const auto ci = treeCuts.find(sp.key);
                     const game::TreeCut cut = ci != treeCuts.end() ? ci->second : game::TreeCut{};
                     forestRunning.push_back(treeJobs.submit([sp, lvl, gr, go, gs, skel, lv, cut] {
-                        ForestBuilt fb{sp.key, lvl, sp.base, {}, skel ? skel : world::growTree(sp.seed, sp.age), lv};
+                        ForestBuilt fb{sp.key, lvl, sp.base, {}, skel ? skel : world::growTree(sp.seed, sp.age, sp.species), lv};
                         // Р93: подрубленное - с зарубкой; срубленное - только пень (ниже реза, с корнями)
                         buildTreeChunks(*fb.skel, sp.base, sp.shift, [&](int32_t bx, int32_t bz) {
                             const int i = bx - go.x, j = bz - go.y;
@@ -2415,7 +2422,7 @@ int main(int argc, char** argv) {
                     const ForestSpot& sp = t.spot;
                     const float fr = float(sp.seed & 0xFFFF) / 65535.0f;
                     float sh, sw;
-                    world::treeSpriteSize(sp.age, fr, sh, sw);
+                    world::treeSpriteSize(sp.age, fr, sh, sw, sp.species);
                     inst.insert(inst.end(), {(float(sp.base.x) + (sp.shift.x + 0.5f) / 16.0f) / 16.0f, (float(sp.base.y) - 0.2f) / 16.0f,
                                              (float(sp.base.z) + (sp.shift.z + 0.5f) / 16.0f) / 16.0f, sh / 16.0f,
                                              sw / 16.0f, float(sp.seed & 0x7FFF), 0.0f, 0.0f});

@@ -22,13 +22,23 @@ struct TreeCandidate {
     uint32_t seed;     // семя дуба
     float roll;        // бросок 0..1 (дерево - если меньше густоты); 2 - место занято кроной великана
     TreeAge age;       // Р91: молодой, взрослый, вековой
+    TreeSpecies species = TreeSpecies::OAK;   // Р106
 };
 // Р91: размер спрайта по возрасту (блоки): высота и ширина кроны; fr - разброс 0..1
-inline void treeSpriteSize(TreeAge age, float fr, float& h, float& w) {
+inline void treeSpriteSize(TreeAge age, float fr, float& h, float& w, TreeSpecies sp = TreeSpecies::OAK) {
     switch (age) {
         case TreeAge::YOUNG: h = 6.5f + 1.5f * fr; w = 6.0f + 1.5f * fr; break;
         case TreeAge::ADULT: h = 12.0f + 4.0f * fr; w = 12.0f + 4.0f * fr; break;
         default: h = 20.0f + 6.0f * fr; w = 24.0f + 6.0f * fr; break;
+    }
+    // Р106: по виду - хвойные выше и уже, кусты низкие
+    switch (sp) {
+        case TreeSpecies::SPRUCE: h *= 1.3f; w *= 0.5f; break;
+        case TreeSpecies::PINE: h *= 1.35f; w *= 0.55f; break;
+        case TreeSpecies::BIRCH: case TreeSpecies::ASPEN: h *= 1.1f; w *= 0.7f; break;
+        case TreeSpecies::WILLOW_SHRUB: case TreeSpecies::HAZEL: h = 2.5f + fr; w = 2.5f + fr; break;
+        case TreeSpecies::RASPBERRY: case TreeSpecies::ROSEHIP: h = 1.2f + 0.4f * fr; w = 1.6f + 0.4f * fr; break;
+        default: break;
     }
 }
 TreeCandidate forestCandidate(const TerrainParams& p, int32_t ci, int32_t cj);

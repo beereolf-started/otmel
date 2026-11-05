@@ -27,8 +27,8 @@ TFC = os.path.join(GAME, "mods", "TerraFirmaCraft-Forge-1.20.1-3.2.21.jar")
 VANILLA = os.path.join(GAME, "versions", "Forge 1.20.1", "Forge 1.20.1.jar")
 
 TILE = 16          # сторона рисунка, точек
-LAYERS = 155       # материалы 0..154 (world/chunk.h)
-COLS, ROWS = 8, 20  # раскладка только для картинки-образца atlas.png
+LAYERS = 173       # материалы 0..172 (world/chunk.h)
+COLS, ROWS = 8, 22  # раскладка только для картинки-образца atlas.png
 
 # ── чтение PNG без сторонних библиотек: нам нужны только 16×16 RGBA и палитровые ────────────────
 
@@ -193,6 +193,14 @@ def main():
     # на граните: отдельная клетка на каждую пару «порода + руда» - это под тысячу клеток.
     for i, ref in enumerate(ORES):
         tiles[59 + i] = over(load(ref), tiles[12])
+    # Р106: кора видов - рисунок брёвен TFC (чего в сборке нет - дубовый, перекрашенный)
+    for i, (ref, rgb) in enumerate([("birch", None), ("birch", (0.14, 0.14, 0.14)), ("aspen", None), ("spruce", None), ("pine", None),
+                                    ("willow", None), ("chestnut", None), ("ash", None), ("hickory", None)]):
+        try:
+            t = load("tfc:block/wood/log/" + ref)
+        except KeyError:
+            t = load("tfc:block/wood/log/oak")
+        tiles[155 + i] = recolor(t, rgb) if rgb else t
     # Р101: щебень под почвой
     tiles[154] = load("tfc:block/rock/gravel/granite")
     # Р89: дёрн по почвам - верх, бок (полоска травы поверх своей почвы), бок под снегом. Цвет травы у

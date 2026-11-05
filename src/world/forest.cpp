@@ -41,6 +41,20 @@ TreeCandidate forestCandidate(const TerrainParams& p, int32_t ci, int32_t cj) {
         if (near) c.roll = 2.0f;
         c.age = (next() & 0xFF) < 115 ? TreeAge::ADULT : TreeAge::YOUNG;
     }
+    // Р106: ВИД - по шуму рощ (ячейка 512 блоков): хвойный массив, березняк или смешанный лес; в смешанном
+    // и в березняке четверть мест - кусты (подлесок)
+    {
+        const int32_t bx = c.x, bz = c.z;
+        const float con = float(gen::value2(bx, bz, 9, p.seed ^ 0xC0F1u)) / 65536.0f;
+        const float bir = float(gen::value2(bx, bz, 9, p.seed ^ 0xB1E4u)) / 65536.0f;
+        const float u = float(next() & 0xFFFF) / 65535.0f;
+        using S = TreeSpecies;
+        if (c.age == TreeAge::GIANT) c.species = con > 0.35f ? S::PINE : S::OAK;
+        else if (con > 0.35f) c.species = u < 0.62f ? S::SPRUCE : (u < 0.92f ? S::PINE : S::BIRCH);
+        else if (bir > 0.3f) c.species = u < 0.55f ? S::BIRCH : u < 0.70f ? S::ASPEN : u < 0.78f ? S::OAK : u < 0.88f ? S::RASPBERRY : S::ROSEHIP;
+        else c.species = u < 0.36f ? S::OAK : u < 0.46f ? S::LINDEN : u < 0.56f ? S::BIRCH : u < 0.63f ? S::ASPEN : u < 0.71f ? S::ALDER
+                       : u < 0.83f ? S::HAZEL : u < 0.92f ? S::RASPBERRY : S::ROSEHIP;
+    }
     return c;
 }
 
@@ -124,7 +138,7 @@ std::vector<float> buildSpriteRegion(const TerrainParams& tp, int rx, int rz, in
             }
             const float fr = float(tc.seed & 0xFFFF) / 65535.0f;
             float sh, sw;
-            treeSpriteSize(tc.age, fr, sh, sw);
+            treeSpriteSize(tc.age, fr, sh, sw, tc.species);
             inst.insert(inst.end(), {(float(tc.x) + (tc.fx + 0.5f) / 16.0f) / 16.0f, base / 16.0f, (float(tc.z) + (tc.fz + 0.5f) / 16.0f) / 16.0f,
                                      sh / 16.0f, sw * (even ? 1.6f : 1.0f) / 16.0f,
                                      float(tc.seed & 0x7FFF), 0.0f, 0.0f});

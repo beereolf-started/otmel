@@ -27,6 +27,11 @@
 namespace world {
 
 enum class TreeAge : uint8_t { YOUNG, ADULT, GIANT };
+// Р106: виды. Деревья - из того же генератора со своими пропорциями, ветвлением, корой и листвой; кусты -
+// несколько стволов от земли без общего ствола.
+enum class TreeSpecies : uint8_t { OAK, BIRCH, ASPEN, LINDEN, ALDER, SPRUCE, PINE, WILLOW_SHRUB, HAZEL, RASPBERRY, ROSEHIP, COUNT };
+const char* speciesName(TreeSpecies s);
+inline bool isShrub(TreeSpecies s) { return s >= TreeSpecies::WILLOW_SHRUB; }
 
 struct TreeNode {
     float p[3];
@@ -45,6 +50,7 @@ struct TreeLeaf { float c[3]; float r; int branch; };
 
 struct TreeSkel {
     TreeAge age = TreeAge::YOUNG;
+    TreeSpecies species = TreeSpecies::OAK;
     uint32_t seed = 0;
     std::vector<TreeNode> nodes;
     std::vector<TreeBranch> branches;
@@ -56,7 +62,7 @@ struct TreeSkel {
 };
 
 /** Вырастить дерево. Одно семя и возраст - всегда одно и то же дерево. */
-std::shared_ptr<const TreeSkel> growTree(uint32_t seed, TreeAge age);
+std::shared_ptr<const TreeSkel> growTree(uint32_t seed, TreeAge age, TreeSpecies species = TreeSpecies::OAK);
 
 /**
  * Воксели куска 32³ в вокселях размера scale (мелких): кусок (cx, cy, cz) покрывает [c·32, c·32 + 32)

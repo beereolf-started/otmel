@@ -36,6 +36,11 @@ const char* plainName(world::Material m) {
         case world::LEAVES: case world::LEAVES2: return "листва";
         case world::IRON: return "железо";
         case world::GRAVEL: return "щебень";
+        case world::BIRCH_BARK: case world::BIRCH_BARK2: return "берёзовая кора";
+        case world::SPRUCE_BARK: return "еловая кора";
+        case world::PINE_BARK: return "сосновая кора";
+        case world::NEEDLE: case world::NEEDLE2: return "хвоя";
+        case world::BERRY: return "ягоды";
         default: return "неизвестный материал";
     }
 }

@@ -372,7 +372,7 @@ int debarkItem(ItemModel& m, glm::vec3 p) {
                 const int c[3] = {x, y, z};
                 if (c[a] < s0 || c[a] >= s0 + 16) continue;
                 world::Material& v = m.at(x, y, z);
-                if (v == world::BARK || v == world::BARK2) { v = world::WOOD; ++changed; }
+                if (world::isBark(v)) { v = world::WOOD; ++changed; }
             }
     if (!changed) return 0;
     const int thick = std::max(dims[(a + 1) % 3], dims[(a + 2) % 3]);

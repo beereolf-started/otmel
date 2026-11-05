@@ -120,7 +120,7 @@ std::shared_ptr<ItemModel> voxelModel(const world::TreeSkel& s, Keep keep, glm::
                     const int fx = cx * 32 + x, fy = cy * 32 + y, fz = cz * 32 + z;
                     const int kv = int(keep(fx + 0.5f, fy + 0.5f, fz + 0.5f, bo[k] == 0xFFFF ? -1 : int(bo[k])));
                     if (!kv) continue;
-                    if (kv == 2 && (m == world::BARK || m == world::BARK2)) m = world::WOOD;
+                    if (kv == 2 && world::isBark(m)) m = world::WOOD;
                     got.push_back({fx, fy, fz, m});
                     lo[0] = std::min(lo[0], fx); lo[1] = std::min(lo[1], fy); lo[2] = std::min(lo[2], fz);
                     hi[0] = std::max(hi[0], fx); hi[1] = std::max(hi[1], fy); hi[2] = std::max(hi[2], fz);
