@@ -47,6 +47,11 @@ struct TreeCut {
     int rootTarget = -1, rootHits = 0;
     bool dug = false;
     int digHits = 0;
+    // Р102: сколько листвы осталось (от ударов осыпается до четверти) и сколько коры содрано с живого дерева
+    float leafKeep = 1.0f;
+    int scraped = 0;
+    // ветвь b сохраняет листву (жребий ветви против доли оставшегося)
+    bool leafStays(int b) const { return float((uint32_t(b) * 2654435761u >> 12) & 1023u) / 1023.0f <= leafKeep; }
     bool falls(int branch, float y) const {
         if (branch == 0) return y >= y0;
         return branch > 0 && branch < int(part.size()) && part[size_t(branch)];

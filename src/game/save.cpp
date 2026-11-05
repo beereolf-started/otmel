@@ -9,7 +9,7 @@ namespace game {
 namespace {
 
 constexpr uint32_t MAGIC = 0x4C4D544Fu;   // "OTML"
-constexpr uint32_t VERSION = 2;   // Р99: порода предмета, подобранное природное
+constexpr uint32_t VERSION = 3;   // Р102: листва и содранная кора
 
 struct W {
     std::vector<uint8_t> b;
@@ -107,11 +107,13 @@ std::shared_ptr<world::TreeSkel> getSkel(R& r) {
 void putCut(W& w, const TreeCut& c) {
     w.pod(c.notched); w.pod(c.felled); w.pod(c.y0); w.pod(c.dir); w.pod(c.center); w.pod(c.R); w.pod(c.depth); w.pod(c.hits);
     w.vec(c.part); w.pod(c.rootsCut); w.vec(c.rootOf); w.pod(c.roots); w.pod(c.rootTarget); w.pod(c.rootHits); w.pod(c.dug); w.pod(c.digHits);
+    w.pod(c.leafKeep); w.pod(c.scraped);
 }
 TreeCut getCut(R& r) {
     TreeCut c;
     r.pod(c.notched); r.pod(c.felled); r.pod(c.y0); r.pod(c.dir); r.pod(c.center); r.pod(c.R); r.pod(c.depth); r.pod(c.hits);
     r.vec(c.part); r.pod(c.rootsCut); r.vec(c.rootOf); r.pod(c.roots); r.pod(c.rootTarget); r.pod(c.rootHits); r.pod(c.dug); r.pod(c.digHits);
+    r.pod(c.leafKeep); r.pod(c.scraped);
     return c;
 }
 

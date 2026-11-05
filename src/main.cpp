@@ -74,7 +74,7 @@ struct OakChunk { std::vector<uint32_t> verts; glm::ivec3 fineOff; int scale = 1
 struct KeepAll { bool operator()(float, float, float, int) const { return true; } };
 template <class Ground, class Keep = KeepAll>
 int buildTreeChunks(const world::TreeSkel& sk, glm::ivec3 base, glm::ivec3 fineShift, Ground ground, std::vector<OakChunk>& out,
-                    int scale, bool leaves, Keep keep = {}) {
+                    int scale, bool leaves, Keep keep = {}, const game::TreeCut* leafCut = nullptr) {
     static thread_local world::ColumnHeights air;
     static thread_local bool airReady = false;
     if (!airReady) {
@@ -115,6 +115,9 @@ int buildTreeChunks(const world::TreeSkel& sk, glm::ivec3 base, glm::ivec3 fineS
                                     const int fx = off.x + x * s + s / 2, fy = off.y + y * s + s / 2, fz = off.z + z * s + s / 2;
                                     if (base.y + fdiv(fy, 16) <= ground(base.x + fdiv(fx, 16), base.z + fdiv(fz, 16))) m = world::AIR;
                                 }
+                                // Р102: листва осыпалась от ударов - у части ветвей её больше нет
+                                if ((m == world::LEAVES || m == world::LEAVES2) && leafCut && br[k] != 0xFFFF && !leafCut->leafStays(int(br[k])))
+                                    m = world::AIR;
                                 if (m != world::AIR) {
                                     const int kv = int(keep(float((cx * 32 + x) * s) + s * 0.5f, float((cy * 32 + y) * s) + s * 0.5f,
                                                             float((cz * 32 + z) * s) + s * 0.5f, br[k] == 0xFFFF ? -1 : int(br[k])));
@@ -459,7 +462,7 @@ int main(int argc, char** argv) {
     // Р94: ОСЯЗАЕМОСТЬ. Блоки, занятые стволами: неподвижные (стоящие деревья, пни) и все вместе с поваленными.
     // Первые - опора для падающих тел, вторые - для игрока и предметов (VoxelQuery::extra).
     std::unordered_set<uint64_t> staticTrunks, allTrunks;
-    struct Chip { glm::vec3 p, v; float life; };
+    struct Chip { glm::vec3 p, v; float life; int kind = 5; };   // Р102: 5 - щепка, 6 - лист
     std::vector<Chip> chips;
     float swing[2] = {0, 0};   // замах руки, секунды до конца
     constexpr float SWING = 0.5f;
@@ -778,6 +781,15 @@ int main(int argc, char** argv) {
         else journal::warn("сохранение", "не удалось записать {}", savePath);
     };
     float sinceSave = 0;
+    // Р102: от удара по дереву с кроны сыплются листья (center, radius - блоки)
+    const auto dropLeaves = [&](glm::dvec3 center, float radius, int n) {
+        static uint32_t lr = 4242u;
+        const auto rnd = [] { lr = lr * 1664525u + 1013904223u; return float(lr >> 8) / 16777216.0f; };
+        for (int k = 0; k < n; ++k) {
+            const glm::vec3 off((rnd() - 0.5f) * 2.0f * radius, (rnd() - 0.3f) * radius, (rnd() - 0.5f) * 2.0f * radius);
+            chips.push_back({glm::vec3(center) + off, glm::vec3(rnd() - 0.5f, -0.3f, rnd() - 0.5f), 3.0f + 2.0f * rnd(), 6});
+        }
+    };
     // Р100: КРАФТ НА ЗЕМЛЕ. Ячейки 2×2 по четверть блока от угла corner; пятая (готовое) - справа от них.
     // Что в ячейке - решает центр масс предмета, лежащего в ней; порядок и поворот не важны.
     const auto craftCell = [&](glm::dvec3 st, glm::dvec3 dr) -> int {   // какая ячейка под прицелом (0..3, 4 - готовое, -1)
@@ -836,6 +848,11 @@ int main(int argc, char** argv) {
                 const glm::vec3 wp = glm::vec3(start + dir * double(bt));
                 game::TreeBody& tb = bf->tb;
                 kick = 0.03f;
+                if (tb.cut.leafKeep > 0.25f) {   // Р102: лежащее дерево тоже осыпается от ударов
+                    tb.cut.leafKeep = std::max(0.25f, tb.cut.leafKeep * 0.9f);
+                    tb.meshDirty = true;
+                    dropLeaves(glm::dvec3(wp) + glm::dvec3(0, 1.0, 0), 2.0f, 20);
+                }
                 if (bb > 0 && tool == game::ItemKind::AXE) {   // обрубка сука
                     spray(wp, -glm::vec3(dir), 10);
                     if (tb.chopBranch != bb) { tb.chopBranch = bb; tb.chopHits = 0; }
@@ -991,6 +1008,8 @@ int main(int argc, char** argv) {
         }
         cut.depth += cut.perHit() * (tool == game::ItemKind::SAW ? 1.5f : 1.0f);
         ++cut.hits;
+        cut.leafKeep = std::max(0.25f, cut.leafKeep * 0.85f);   // Р102: листва осыпается с каждым ударом
+        dropLeaves((org + glm::dvec3(0, sk.height * 0.65, 0)) / 16.0, sk.crownR / 16.0f * 0.6f, 40);
         best->dirty = true;
         kick = 0.035f;
         spray(wp, glm::vec3(cut.dir.x, 0, cut.dir.y), 14);
@@ -1142,10 +1161,11 @@ int main(int argc, char** argv) {
                     }
                     continue;
                 }
-                if (hands[hand] && hands[hand]->kind == game::ItemKind::STONE) {
-                    // волокно коры: молодое дерево, стоящее
+                if (hands[hand] && (hands[hand]->kind == game::ItemKind::STONE || hands[hand]->kind == game::ItemKind::KNIFE)) {
+                    // Р102: КОРА С ЖИВОГО ДЕРЕВА - не без конца. Молодое даёт волокно (лыко), взрослое - кору.
+                    // Запас: у молодого 4 пучка (по 3 удара), у взрослого - стружки по толщине ствола (по 2 удара).
                     for (auto& [key, t] : forest) {
-                        if (!t.skel || t.spot.age != world::TreeAge::YOUNG) continue;
+                        if (!t.skel) continue;
                         if (treeCuts.count(key) && treeCuts[key].felled) continue;
                         const glm::dvec3 org = glm::dvec3(t.spot.base) * 16.0 + glm::dvec3(t.spot.shift.x, -3, t.spot.shift.z);
                         const glm::dvec3 o = st * 16.0 - org;
@@ -1154,10 +1174,23 @@ int main(int argc, char** argv) {
                         glm::vec3 hp;
                         if (!game::hitTrunk(*t.skel, glm::vec3(o), glm::vec3(dr), 3.0f * 16.0f, th, hp)) continue;
                         swing[hand] = SWING;
+                        const bool young = t.spot.age == world::TreeAge::YOUNG;
+                        glm::vec2 c;
+                        float R = 2;
+                        game::trunkAt(*t.skel, 24.0f, c, R);
+                        const int per = young ? 3 : 2;
+                        const int maxHits = young ? 12 : 2 * std::max(1, int(2.0f * R / 4.0f + 0.5f)) * per;
+                        game::TreeCut& cut = treeCuts[key];
+                        if (cut.scraped >= maxHits) { journal::info("руки", "кора здесь уже содрана"); break; }
+                        ++cut.scraped;
+                        cut.leafKeep = std::max(0.25f, cut.leafKeep * 0.97f);
+                        t.dirty = true;
                         chips.push_back({glm::vec3((org + glm::dvec3(hp)) / 16.0), -glm::vec3(dr) * 2.0f + glm::vec3(0, 1, 0), 0.8f});
-                        if (++fiberHits[key] % 3 == 0) {
-                            items.spawn(game::makeFiber(), (org + glm::dvec3(hp)) / 16.0 - dr * 0.3, glm::quat(1, 0, 0, 0), glm::vec3(0, 1.0f, 0), {});
-                            journal::info("руки", "соскоблено волокно коры");
+                        if (cut.scraped % per == 0) {
+                            items.spawn(young ? game::makeFiber() : game::makeBark(), (org + glm::dvec3(hp)) / 16.0 - dr * 0.3, glm::quat(1, 0, 0, 0),
+                                        glm::vec3(0, 1.0f, 0), {});
+                            if (young) journal::info("руки", "содрано лыко (волокно), осталось {}", (maxHits - cut.scraped) / per);
+                            else journal::info("руки", "содрана кора, осталось {}", (maxHits - cut.scraped) / per);
                         }
                         break;
                     }
@@ -1526,15 +1559,21 @@ int main(int argc, char** argv) {
                                 [&tb](float x, float y, float z, int b) -> int {
                                     if (tb.cut.inNotch(x, y, z) || !tb.owns(b, y)) return 0;
                                     return b == 0 && tb.debarkedAt(y) ? 2 : 1;   // окорено - древесина
-                                });
+                                }, &tb.cut);
                 for (render::MeshId m : ft.meshes) gpu->destroyMesh(m);
                 ft.meshes.clear(); ft.offs.clear(); ft.scales.clear();
                 for (const OakChunk& oc : ch) { ft.meshes.push_back(gpu->uploadChunkMesh(oc.verts, 0)); ft.offs.push_back(oc.fineOff); ft.scales.push_back(oc.scale); }
             }
         }
         for (Chip& c : chips) {
-            c.v.y -= 28.0f * dt;
-            c.v *= 1.0f - std::min(1.0f, dt * 0.8f);
+            if (c.kind == 6) {   // лист планирует: тяжесть слабая, воздух держит, качается
+                c.v.y -= 3.0f * dt;
+                c.v *= 1.0f - std::min(1.0f, dt * 2.5f);
+                c.v.x += std::sin(c.life * 5.0f + c.p.y) * dt * 2.0f;
+            } else {
+                c.v.y -= 28.0f * dt;
+                c.v *= 1.0f - std::min(1.0f, dt * 0.8f);
+            }
             c.p += c.v * dt;
             c.life -= dt;
         }
@@ -1887,7 +1926,7 @@ int main(int argc, char** argv) {
             sprayStep(std::min(dt, 0.05f));
             dropVerts.clear();
             for (const Chip& c : chips)   // Р93: щепки - кубики в 1/16 блока
-                dropVerts.insert(dropVerts.end(), {c.p.x / 16.0f, c.p.y / 16.0f, c.p.z / 16.0f, 0.004f, 1.0f, 5.0f, 0.0f, 0.0f});
+                dropVerts.insert(dropVerts.end(), {c.p.x / 16.0f, c.p.y / 16.0f, c.p.z / 16.0f, c.kind == 6 ? 0.005f : 0.004f, 1.0f, float(c.kind), 0.0f, 0.0f});
             for (const Drop& d : drops) {
                 const float alpha = d.kind == 0 ? 0.9f : d.kind == 2 ? 0.6f : d.kind == 3 ? 0.85f : 0.28f * std::min(1.0f, d.life);
                 dropVerts.insert(dropVerts.end(), {d.p.x, d.p.y, d.p.z, d.size / 256.0f, alpha, float(d.kind), 0.0f, 0.0f});
@@ -2210,12 +2249,22 @@ int main(int argc, char** argv) {
                         buildTreeChunks(*fb.skel, sp.base, sp.shift, [&](int32_t bx, int32_t bz) {
                             const int i = bx - go.x, j = bz - go.y;
                             return i < 0 || j < 0 || i >= gs || j >= gs ? INT32_MIN : (*gr)[size_t(j) * gs + i];
-                        }, fb.chunks, cut.notched ? 1 : 1 << lvl, lv, [&cut](float x, float y, float z, int b) {
-                            if (cut.inNotch(x, y, z) || cut.dug) return false;
+                        }, fb.chunks, cut.notched || cut.scraped ? 1 : 1 << lvl, lv, [&cut, &fb](float x, float y, float z, int b) -> int {
+                            if (cut.inNotch(x, y, z) || cut.dug) return 0;
+                            // Р102: содранная с живого дерева кора - на высоте 0.5..2.5 м сектор ствола, растущий с каждым ударом
+                            if (b == 0 && cut.scraped > 0 && y >= 8 && y <= 40) {
+                                glm::vec2 c;
+                                float R;
+                                game::trunkAt(*fb.skel, 24.0f, c, R);
+                                const int maxHits = fb.skel->age == world::TreeAge::YOUNG ? 12 : 2 * std::max(1, int(2.0f * R / 4.0f + 0.5f)) * 2;
+                                const float frac = std::min(1.0f, float(cut.scraped) / float(maxHits));
+                                const float a = std::atan2(z - c.y, x - c.x) / 6.2831853f + 0.5f;
+                                if (a <= frac) return 2;
+                            }
                             // Р96: перерубленные корни ушли корягами
-                            if (b > 0 && b < int(cut.rootOf.size()) && cut.rootOf[size_t(b)] >= 0 && (cut.rootsCut >> cut.rootOf[size_t(b)] & 1u)) return false;
-                            return !cut.felled || !cut.falls(b, y);   // Р94: у пня - всё, что не упало (по скелету)
-                        });
+                            if (b > 0 && b < int(cut.rootOf.size()) && cut.rootOf[size_t(b)] >= 0 && (cut.rootsCut >> cut.rootOf[size_t(b)] & 1u)) return 0;
+                            return !cut.felled || !cut.falls(b, y) ? 1 : 0;   // Р94: у пня - всё, что не упало (по скелету)
+                        }, &cut);
                         return fb;
                     }));
                 }

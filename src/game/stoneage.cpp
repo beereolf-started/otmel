@@ -65,9 +65,18 @@ Item makeStick(uint32_t seed) {
 }
 
 Item makeFiber() {
-    auto m = blank(10, 2, 3, 64);
-    for (int x = 0; x < 10; ++x)
-        for (int z = 0; z < 3; ++z) m->at(x, (x + z) & 1, z) = (x % 3) ? world::HANDLE : world::HANDLE2;
+    // Р102: пучок лыка - семь волокон по 25 см, к концам расходятся веером, посередине перехвачены
+    auto m = blank(40, 4, 9, 64);
+    for (int s = 0; s < 7; ++s) {
+        const float z0 = 4.0f + float(s - 3) * 0.55f, y0 = 1.5f + float((s * 5) % 3) * 0.5f - 0.5f;
+        for (int x = 2; x < 38; ++x) {
+            const float t = std::fabs(float(x) - 20.0f) / 18.0f;   // 0 посередине, 1 на концах
+            const int z = int(std::lround(4.0f + (z0 - 4.0f) * (0.4f + 1.4f * t * t)));
+            const int y = int(std::lround(y0 + 0.6f * std::sin(float(x) * 0.5f + float(s))));
+            if (z >= 0 && z < 9 && y >= 0 && y < 4) m->at(x, y, z) = (s + x / 6) % 3 ? world::HANDLE : world::HANDLE2;
+        }
+    }
+    for (int y = 0; y < 4; ++y) for (int z = 2; z < 7; ++z) for (int x = 19; x < 22; ++x) m->at(x, y, z) = world::LEATHER2;   // перехват
     m->finish();
     return Item{ItemKind::FIBER, ItemSize::SMALL, m, world::AIR};
 }

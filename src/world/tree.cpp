@@ -320,7 +320,7 @@ std::shared_ptr<const TreeSkel> growTree(uint32_t seed, TreeAge age) {
         const TreeBranch& br = t->branches[size_t(n.branch)];
         if (br.root || br.dead || br.order == 0) continue;
         if (n.r > A.tip * 3.0f) continue;   // листва - на тонких побегах
-        if (rng.f() > 0.55f) continue;
+        if (rng.f() > 0.38f) continue;   // Р102: листвы меньше - не мешает
         const V3 c = P(n) + UP * rng.r(0.5f, 2.0f) + rng.unit() * 1.5f;
         t->leaves.push_back({{c.x, c.y, c.z}, rng.r(A.leafMin, A.leafMax), n.branch});
     }
