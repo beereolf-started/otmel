@@ -89,11 +89,20 @@ std::string itemName(const Item& it) {
         case ItemKind::BARK: return "кора";
         case ItemKind::SNAG: return std::string(SZF[int(it.size)]) + " коряга";
         case ItemKind::STUMP: return "пень";
+        case ItemKind::STONE: return "камень";
+        case ItemKind::FIBER: return "волокно";
+        case ItemKind::CLAY: return "ком глины";
+        case ItemKind::HEAD_AXE: return "головка топора";
+        case ItemKind::HEAD_KNIFE: return "лезвие ножа";
+        case ItemKind::HEAD_SHOVEL: return "штык лопаты";
+        case ItemKind::HEAD_SPEAR: return "наконечник копья";
+        case ItemKind::KNIFE: return "нож";
+        case ItemKind::SPEAR: return "копьё";
     }
     return "предмет";
 }
 
-Item makeTool(ItemKind kind) {
+Item makeTool(ItemKind kind, world::Material head) {
     using namespace world;
     std::shared_ptr<ItemModel> m;
     switch (kind) {
@@ -122,7 +131,7 @@ Item makeTool(ItemKind kind) {
                             const float hh = u < 0 ? 4.2f * std::sqrt(std::max(0.0f, 1.0f - (u / 6.0f) * (u / 6.0f))) : 4.2f + 0.24f * u;
                             const float th = u < 0 ? 2.8f : 2.8f * (1.0f - u / 19.0f) + 0.45f;
                             const float rough = 0.35f * std::sin(x * 1.7f + y * 2.3f) * std::cos(z * 1.9f + x * 0.7f);
-                            if (std::fabs(v) <= hh + rough && std::fabs(w) <= th) m->at(x, y, z) = ((hh0 >> 9) % 3u) == 0 ? FLINT2 : FLINT;
+                            if (std::fabs(v) <= hh + rough && std::fabs(w) <= th) m->at(x, y, z) = head != world::AIR ? head : (((hh0 >> 9) % 3u) == 0 ? FLINT2 : FLINT);
                         }
                     }
             m->grip = glm::vec3(8.0f, 4.0f, 4.5f);
@@ -160,6 +169,39 @@ Item makeTool(ItemKind kind) {
             m->grip = glm::vec3(4.0f, 4.0f, 2.0f);
             break;
         }
+        case ItemKind::KNIFE: {   // Р99: каменный нож - рукоять 12 см, обмотка, лезвие 12 см
+            m = blank(7, 18, 4);
+            m->res = 64;
+            const world::Material st = head != world::AIR ? head : FLINT;
+            for (int y = 0; y < 18; ++y)
+                for (int z = 0; z < 4; ++z)
+                    for (int x = 0; x < 7; ++x) {
+                        const float dx = x + 0.5f - 3.5f, dz = z + 0.5f - 2.0f;
+                        if (y < 8 && dx * dx + dz * dz <= 2.6f) m->at(x, y, z) = HANDLE;
+                        if (y >= 6 && y < 9 && dx * dx + dz * dz <= 4.2f) m->at(x, y, z) = (y & 1) ? LEATHER : LEATHER2;
+                        // лезвие: плоское, сужается к острию
+                        const float half = 2.6f * (1.0f - float(y - 8) / 10.0f);
+                        if (y >= 8 && std::fabs(dx) <= half && std::fabs(dz) <= 0.9f) m->at(x, y, z) = st;
+                    }
+            m->grip = glm::vec3(3.5f, 3.0f, 2.0f);
+            break;
+        }
+        case ItemKind::SPEAR: {   // Р99: копьё - древко 1.6 м, наконечник, обмотка
+            m = blank(7, 112, 4);
+            m->res = 64;
+            const world::Material st = head != world::AIR ? head : FLINT;
+            for (int y = 0; y < 112; ++y)
+                for (int z = 0; z < 4; ++z)
+                    for (int x = 0; x < 7; ++x) {
+                        const float dx = x + 0.5f - 3.5f, dz = z + 0.5f - 2.0f;
+                        if (y < 100 && dx * dx + dz * dz <= 1.7f) m->at(x, y, z) = HANDLE;
+                        if (y >= 94 && y < 101 && dx * dx + dz * dz <= 3.2f) m->at(x, y, z) = (y & 1) ? LEATHER : LEATHER2;
+                        const float half = 3.2f * std::min(1.0f, float(112 - y) / 8.0f);
+                        if (y >= 99 && std::fabs(dx) <= half && std::fabs(dz) <= 1.1f) m->at(x, y, z) = st;
+                    }
+            m->grip = glm::vec3(3.5f, 40.0f, 2.0f);
+            break;
+        }
         default: {   // лопата: деревянный черенок 1.1 м, поперечная ручка, железный штык 25 см
             m = blank(18, 72, 4);
             m->res = 64;
@@ -180,8 +222,10 @@ Item makeTool(ItemKind kind) {
             break;
         }
     }
+    if (kind == ItemKind::SHOVEL && head != world::AIR)   // Р99: каменный штык
+        for (world::Material& v : m->v) if (v == IRON) v = head;
     m->finish();
-    return Item{kind, ItemSize::SMALL, m};
+    return Item{kind, ItemSize::SMALL, m, head};
 }
 
 void meshItem(const ItemModel& m, std::vector<ItemMeshChunk>& out) {

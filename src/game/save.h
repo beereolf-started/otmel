@@ -30,6 +30,7 @@ struct SaveData {
     std::vector<std::pair<uint64_t, TreeCut>> cuts;
     std::vector<TreeBody> bodies;
     std::vector<WorldItem> items;
+    std::vector<uint64_t> taken;   // Р99: подобранные природные камни и сушняк
 };
 
 bool saveWorld(const std::string& path, const SaveData& d);

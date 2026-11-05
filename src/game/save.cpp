@@ -9,7 +9,7 @@ namespace game {
 namespace {
 
 constexpr uint32_t MAGIC = 0x4C4D544Fu;   // "OTML"
-constexpr uint32_t VERSION = 1;
+constexpr uint32_t VERSION = 2;   // Р99: порода предмета, подобранное природное
 
 struct W {
     std::vector<uint8_t> b;
@@ -79,12 +79,14 @@ std::shared_ptr<ItemModel> getModel(R& r) {
 void putItem(W& w, const Item& it) {
     w.pod(it.kind);
     w.pod(it.size);
+    w.pod(it.mat);
     putModel(w, *it.model);
 }
 Item getItem(R& r) {
     Item it;
     r.pod(it.kind);
     r.pod(it.size);
+    r.pod(it.mat);
     it.model = getModel(r);
     return it;
 }
@@ -147,6 +149,7 @@ bool saveWorld(const std::string& path, const SaveData& d) {
         putBody(w, it.body);
         w.pod(it.placed);
     }
+    w.vec(d.taken);
     std::error_code ec;
     std::filesystem::create_directories(std::filesystem::path(path).parent_path(), ec);
     const std::string tmp = path + ".tmp";
@@ -211,6 +214,7 @@ bool loadWorld(const std::string& path, SaveData& d) {
         r.pod(it.placed);
         d.items.push_back(std::move(it));
     }
+    r.vec(d.taken);
     return r.ok;
 }
 

@@ -54,6 +54,7 @@
 #include "game/felling.h"
 #include "game/tree_body.h"
 #include "game/save.h"
+#include "game/stoneage.h"
 #include <optional>
 #include "dev_text.h"
 #include "devinfo.h"
@@ -339,7 +340,7 @@ int main(int argc, char** argv) {
     float recordSec = 0;   // со --shot: запись кадров rec_NNN.bmp 15 раз в секунду столько секунд
     int voxelBlocks = 128;
     float atX = 0, atZ = 0, flySpeed = 0, spinRate = 0;
-    bool winter = false, hold = false, autoChop = false, newWorld = false, forceSave = false;
+    bool winter = false, hold = false, autoChop = false, newWorld = false, forceSave = false, giveTools = false;
     float startPitch = -0.35f;
     world::LodSettings lod;
     for (int i = 1; i < argc; ++i) {
@@ -354,6 +355,7 @@ int main(int argc, char** argv) {
         if (a == "--record" && i + 1 < argc) recordSec = std::stof(argv[i + 1]);
         if (a == "--winter") winter = true;
         if (a == "--hold") hold = true;
+        if (a == "--tools") giveTools = true;   // Р99: инструменты у старта (для проверки; в игре их надо сделать)
         if (a == "--new") newWorld = true;
         if (a == "--save") forceSave = true;   // Р98: сохранять и в режиме снимка (проверка)   // Р98: не загружать сохранение (оно перезапишется)
         if (a == "--chop") autoChop = true;   // Р93: со --shot - срубить ближайшее дерево (проверка)
@@ -436,6 +438,15 @@ int main(int argc, char** argv) {
     struct HandMesh { const game::ItemModel* model = nullptr; std::vector<render::MeshId> meshes; std::vector<glm::ivec3> offs; };
     HandMesh handMesh[2];
     bool toolsSpawned = false;
+    // Р99: каменный век. Тёска - камень у глаз (E); крафт - сетка 2×2 ячеек по четверть блока на земле (F);
+    // природные камни и сушняк вокруг игрока (подобранное помнится - не возвращается).
+    std::optional<game::Knap> knap;
+    struct Craft { bool on = false; glm::dvec3 corner{0}; uint32_t cell[4] = {0, 0, 0, 0}; };
+    Craft craft;
+    std::unordered_set<uint64_t> takenNatural;
+    std::unordered_map<uint64_t, uint32_t> naturalSpawned;   // ключ места -> id предмета
+    std::unordered_map<uint64_t, int> fiberHits;            // соскоблено с дерева (по месту)
+    float naturalAt = 1e9f;
     float handTime = 0, walkPhase = 0, walkAmp = 0;   // покачивание предмета в руке
     // Р93: рубка. Зарубки деревьев (по месту в лесу - переживают перестройку зоны), падающие и лежащие стволы,
     // щепки, замах топора.
@@ -740,6 +751,7 @@ int main(int argc, char** argv) {
                 items.list.back().body.asleep = it.body.asleep || it.placed;
             }
             toolsSpawned = true;
+            takenNatural.insert(sd.taken.begin(), sd.taken.end());
             journal::info("сохранение", "загружено: правок {}, деревьев {}, стволов {}, предметов {}", sd.edits.size(), sd.cuts.size(),
                           sd.bodies.size(), sd.items.size());
         }
@@ -756,7 +768,8 @@ int main(int argc, char** argv) {
         for (int h = 0; h < 2; ++h) sd.hands[h] = hands[h];
         for (const auto& [key, c] : treeCuts) sd.cuts.push_back({key, c});
         for (const FallenTree& ft : fallen) sd.bodies.push_back(ft.tb);
-        sd.items = items.list;
+        for (const game::WorldItem& w : items.list) if (!w.nat) sd.items.push_back(w);   // Р99: природное вырастет само
+        sd.taken.assign(takenNatural.begin(), takenNatural.end());
         const auto t0 = clock_t_::now();
         if (game::saveWorld(savePath, sd))
             journal::info("сохранение", "мир сохранён за {:.0f} мс: правок {}, деревьев {}, стволов {}, предметов {}", msSince(t0),
@@ -1015,6 +1028,161 @@ int main(int argc, char** argv) {
             }
             // Р83: кнопка мыши (любая) - сломать блок под прицелом. Он уходит в правки мира, затронутые
             // столбцы перестраиваются, и грани соседей, прежде закрытые, открываются сами.
+            // Р99: ТЁСКА - мышь водит курсор по клеткам, ЛКМ скалывает; E или Esc - отложить
+            if (knap && ev.type == SDL_EVENT_MOUSE_MOTION) {
+                knap->mx += ev.motion.xrel;
+                knap->my += ev.motion.yrel;
+                while (knap->mx > 28) { knap->mx -= 28; knap->cx = std::min(4, knap->cx + 1); }
+                while (knap->mx < -28) { knap->mx += 28; knap->cx = std::max(0, knap->cx - 1); }
+                while (knap->my > 28) { knap->my -= 28; knap->cy = std::min(4, knap->cy + 1); }
+                while (knap->my < -28) { knap->my += 28; knap->cy = std::max(0, knap->cy - 1); }
+                continue;
+            }
+            if (knap && ev.type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
+                if (ev.button.button == SDL_BUTTON_LEFT && knap->cell[knap->cy][knap->cx]) {
+                    knap->cell[knap->cy][knap->cx] = false;
+                    chips.push_back({glm::vec3(eye * 16.0) + glm::vec3(std::cos(yaw), 0, std::sin(yaw)) * 0.35f, glm::vec3(0, 1.0f, 0), 0.6f});
+                    const game::ItemKind res = game::knapResult(*knap);
+                    if (res != game::ItemKind::STONE) {
+                        hands[knap->hand] = game::makeHead(res, knap->rock, *knap);
+                        journal::info("тёска", "выточено: {}", game::itemName(*hands[knap->hand]));
+                        knap.reset();
+                    }
+                }
+                continue;
+            }
+            if (knap && ev.type == SDL_EVENT_KEY_DOWN && (ev.key.key == SDLK_E || ev.key.key == SDLK_ESCAPE)) { knap.reset(); continue; }
+            if (!knap && !typing && ev.type == SDL_EVENT_KEY_DOWN && ev.key.key == SDLK_E) {
+                const int h = hands[1] && hands[1]->kind == game::ItemKind::STONE ? 1 : (hands[0] && hands[0]->kind == game::ItemKind::STONE ? 0 : -1);
+                if (h >= 0) { knap = game::Knap{}; knap->hand = h; knap->rock = hands[h]->mat; }
+                continue;
+            }
+            // Р99: КРАФТ - F: ячейки 2×2 на земле под прицелом; F ещё раз - собрать (если сложилось) или выйти
+            if (!typing && ev.type == SDL_EVENT_KEY_DOWN && ev.key.key == SDLK_F) {
+                if (!craft.on) {
+                    const glm::dvec3 st = eye * 16.0;
+                    const glm::dvec3 dr(std::cos(pitch) * std::cos(yaw), std::sin(pitch), std::cos(pitch) * std::sin(yaw));
+                    for (int i = 1; i <= 5 * 16; ++i) {
+                        const glm::dvec3 v = st + dr * (double(i) / 16.0);
+                        const int32_t bx = int32_t(std::floor(v.x)), by = int32_t(std::floor(v.y)), bz = int32_t(std::floor(v.z));
+                        if (!voxelQuery.solidTerrain(bx, by, bz)) continue;
+                        if (voxelQuery.solid(bx, by + 1, bz)) break;   // верх закрыт - некуда
+                        craft = Craft{};
+                        craft.on = true;
+                        craft.corner = glm::dvec3(std::floor(v.x * 4.0) / 4.0 - 0.25, by + 1.0, std::floor(v.z * 4.0) / 4.0 - 0.25);
+                        break;
+                    }
+                } else {
+                    std::vector<const game::Item*> got;
+                    std::vector<size_t> idx;
+                    for (uint32_t id : craft.cell)
+                        for (size_t k = 0; k < items.list.size(); ++k)
+                            if (id && items.list[k].id == id) { got.push_back(&items.list[k].item); idx.push_back(k); }
+                    game::Item out;
+                    std::string name;
+                    if (game::matchRecipe(got, out, name)) {
+                        std::sort(idx.rbegin(), idx.rend());
+                        for (size_t k : idx) {
+                            for (uint32_t m : items.list[k].meshes) gpu->destroyMesh(m);
+                            items.list.erase(items.list.begin() + long(k));
+                        }
+                        items.spawn(out, craft.corner + glm::dvec3(0.25, 0.1, 0.25), glm::angleAxis(1.5708f, glm::vec3(1, 0, 0)), {}, {}, true);
+                        journal::info("крафт", "собрано: {}", name);
+                    }
+                    craft.on = false;
+                }
+                continue;
+            }
+            // Р99: в режиме крафта клик кладёт предмет из этой руки в ячейку под прицелом (пустой рукой - взять обратно)
+            if (craft.on && ev.type == SDL_EVENT_MOUSE_BUTTON_DOWN && (ev.button.button == SDL_BUTTON_LEFT || ev.button.button == SDL_BUTTON_RIGHT)) {
+                const int hand = ev.button.button == SDL_BUTTON_LEFT ? 0 : 1;
+                const glm::dvec3 st = eye * 16.0;
+                const glm::dvec3 dr(std::cos(pitch) * std::cos(yaw), std::sin(pitch), std::cos(pitch) * std::sin(yaw));
+                // точка прицела на плоскости ячеек
+                const double t = std::fabs(dr.y) > 1e-4 ? (craft.corner.y - st.y) / dr.y : -1;
+                if (t > 0 && t < 5) {
+                    const glm::dvec3 p = st + dr * t;
+                    const int ci = int(std::floor((p.x - craft.corner.x) / 0.25)), cj = int(std::floor((p.z - craft.corner.z) / 0.25));
+                    if (ci >= 0 && ci < 2 && cj >= 0 && cj < 2) {
+                        uint32_t& slot = craft.cell[cj * 2 + ci];
+                        bool alive = false;
+                        for (const game::WorldItem& w : items.list) if (slot && w.id == slot) alive = true;
+                        if (!alive) slot = 0;
+                        if (!slot && hands[hand]) {
+                            const glm::dvec3 c = craft.corner + glm::dvec3(ci * 0.25 + 0.125, 0.06, cj * 0.25 + 0.125);
+                            glm::quat rq = glm::angleAxis(1.5708f, glm::vec3(1, 0, 0));
+                            slot = items.spawn(*hands[hand], c, rq, {}, {}, true);
+                            hands[hand].reset();
+                        } else if (slot && !hands[hand]) {
+                            for (size_t k = 0; k < items.list.size(); ++k)
+                                if (items.list[k].id == slot) {
+                                    hands[hand] = items.list[k].item;
+                                    for (uint32_t m : items.list[k].meshes) gpu->destroyMesh(m);
+                                    items.list.erase(items.list.begin() + long(k));
+                                    break;
+                                }
+                            slot = 0;
+                        }
+                    }
+                }
+                continue;
+            }
+            // Р99: зажатая R + клик - второе действие: камнем соскоблить волокно с молодого дерева, топором - окорить
+            // лежащий ствол. Зажатая X + клик - метнуть предмет из этой руки.
+            if (ev.type == SDL_EVENT_MOUSE_BUTTON_DOWN && (ev.button.button == SDL_BUTTON_LEFT || ev.button.button == SDL_BUTTON_RIGHT) &&
+                (SDL_GetKeyboardState(nullptr)[SDL_SCANCODE_R] || SDL_GetKeyboardState(nullptr)[SDL_SCANCODE_X])) {
+                const int hand = ev.button.button == SDL_BUTTON_LEFT ? 0 : 1;
+                const glm::dvec3 st = eye * 16.0;
+                const glm::dvec3 dr(std::cos(pitch) * std::cos(yaw), std::sin(pitch), std::cos(pitch) * std::sin(yaw));
+                if (SDL_GetKeyboardState(nullptr)[SDL_SCANCODE_X]) {
+                    if (hands[hand]) {
+                        static uint32_t sp = 99u;
+                        sp = sp * 1664525u + 1013904223u;
+                        const bool tool = hands[hand]->tool();
+                        // орудие летит остриём вперёд и вращаясь поперёк; камень - кувырком
+                        const glm::vec3 ang = tool ? glm::vec3(-std::sin(yaw), 0, std::cos(yaw)) * 9.0f : glm::vec3(float(sp & 255) / 32.0f - 4.0f, float((sp >> 8) & 255) / 32.0f - 4.0f, 3.0f);
+                        items.spawn(*hands[hand], st + dr * 0.6, glm::angleAxis(-yaw, glm::vec3(0, 1, 0)), glm::vec3(dr) * 17.0f + glm::vec3(0, 2.0f, 0), ang);
+                        journal::info("руки", "метнул: {}", game::itemName(*hands[hand]));
+                        hands[hand].reset();
+                        swing[hand] = SWING;
+                    }
+                    continue;
+                }
+                if (hands[hand] && hands[hand]->kind == game::ItemKind::STONE) {
+                    // волокно коры: молодое дерево, стоящее
+                    for (auto& [key, t] : forest) {
+                        if (!t.skel || t.spot.age != world::TreeAge::YOUNG) continue;
+                        if (treeCuts.count(key) && treeCuts[key].felled) continue;
+                        const glm::dvec3 org = glm::dvec3(t.spot.base) * 16.0 + glm::dvec3(t.spot.shift.x, -3, t.spot.shift.z);
+                        const glm::dvec3 o = st * 16.0 - org;
+                        if (o.x * o.x + o.z * o.z > 64.0 * 64.0) continue;
+                        float th;
+                        glm::vec3 hp;
+                        if (!game::hitTrunk(*t.skel, glm::vec3(o), glm::vec3(dr), 3.0f * 16.0f, th, hp)) continue;
+                        swing[hand] = SWING;
+                        chips.push_back({glm::vec3((org + glm::dvec3(hp)) / 16.0), -glm::vec3(dr) * 2.0f + glm::vec3(0, 1, 0), 0.8f});
+                        if (++fiberHits[key] % 3 == 0) {
+                            items.spawn(game::makeFiber(), (org + glm::dvec3(hp)) / 16.0 - dr * 0.3, glm::quat(1, 0, 0, 0), glm::vec3(0, 1.0f, 0), {});
+                            journal::info("руки", "соскоблено волокно коры");
+                        }
+                        break;
+                    }
+                } else if (hands[hand] && hands[hand]->kind == game::ItemKind::AXE) {
+                    // топор вторым действием - окорка лежащего ствола (как скобелем, но медленнее не делаем)
+                    for (FallenTree& ft : fallen) {
+                        if (!ft.tb.free) continue;
+                        float tt;
+                        glm::vec3 lp;
+                        if (game::hitBranch(ft.tb, st, dr, 3.2f, tt, &lp) != 0) continue;
+                        swing[hand] = SWING;
+                        const int strips = game::debarkBody(ft.tb, lp.y);
+                        for (int k = 0; k < strips; ++k)
+                            items.spawn(game::makeBark(), st + dr * double(tt) + glm::dvec3(0, 0.3, 0), glm::quat(1, 0, 0, 0), glm::vec3(0, 1.5f, 0), {});
+                        break;
+                    }
+                }
+                continue;
+            }
             if (ev.type == SDL_EVENT_MOUSE_BUTTON_DOWN &&
                 (ev.button.button == SDL_BUTTON_RIGHT || ev.button.button == SDL_BUTTON_LEFT) &&
                 !SDL_GetKeyboardState(nullptr)[SDL_SCANCODE_V] && !SDL_GetKeyboardState(nullptr)[SDL_SCANCODE_Q]) {
@@ -1055,6 +1223,7 @@ int main(int argc, char** argv) {
                     if (!hands[hand]) {
                         game::WorldItem& w = items.list[size_t(picked)];
                         hands[hand] = w.item;
+                        if (w.nat) { takenNatural.insert(w.nat); naturalSpawned.erase(w.nat); }   // Р99: природное - не вернётся
                         for (uint32_t m : w.meshes) gpu->destroyMesh(m);
                         journal::info("руки", "взят в {} руку: {}", hand ? "правую" : "левую", game::itemName(w.item));
                         items.wake(w.body.pos, 2.0);
@@ -1071,6 +1240,9 @@ int main(int argc, char** argv) {
                     const world::Material m = voxelQuery.at(vx, vy, vz);
                     if (m == world::AIR || m == world::WATER) continue;
                     edits.set(vx, vy, vz, world::AIR);
+                    // Р99: из глинистой земли - ком глины
+                    if (m == world::Material(world::SOIL_FIRST + 6) || m == world::Material(world::SOIL_FIRST + 5))
+                        items.spawn(game::makeClay(), glm::dvec3(vx + 0.5, vy + 0.5, vz + 0.5), glm::quat(1, 0, 0, 0), glm::vec3(0, 1.0f, 0), {});
                     const auto fd = [](int32_t a) { return a >= 0 ? a / 32 : -((-a + 31) / 32); };
                     const int32_t cx = fd(vx), cz = fd(vz);
                     // сломали у границы куска - перестроить и соседа: у него открылась грань
@@ -1090,7 +1262,6 @@ int main(int argc, char** argv) {
                 plantGrove(int32_t(std::floor((eye.x + f.x * 2.5f) * 16)), int32_t(std::floor((eye.z + f.y * 2.5f) * 16)), 25, 40, oakSeed);
                 buildOaks();
             }
-            if (ev.type == SDL_EVENT_KEY_DOWN && ev.key.key == SDLK_R) { hideRoots = !hideRoots; buildOaks(); }
             if (ev.type == SDL_EVENT_KEY_DOWN && ev.key.key == SDLK_L) leavesOn = !leavesOn;
             if (ev.type == SDL_EVENT_KEY_DOWN && ev.key.key == SDLK_F5) saveNow();   // Р98: сохранить сейчас
             // Р92: V - положить к вокселю под прицелом, Q - выбросить. Из правой руки, если она пуста - из левой.
@@ -1229,11 +1400,71 @@ int main(int argc, char** argv) {
             toolsSpawned = true;
             const glm::dvec3 f = glm::normalize(glm::dvec3(fwd.x, 0, fwd.z)), sd(-f.z, 0, f.x);
             const game::ItemKind kinds[4] = {game::ItemKind::AXE, game::ItemKind::SAW, game::ItemKind::DRAWKNIFE, game::ItemKind::SHOVEL};
-            for (int k = 0; k < 4; ++k)
+            for (int k = 0; k < 4 && (giveTools || autoChop); ++k)
                 items.spawn(game::makeTool(kinds[k]), eye * 16.0 + f * 3.0 + sd * (double(k) - 1.5) * 0.9 - glm::dvec3(0, 0.6, 0),
                             glm::angleAxis(1.5707963f, glm::vec3(1, 0, 0)), {}, glm::vec3(0.3f * k, 0, 0.2f));
         }
         items.step(voxelQuery, dt, eye * 16.0, 96.0);
+        // Р99: ПРИРОДНОЕ - камушки (порода под ногами) и сушняк (в лесу) лежат вокруг игрока; дальше 48 блоков -
+        // убираются, подобранное помнится и не возвращается
+        naturalAt += dt;
+        if (naturalAt > 0.5f) {
+            naturalAt = 0;
+            const glm::ivec3 eb(int(std::floor(eye.x * 16.0)), int(std::floor(eye.y * 16.0)), int(std::floor(eye.z * 16.0)));
+            for (size_t k = items.list.size(); k-- > 0;) {
+                game::WorldItem& w = items.list[k];
+                if (!w.nat || glm::distance(glm::dvec2(w.body.pos.x, w.body.pos.z), glm::dvec2(eb.x, eb.z)) < 48.0) continue;
+                for (uint32_t m : w.meshes) gpu->destroyMesh(m);
+                naturalSpawned.erase(w.nat);
+                items.list.erase(items.list.begin() + long(k));
+            }
+            constexpr int CELL = 4, RAD = 36;
+            int made = 0;
+            for (int cz = (eb.z - RAD) / CELL - 1; cz <= (eb.z + RAD) / CELL + 1 && made < 40; ++cz)
+                for (int cx = (eb.x - RAD) / CELL - 1; cx <= (eb.x + RAD) / CELL + 1 && made < 40; ++cx) {
+                    const int x = cx * CELL, z = cz * CELL;
+                    if ((x - eb.x) * (x - eb.x) + (z - eb.z) * (z - eb.z) > RAD * RAD) continue;
+                    const uint64_t key = (uint64_t(uint32_t(cx)) << 32) ^ uint32_t(cz) ^ 0x5701E00000000000ull;
+                    if (takenNatural.count(key) || naturalSpawned.count(key)) continue;
+                    uint32_t h = uint32_t(cx) * 0x8DA6B343u ^ uint32_t(cz) * 0xD8163841u ^ tp.seed * 0x9E3779B1u ^ 0x5701Eu;
+                    h ^= h >> 15; h *= 0x2C1B3C6Du; h ^= h >> 12; h *= 0x297A2D39u; h ^= h >> 15;
+                    const float u = float(h & 0xFFFF) / 65536.0f;
+                    if (u >= 0.32f) { naturalSpawned[key] = 0; continue; }
+                    const int px = x + int((h >> 16) % CELL), pz = z + int((h >> 20) % CELL);
+                    int32_t top = INT32_MIN;
+                    for (int y = eb.y + 40; y > eb.y - 60; --y)
+                        if (voxelQuery.solidTerrain(px, y, pz)) { top = y; break; }
+                    if (top == INT32_MIN) continue;   // столбец ещё далеко - позже
+                    if (voxelQuery.at(px, top + 1, pz) == world::WATER) { naturalSpawned[key] = 0; continue; }
+                    game::Item it;
+                    glm::quat rq(1, 0, 0, 0);
+                    if (u < 0.10f) {   // камень - из породы под землёй этого места
+                        world::Material rock = world::ROCK_FIRST;
+                        for (int y = top; y > top - 70; --y) {
+                            const world::Material m = voxelQuery.at(px, y, pz);
+                            if (m >= world::ROCK_FIRST && m <= world::ROCK_LAST) { rock = m; break; }
+                        }
+                        it = game::makeStone(rock, h);
+                        rq = glm::angleAxis(float(h >> 8 & 255) * 0.0246f, glm::vec3(0, 1, 0));
+                    } else {           // сушняк - только в лесу
+                        if (world::forestDensity(tp, px, pz, top) < 0.12f) { naturalSpawned[key] = 0; continue; }
+                        it = game::makeStick(h);
+                        rq = glm::angleAxis(float(h >> 8 & 255) * 0.0246f, glm::vec3(0, 1, 0)) * glm::angleAxis(1.5708f, glm::vec3(1, 0, 0));
+                    }
+                    const glm::mat3 R = glm::mat3_cast(rq);
+                    float low = 1e9f;
+                    for (int c = 0; c < 8; ++c) {
+                        const glm::vec3 k(c & 1 ? it.model->hi.x : it.model->lo.x, c & 2 ? it.model->hi.y : it.model->lo.y, c & 4 ? it.model->hi.z : it.model->lo.z);
+                        low = std::min(low, (R * k).y);
+                    }
+                    const glm::dvec3 pos(px + 0.2 + 0.6 * double((h >> 24) & 15) / 15.0, top + 1.0 - low + 0.003, pz + 0.2 + 0.6 * double((h >> 28) & 15) / 15.0);
+                    const uint32_t id = items.spawn(it, pos, rq, {}, {}, false);
+                    items.list.back().nat = key;
+                    items.list.back().body.asleep = true;
+                    naturalSpawned[key] = id;
+                    ++made;
+                }
+        }
         sinceSave += dt;
         if (sinceSave > 60.0f) { sinceSave = 0; saveNow(); }   // Р98: раз в минуту
         if (autoChop && warm) {   // Р93: проверка без человека - удар раз в 0.5 с по ближайшему дереву с сеткой
@@ -2174,10 +2405,45 @@ int main(int argc, char** argv) {
             const glm::mat3 cam(glm::normalize(glm::cross(fwdV, up)), up, -fwdV);
             drawItem(eye * 16.0 + glm::dvec3(fwdV * 0.4f), glm::quat_cast(cam), cm, co, 512);
         }
+        // Р99: тёска - камень у глаз; крафт - рамка ячеек на земле
+        if (knap) {
+            static uint64_t knapSig = ~0ull;
+            static std::vector<render::MeshId> km;
+            static std::vector<glm::ivec3> ko;
+            uint64_t sig = uint64_t(knap->cx) | uint64_t(knap->cy) << 3 | uint64_t(knap->rock) << 6;
+            for (int y = 0; y < 5; ++y) for (int x = 0; x < 5; ++x) sig = sig * 3 + (knap->cell[y][x] ? 1 : 2);
+            if (sig != knapSig) {
+                knapSig = sig;
+                for (render::MeshId m : km) gpu->destroyMesh(m);
+                km.clear(); ko.clear();
+                std::vector<game::ItemMeshChunk> ch;
+                game::meshItem(*game::knapModel(*knap), ch);
+                for (const game::ItemMeshChunk& c : ch) { km.push_back(gpu->uploadChunkMesh(c.verts, 0)); ko.push_back(c.off); }
+            }
+            const glm::vec3 up = glm::cross(right, fwdV);
+            const glm::mat3 cam(glm::normalize(glm::cross(fwdV, up)), up, -fwdV);
+            drawItem(eye * 16.0 + glm::dvec3(fwdV * 0.34f - up * 0.03f), glm::quat_cast(cam), km, ko, 64);
+        }
+        if (craft.on) {
+            static std::vector<render::MeshId> cm;
+            static std::vector<glm::ivec3> co;
+            if (cm.empty()) {
+                auto g = std::make_shared<game::ItemModel>();
+                g->res = 64; g->sx = 33; g->sy = 1; g->sz = 33;
+                g->v.assign(size_t(33) * 33, world::AIR);
+                for (int a = 0; a < 33; ++a)
+                    for (int b = 0; b <= 32; b += 16) { g->at(a, 0, b) = world::HIGHLIGHT; g->at(b, 0, a) = world::HIGHLIGHT; }
+                g->finish();
+                std::vector<game::ItemMeshChunk> ch;
+                game::meshItem(*g, ch);
+                for (const game::ItemMeshChunk& c : ch) { cm.push_back(gpu->uploadChunkMesh(c.verts, 0)); co.push_back(c.off); }
+            }
+            drawItem(craft.corner + glm::dvec3(0.25, 0.01, 0.25), glm::quat(1, 0, 0, 0), cm, co, 64);
+        }
         // Р92: в руках - у камеры: правая справа внизу, левая слева; черенок наклонён от себя
         for (int hnd = 0; hnd < 2; ++hnd) {
             HandMesh& hm = handMesh[hnd];
-            const game::ItemModel* want = hands[hnd] ? hands[hnd]->model.get() : nullptr;
+            const game::ItemModel* want = hands[hnd] && !(knap && knap->hand == hnd) ? hands[hnd]->model.get() : nullptr;
             if (hm.model != want) {
                 for (render::MeshId m : hm.meshes) gpu->destroyMesh(m);
                 hm.meshes.clear();
@@ -2336,6 +2602,19 @@ int main(int argc, char** argv) {
                                         : std::string("под прицелом: пусто (64 бл.)"));
                 if (aim.hit && !aim.detail.empty()) fresh.push_back("состав: " + aim.detail);
                 fresh.push_back(std::format("земля под камерой: {:.0f} бл.", dev::groundAt(tp, eye.x, eye.z)));
+                if (knap) fresh.push_back("ТЁСКА: мышь - курсор, ЛКМ - сколоть клетку, E - отложить. Образцы: головка топора, лезвие ножа, штык лопаты, наконечник копья");
+                if (craft.on) {
+                    std::string in;
+                    std::vector<const game::Item*> got;
+                    for (uint32_t id : craft.cell)
+                        for (const game::WorldItem& w : items.list)
+                            if (id && w.id == id) { got.push_back(&w.item); in += (in.empty() ? "" : ", ") + game::itemName(w.item); }
+                    game::Item out;
+                    std::string name;
+                    fresh.push_back("КРАФТ: клик - положить из руки в ячейку (пустой рукой - взять). Лежит: " + (in.empty() ? std::string("ничего") : in));
+                    fresh.push_back(game::matchRecipe(got, out, name) ? "F - собрать: " + name : "F - выйти.  " + game::recipesHint());
+                }
+                fresh.push_back("E - тёска камня в руке, F - крафт на земле, R+клик - второе действие (камень: волокно с молодого дерева; топор: окорка), X+клик - метнуть");
                 fresh.push_back(std::format("руки: левая - {}, правая - {}   (ЛКМ/ПКМ взять; V+ЛКМ/ПКМ положить, Q+ЛКМ/ПКМ бросить; Shift присесть, C лечь, Ctrl бег)",
                                             hands[0] ? game::itemName(*hands[0]) : "пусто", hands[1] ? game::itemName(*hands[1]) : "пусто"));
                 fresh.push_back(std::format("воксели: столбцов {} (ждут {}), кусков {}   плиток {}",

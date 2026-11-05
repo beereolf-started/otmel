@@ -24,7 +24,9 @@
 
 namespace game {
 
-enum class ItemKind : uint8_t { AXE, SAW, DRAWKNIFE, SHOVEL, LOG, LIMB, TWIG, BARK, SNAG, STUMP };
+enum class ItemKind : uint8_t { AXE, SAW, DRAWKNIFE, SHOVEL, LOG, LIMB, TWIG, BARK, SNAG, STUMP,
+                                // Р99: каменный век - камень, волокно, глина, выточенные головки, новые орудия
+                                STONE, FIBER, CLAY, HEAD_AXE, HEAD_KNIFE, HEAD_SHOVEL, HEAD_SPEAR, KNIFE, SPEAR };
 enum class ItemSize : uint8_t { LARGE, MEDIUM, SMALL };
 
 struct ItemModel {
@@ -47,10 +49,12 @@ struct Item {
     ItemKind kind = ItemKind::AXE;
     ItemSize size = ItemSize::SMALL;
     std::shared_ptr<const ItemModel> model;
-    bool tool() const { return kind <= ItemKind::SHOVEL; }
+    world::Material mat = world::AIR;   // Р99: порода камня (камень, головка, каменное орудие)
+    bool tool() const { return kind <= ItemKind::SHOVEL || kind == ItemKind::KNIFE || kind == ItemKind::SPEAR; }
+    bool stick() const { return kind == ItemKind::TWIG || (kind == ItemKind::LIMB && size == ItemSize::SMALL); }
 };
 std::string itemName(const Item& it);
-Item makeTool(ItemKind kind);
+Item makeTool(ItemKind kind, world::Material head = world::AIR);
 
 // Сетка модели: куски 32³ мелких вокселей; off - угол куска от центра масс, мелкие воксели
 struct ItemMeshChunk { std::vector<uint32_t> verts; glm::ivec3 off; };
@@ -58,6 +62,7 @@ void meshItem(const ItemModel& m, std::vector<ItemMeshChunk>& out);
 
 struct WorldItem {
     uint32_t id = 0;
+    uint64_t nat = 0;           // Р99: лежит от природы (камушек, сушняк): ключ места; 0 - тронут игроком
     Item item;
     Body body;
     bool placed = false;        // положен клавишей V: неподвижен
