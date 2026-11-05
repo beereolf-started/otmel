@@ -848,8 +848,8 @@ int main(int argc, char** argv) {
                 const glm::vec3 wp = glm::vec3(start + dir * double(bt));
                 game::TreeBody& tb = bf->tb;
                 kick = 0.03f;
-                if (tb.cut.leafKeep > 0.25f) {   // Р102: лежащее дерево тоже осыпается от ударов
-                    tb.cut.leafKeep = std::max(0.25f, tb.cut.leafKeep * 0.9f);
+                if (tb.cut.leafKeep > 0.15f) {   // Р102-Р103: лежащее осыпается от каждого удара - до 15%
+                    tb.cut.leafKeep = std::max(0.15f, tb.cut.leafKeep * 0.75f);
                     tb.meshDirty = true;
                     dropLeaves(glm::dvec3(wp) + glm::dvec3(0, 1.0, 0), 2.0f, 20);
                 }
@@ -1546,6 +1546,12 @@ int main(int argc, char** argv) {
             }
             game::stepTreeBody(ft.tb, solidStatic, dt);
             // легло (или улеглось заново после переката) - ветви сминаются по земле
+            if (ft.tb.free && ft.tb.body.asleep && !wasAsleep && !ft.tb.crushed) {
+                // Р103: дерево ударилось о землю - большая часть листвы осыпается и не мешает на земле
+                ft.tb.cut.leafKeep = std::max(0.15f, ft.tb.cut.leafKeep * 0.35f);
+                const world::TreeSkel& sk = *ft.tb.skel;
+                dropLeaves(ft.tb.body.pos + glm::dvec3(0, 0.5, 0), sk.crownR / 16.0f * 0.7f, 120);
+            }
             if (ft.tb.free && ft.tb.body.asleep && !wasAsleep) {
                 game::crushTreeBody(ft.tb, solidStatic);
                 journal::info("рубка", "дерево легло, ветви смяты по земле");

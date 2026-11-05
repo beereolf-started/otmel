@@ -320,7 +320,7 @@ std::shared_ptr<const TreeSkel> growTree(uint32_t seed, TreeAge age) {
         const TreeBranch& br = t->branches[size_t(n.branch)];
         if (br.root || br.dead || br.order == 0) continue;
         if (n.r > A.tip * 3.0f) continue;   // листва - на тонких побегах
-        if (rng.f() > 0.38f) continue;   // Р102: листвы меньше - не мешает
+        if (rng.f() > 0.55f) continue;
         const V3 c = P(n) + UP * rng.r(0.5f, 2.0f) + rng.unit() * 1.5f;
         t->leaves.push_back({{c.x, c.y, c.z}, rng.r(A.leafMin, A.leafMax), n.branch});
     }
@@ -371,7 +371,7 @@ TreeIndex treeIndex(const TreeSkel& t, int scale) {
     }
     for (size_t i = 0; i < t.leaves.size(); ++i) {
         const TreeLeaf& l = t.leaves[i];
-        const float rm = l.r * 1.2f + float(scale) + 1.0f;
+        const float rm = l.r * 1.2f + float(scale) + 4.0f;   // Р103: листовая пластинка выступает за комок
         float lo[3], hi[3];
         for (int a = 0; a < 3; ++a) { lo[a] = l.c[a] - rm; hi[a] = l.c[a] + rm; }
         put(lo, hi, false, int(i));
@@ -438,6 +438,44 @@ bool treeChunk(const TreeSkel& t, const TreeIndex& ix, int cx, int cy, int cz, b
             const int y0 = std::max(0, int(std::floor(c.y - rm))), y1 = std::min(31, int(std::ceil(c.y + rm)));
             const int z0 = std::max(0, int(std::floor(c.z - rm))), z1 = std::min(31, int(std::ceil(c.z + rm)));
             if (x0 > x1 || y0 > y1 || z0 > z1) continue;
+            if (scale == 1) {
+                // Р103: ВБЛИЗИ - ЛИСТЬЯ, А НЕ КОМОК. Комок кроны - облако мелких плоских листовых пластинок
+                // (лопастной край, 2-4 мелких вокселя), каждая со своим наклоном, чаще - к свету. Между ними
+                // просветы. Пластинки берутся по жребию комка, поэтому в каждом куске - одни и те же.
+                Rng lr(uint64_t(t.seed) * 977 + uint64_t(li) * 131 + 7);
+                const int K = int(lf.r * lf.r * lf.r * 0.08f) + 6;
+                for (int k = 0; k < K; ++k) {
+                    V3 p;
+                    for (int tries = 0; tries < 8; ++tries) {
+                        p = V3{lr.r(-1, 1), lr.r(-1, 1), lr.r(-1, 1)};
+                        if (p.x * p.x + 2.2f * p.y * p.y + p.z * p.z <= 1.0f) break;
+                    }
+                    p = c + p * r;
+                    const V3 n = norm(lr.unit() + V3{0, 1.3f, 0});
+                    const float rl = lr.r(1.3f, 2.4f);
+                    const V3 a = norm(cross(n, std::fabs(n.y) < 0.9f ? V3{0, 1, 0} : V3{1, 0, 0})), bb = cross(n, a);
+                    const Material mat = lr.f() < 0.45f ? LEAVES2 : LEAVES;
+                    const float ph = lr.r(0, 6.28f);
+                    const int px0 = std::max(0, int(std::floor(p.x - rl - 1))), px1 = std::min(31, int(std::ceil(p.x + rl + 1)));
+                    const int py0 = std::max(0, int(std::floor(p.y - rl - 1))), py1 = std::min(31, int(std::ceil(p.y + rl + 1)));
+                    const int pz0 = std::max(0, int(std::floor(p.z - rl - 1))), pz1 = std::min(31, int(std::ceil(p.z + rl + 1)));
+                    for (int y = py0; y <= py1; ++y)
+                        for (int z = pz0; z <= pz1; ++z)
+                            for (int x = px0; x <= px1; ++x) {
+                                const V3 e = V3{x + 0.5f, y + 0.5f, z + 0.5f} - p;
+                                if (std::fabs(dot(e, n)) > 0.55f) continue;
+                                const float u = dot(e, a), v = dot(e, bb);
+                                const float ang = std::atan2(v, u);
+                                if (u * u + v * v > rl * rl * (0.75f + 0.25f * std::sin(3.0f * ang + ph)) * (0.75f + 0.25f * std::sin(3.0f * ang + ph))) continue;
+                                const size_t kk = idx(x, y, z);
+                                if (out[kk] != AIR) continue;
+                                out[kk] = mat;
+                                if (branchOut) branchOut[kk] = uint16_t(lf.branch);
+                                any = true;
+                            }
+                }
+                continue;
+            }
             for (int y = y0; y <= y1; ++y)
                 for (int z = z0; z <= z1; ++z)
                     for (int x = x0; x <= x1; ++x) {
