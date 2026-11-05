@@ -60,8 +60,8 @@ struct CommandList {
     void drawChunk(MeshId m, glm::ivec3 origin) { commands.push_back(CmdDrawChunk{m, origin}); }
     // Р63: scale - размер вокселя куска в мелких вокселях (уровень детализации)
     void drawFineChunk(MeshId m, glm::ivec3 baseBlock, glm::ivec3 fineOff, int scale = 1) { commands.push_back(CmdDrawChunk{m, baseBlock, fineOff, true, scale}); }
-    void drawFineChunkXf(MeshId m, glm::ivec3 baseBlock, glm::ivec3 fineOff, const glm::vec4 (&rot)[3]) {
-        CmdDrawChunk c{m, baseBlock, fineOff, true, 1, true};
+    void drawFineChunkXf(MeshId m, glm::ivec3 baseBlock, glm::ivec3 fineOff, const glm::vec4 (&rot)[3], int scale = 1) {
+        CmdDrawChunk c{m, baseBlock, fineOff, true, scale, true};
         for (int i = 0; i < 3; ++i) c.rot[i] = rot[i];
         commands.push_back(c);
     }

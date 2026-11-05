@@ -54,6 +54,7 @@ add_executable(otmel
     src/builder.cpp
     src/player.cpp
     src/game/items.cpp
+    src/game/felling.cpp
     src/render/gl/gl_backend.cpp
     src/render/vk/vk_backend.cpp
 )
