@@ -51,7 +51,9 @@ struct CmdDrawTile {
     float morphStart, morphEnd;
     uint8_t quadrants;
 };
-using Command = std::variant<CmdClear, CmdCamera, CmdDrawChunk, CmdDrawTile>;
+// Р109: копии одной модели растения - сетка mesh, копии [first, first + count) из списка setPlantInstances
+struct CmdDrawPlants { MeshId mesh; uint32_t first, count; };
+using Command = std::variant<CmdClear, CmdCamera, CmdDrawChunk, CmdDrawTile, CmdDrawPlants>;
 
 struct CommandList {
     std::vector<Command> commands;
@@ -66,6 +68,7 @@ struct CommandList {
         commands.push_back(c);
     }
     void drawTile(const CmdDrawTile& t) { commands.push_back(t); }
+    void drawPlants(MeshId m, uint32_t first, uint32_t count) { commands.push_back(CmdDrawPlants{m, first, count}); }
     void reset() { commands.clear(); }
 };
 
@@ -92,6 +95,8 @@ public:
     virtual void setSpray(std::span<const float> instances) = 0;
     // Р65: спрайты дубов вдали - по 8 чисел: x, y, z основания (прежние меры), высота, ширина, семя, 0, 0
     virtual void setTreeSprites(std::span<const float> instances) = 0;
+    // Р109: копии растений - по 8 чисел: x, y, z (прежние меры от начала видеокарты), поворот, размер, ветер, 0, 0
+    virtual void setPlantInstances(std::span<const float> instances) = 0;
     // Р58: мелкая вода у камеры: зона side×side блоков с углом origin (блоки мира); data - (side+2)² пар (vb, верх
     // земли) с каймой в блок; mask - side² байт (1 - блок рисуется мелкой водой, его вода кусков прячется);
     // blocks - пары координат таких блоков (мир)

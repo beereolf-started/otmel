@@ -142,22 +142,14 @@ int buildTreeChunks(const world::TreeSkel& sk, glm::ivec3 base, glm::ivec3 fineS
     }
     return quads;
 }
-// Р107: ТРАВЫ вокруг точки (pb - блоки x, z) в радиусе rad: мелкие воксели над верхом травяных блоков, куски 32³
-// мелких вокселей от блока-основы base. Срезанное (cut) и правленное (edits) - пусто.
-struct PlantBuilt { glm::ivec3 base; std::vector<OakChunk> chunks; };
+// Р109: ТРАВЫ - места копий вокруг точки (base - блоки) в радиусе rad. На блок - до трёх пучков в произвольных
+// точках со своим поворотом и размером; дальше 24 блоков - реже, дальше 40 - ещё реже. Срезанное и правленное - пусто.
+struct PlantInst { glm::dvec3 pos; float yaw, scale; uint8_t kind, var; };
+struct PlantBuilt { glm::ivec3 base; std::vector<PlantInst> inst; };
 PlantBuilt buildPlants(const world::TerrainParams& tp, glm::ivec3 base, int rad, std::shared_ptr<const world::EditMap> edits,
                        std::unordered_set<uint64_t> cut) {
     PlantBuilt out{base, {}};
-    static thread_local world::ColumnHeights air;
-    static thread_local bool airReady = false;
-    if (!airReady) {
-        for (auto& row : air.h) for (int32_t& v : row) v = INT32_MIN / 4;
-        for (auto& row : air.water) for (int32_t& v : row) v = world::NO_WATER;
-        airReady = true;
-    }
     const auto fd = [](int32_t v, int32_t d) { return v >= 0 ? v / d : -((-v + d - 1) / d); };
-    std::unordered_map<uint64_t, std::unique_ptr<world::Chunk>> buckets;
-    std::vector<world::PlantVoxel> vox;
     static thread_local world::ColumnHeights hm;
     static thread_local uint8_t sc[world::CHUNK + 2][world::CHUNK + 2];
     for (int32_t cz = fd(base.z - rad, 32); cz <= fd(base.z + rad, 32); ++cz)
@@ -167,7 +159,8 @@ PlantBuilt buildPlants(const world::TerrainParams& tp, glm::ivec3 base, int rad,
             for (int z = 0; z < 32; ++z)
                 for (int x = 0; x < 32; ++x) {
                     const int32_t wx = cx * 32 + x, wz = cz * 32 + z;
-                    if ((wx - base.x) * (wx - base.x) + (wz - base.z) * (wz - base.z) > rad * rad) continue;
+                    const int d2 = (wx - base.x) * (wx - base.x) + (wz - base.z) * (wz - base.z);
+                    if (d2 > rad * rad) continue;
                     const int32_t top = hm.h[z + 1][x + 1] - int32_t(sc[z + 1][x + 1]);
                     if (hm.water[z + 1][x + 1] != world::NO_WATER && hm.water[z + 1][x + 1] > top) continue;   // под водой
                     if (hm.snow[z + 1][x + 1]) continue;
@@ -179,34 +172,24 @@ PlantBuilt buildPlants(const world::TerrainParams& tp, glm::ivec3 base, int rad,
                             const int32_t w = hm.water[z + 1 + dz][x + 1 + dx];
                             if (w != world::NO_WATER && w > hm.h[z + 1 + dz][x + 1 + dx]) { wet = true; break; }
                         }
+                    const world::Material topM = hm.cover[z][x].top;
+                    if (!world::isGrass(topM) && !wet) continue;
                     const float forest = world::forestDensity(tp, wx, wz, top);
-                    const world::PlantKind k = world::plantAt(tp, wx, wz, hm.cover[z][x].top, forest, wet);
-                    if (k == world::PlantKind::NONE) continue;
-                    world::stampPlant(k, uint32_t(wx) * 0x9E3779B1u ^ uint32_t(wz) * 0x85EBCA77u ^ tp.seed, vox);
-                    for (const world::PlantVoxel& v : vox) {
-                        const int32_t fx = (wx - base.x) * 16 + v.x, fy = (top + 1 - base.y) * 16 + v.y, fz = (wz - base.z) * 16 + v.z;
-                        const int32_t bx = fd(fx, 32), by = fd(fy, 32), bz = fd(fz, 32);
-                        const uint64_t key = (uint64_t(uint32_t(bx + 4096)) << 42) ^ (uint64_t(uint32_t(by + 4096)) << 21) ^ uint64_t(uint32_t(bz + 4096));
-                        auto& ch = buckets[key];
-                        if (!ch) {
-                            ch = std::make_unique<world::Chunk>();
-                            ch->pos = {bx, by, bz};
-                            ch->edited = true;
-                            ch->voxels.fill(world::AIR);
-                        }
-                        ch->at(fx - bx * 32, fy - by * 32, fz - bz * 32) = v.m;
+                    const int clumps = d2 < 24 * 24 ? 3 : (d2 < 40 * 40 ? 2 : 1);
+                    for (int salt = 0; salt < clumps; ++salt) {
+                        const world::PlantKind k = world::plantAt(tp, wx, wz, topM, forest, wet, uint32_t(salt));
+                        if (k == world::PlantKind::NONE) continue;
+                        uint32_t h = uint32_t(wx) * 0x9E3779B1u ^ uint32_t(wz) * 0x85EBCA77u ^ uint32_t(salt) * 0xC2B2AE3Du ^ tp.seed;
+                        h ^= h >> 15; h *= 0x2C1B3C6Du; h ^= h >> 12;
+                        if (d2 > 40 * 40 && (h & 1u)) continue;   // вдали - реже
+                        const bool moss = k == world::PlantKind::MOSS;
+                        const double fx = moss ? 0.5 : 0.1 + 0.8 * double(h >> 8 & 255) / 255.0, fz = moss ? 0.5 : 0.1 + 0.8 * double(h >> 16 & 255) / 255.0;
+                        const float scale = (moss ? 1.0f : 0.8f + 0.45f * float(h >> 24 & 255) / 255.0f) * (d2 > 40 * 40 ? 1.15f : 1.0f);
+                        out.inst.push_back({glm::dvec3(wx + fx, top + 1.0, wz + fz), moss ? 0.0f : float(h & 1023) * 0.00614f, scale, uint8_t(k),
+                                            uint8_t((h >> 4) % world::PLANT_VARIANTS)});
                     }
                 }
         }
-    for (auto& [key, ch] : buckets) {
-        OakChunk oc;
-        world::MeshStats ms;
-        world::buildMesh(*ch, air, oc.verts, ms);
-        if (oc.verts.empty()) continue;
-        oc.fineOff = glm::ivec3(ch->pos.x * 32, ch->pos.y * 32, ch->pos.z * 32);
-        oc.scale = 1;
-        out.chunks.push_back(std::move(oc));
-    }
     return out;
 }
 
@@ -526,8 +509,12 @@ int main(int argc, char** argv) {
     float handAge[2] = {0, 0};
     bool thirdPerson = startThird;   // Р105: вид из-за плеча (F4)
     // Р107: зона трав вокруг игрока и срезанные растения
-    std::vector<std::pair<render::MeshId, glm::ivec3>> plantMeshes;
-    glm::ivec3 plantBase(0);
+    // Р109: модели растений (вид × вариант) и копии в мире, сгруппированные по модели
+    std::vector<render::MeshId> plantProto;   // [вид * PLANT_VARIANTS + вариант]
+    std::vector<PlantInst> plantInst;
+    std::vector<std::pair<render::MeshId, std::pair<uint32_t, uint32_t>>> plantDraws;   // модель, первая копия, сколько
+    glm::ivec3 plantOriginAt(INT32_MIN);
+    bool plantsUpload = false;
     glm::ivec2 plantAt(INT32_MIN / 2);
     bool plantsDirty = true;
     std::unordered_set<uint64_t> plantsCut;
@@ -910,7 +897,9 @@ int main(int argc, char** argv) {
             bool wet = false;
             for (int dz = -1; dz <= 1 && !wet; ++dz)
                 for (int dx = -1; dx <= 1; ++dx) if (voxelQuery.at(bx + dx, by + 1, bz + dz) == world::WATER) { wet = true; break; }
-            const world::PlantKind k = world::plantAt(tp, bx, bz, voxelQuery.at(bx, by, bz), world::forestDensity(tp, bx, bz, by), wet);
+            world::PlantKind k = world::PlantKind::NONE;
+            for (uint32_t salt = 0; salt < 3 && k == world::PlantKind::NONE; ++salt)
+                k = world::plantAt(tp, bx, bz, voxelQuery.at(bx, by, bz), world::forestDensity(tp, bx, bz, by), wet, salt);
             const uint64_t key = world::editKey(bx, by, bz);
             if (k == world::PlantKind::NONE || plantsCut.count(key)) return;
             plantsCut.insert(key);
@@ -1618,14 +1607,16 @@ int main(int argc, char** argv) {
                 plantsDirty = false;
                 plantAt = pb;
                 const glm::ivec3 base(pb.x, int(std::floor(eye.y * 16.0)), pb.y);
-                plantJob = treeJobs.submit([&tp, base, snap = edits.snapshot(), cut = plantsCut] { return buildPlants(tp, base, 30, snap, cut); });
+                plantJob = treeJobs.submit([&tp, base, snap = edits.snapshot(), cut = plantsCut] { return buildPlants(tp, base, 64, snap, cut); });
             }
             if (plantJob.valid() && plantJob.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
                 PlantBuilt b = take(plantJob, "травы");
-                for (auto& [m, o] : plantMeshes) gpu->destroyMesh(m);
-                plantMeshes.clear();
-                for (const OakChunk& oc : b.chunks) plantMeshes.push_back({gpu->uploadChunkMesh(oc.verts, 0), oc.fineOff});
-                plantBase = b.base;
+                plantInst = std::move(b.inst);
+                // по моделям: копии одной модели - подряд, рисуются одним вызовом
+                std::sort(plantInst.begin(), plantInst.end(), [](const PlantInst& a, const PlantInst& c) {
+                    return a.kind * 16 + a.var < c.kind * 16 + c.var;
+                });
+                plantsUpload = true;
             }
         }
         // Р107: срезанная трава на земле сохнет - за две минуты становится сеном
@@ -2572,7 +2563,44 @@ int main(int argc, char** argv) {
                       std::chrono::duration<float>(now - startAt).count(), flowArea, simArea, skyArea, originV});
         chunksDrawn = voxels.draw(fr, frame);
         for (const OakMesh& m : oakMeshes) frame.drawFineChunk(m.mesh, m.base, m.fineOff);
-        for (const auto& [m, o] : plantMeshes) frame.drawFineChunk(m, plantBase, o, 1);   // Р107: травы
+        // Р109: травы - копии моделей
+        if (plantProto.empty()) {
+            static world::ColumnHeights air;
+            for (auto& row : air.h) for (int32_t& v : row) v = INT32_MIN / 4;
+            for (auto& row : air.water) for (int32_t& v : row) v = world::NO_WATER;
+            std::vector<world::PlantVoxel> vox;
+            auto ch = std::make_unique<world::Chunk>();
+            for (int k = 0; k < int(world::PlantKind::COUNT); ++k)
+                for (int v = 0; v < world::PLANT_VARIANTS; ++v) {
+                    world::stampPlant(world::PlantKind(k), v, vox);
+                    ch->pos = {0, 0, 0};
+                    ch->edited = true;
+                    ch->voxels.fill(world::AIR);
+                    for (const world::PlantVoxel& pv : vox) ch->at(pv.x, pv.y, pv.z) = pv.m;
+                    std::vector<uint32_t> verts;
+                    world::MeshStats ms;
+                    world::buildMesh(*ch, air, verts, ms);
+                    plantProto.push_back(verts.empty() ? render::NO_MESH : gpu->uploadChunkMesh(verts, 0));
+                }
+        }
+        if (plantsUpload || plantOriginAt != originV) {
+            plantsUpload = false;
+            plantOriginAt = originV;
+            std::vector<float> buf;
+            buf.reserve(plantInst.size() * 8);
+            plantDraws.clear();
+            for (size_t i = 0; i < plantInst.size(); ++i) {
+                const PlantInst& p = plantInst[i];
+                const glm::vec3 rel((p.pos - glm::dvec3(originV)) / 16.0);
+                buf.insert(buf.end(), {rel.x, rel.y, rel.z, p.yaw, p.scale, p.kind == uint8_t(world::PlantKind::MOSS) ? 0.0f : 1.0f, 0.0f, 0.0f});
+                const render::MeshId m = plantProto[size_t(p.kind) * world::PLANT_VARIANTS + p.var];
+                if (plantDraws.empty() || plantDraws.back().first != m) plantDraws.push_back({m, {uint32_t(i), 0}});
+                ++plantDraws.back().second.second;
+            }
+            gpu->setPlantInstances(buf);
+        }
+        for (const auto& [m, rg] : plantDraws)
+            if (m != render::NO_MESH) frame.drawPlants(m, rg.first, rg.second);
         // Р92: предметы - сетка вокруг центра масс, поворот и место - в вызове
         const auto drawItem = [&](glm::dvec3 pos, glm::quat rq, const std::vector<render::MeshId>& ms, const std::vector<glm::ivec3>& offs,
                                   int res) {

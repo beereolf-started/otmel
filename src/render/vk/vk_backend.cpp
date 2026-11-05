@@ -122,7 +122,7 @@ public:
             s.setOpaque = sets[0];
             s.setWater = sets[1];
         }
-        for (Dyn* d : {&spray_, &dyn_, &fineBlocks_})
+        for (Dyn* d : {&spray_, &dyn_, &fineBlocks_, &plants_})
             for (HostBuf& b : d->per) b = makeHost(64 << 10, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
 
         VkSamplerCreateInfo smp{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
@@ -359,6 +359,10 @@ public:
         treeCount_ = static_cast<uint32_t>(v.size() / 8);
         if (treeCount_ > 0) treeAlloc_ = uploadDevice(v.data(), v.size_bytes());
     }
+    void setPlantInstances(std::span<const float> v) override {
+        plantCount_ = static_cast<uint32_t>(v.size() / 8);
+        plants_.set(v.data(), v.size_bytes());
+    }
     void setSpray(std::span<const float> v) override {
         sprayCount_ = static_cast<uint32_t>(v.size() / 8);
         spray_.set(v.data(), v.size_bytes());
@@ -380,7 +384,7 @@ public:
             if (auto* cl = std::get_if<CmdClear>(&cmd)) clear = cl->color;
             if (auto* cam = std::get_if<CmdCamera>(&cmd)) writeCamera(*cam, s);
         }
-        for (Dyn* d : {&spray_, &dyn_, &fineBlocks_}) d->sync(*this, slot_);
+        for (Dyn* d : {&spray_, &dyn_, &fineBlocks_, &plants_}) d->sync(*this, slot_);
         writeSets(s);
 
         // всё выгруженное (копии в видеопамять) - видно вершинам и шейдерам; первый охват - и прошлые отправки
@@ -428,6 +432,22 @@ public:
                 if (m.quads == m.water) continue;
                 bindTerrain(c, current, pTerrain_);
                 drawChunk(c, *d, m, 0, m.quads - m.water);
+                ++stats.drawCalls;
+            } else if (auto* pl = std::get_if<CmdDrawPlants>(&cmd)) {
+                // Р109: копии модели растения - одним вызовом
+                const Mesh& m = meshes_[pl->mesh];
+                if (!m.a.valid() || !pl->count || pl->first + pl->count > plantCount_) continue;
+                if (current != pPlant_) {
+                    vkCmdBindPipeline(c, VK_PIPELINE_BIND_POINT_GRAPHICS, pPlant_);
+                    vkCmdBindIndexBuffer(c, blocks_[quadIdx_.block].buf, quadIdx_.offset, VK_INDEX_TYPE_UINT32);
+                    current = pPlant_;
+                }
+                const VkBuffer bufs[2] = {blocks_[m.a.block].buf, plants_.per[slot_].buf};
+                const VkDeviceSize offs[2] = {0, 0};
+                vkCmdBindVertexBuffers(c, 0, 2, bufs, offs);
+                boundBlock_ = UINT32_MAX;
+                vkCmdDrawIndexed(c, m.quads * 6, pl->count, 0, int32_t(m.a.offset / 4), pl->first);
+                stats.quads += int64_t(m.quads) * pl->count;
                 ++stats.drawCalls;
             } else if (auto* t = std::get_if<CmdDrawTile>(&cmd)) {
                 const Mesh& m = meshes_[t->mesh];
@@ -1251,7 +1271,7 @@ private:
         vkOk(vkCreateShaderModule(dev_, &ci, nullptr, &m), path.c_str());
         return m;
     }
-    enum Input { NONE, CHUNK, TILE_IN, INSTANCED, DYN };
+    enum Input { NONE, CHUNK, TILE_IN, INSTANCED, DYN, PLANT };
     VkPipeline makePipeline(const std::string& dir, const char* vs, const char* fs, Input input, bool blend, bool depthWrite, bool cull,
                             bool depthTest = true) {
         const VkShaderModule v = loadModule(dir + "/" + vs + ".vert.vk.spv");
@@ -1264,8 +1284,9 @@ private:
         stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
         stages[1].module = f;
         stages[1].pName = "main";
-        VkVertexInputBindingDescription bind{0, 0, VK_VERTEX_INPUT_RATE_VERTEX};
-        VkVertexInputAttributeDescription attr[2] = {};
+        VkVertexInputBindingDescription binds[2] = {{0, 0, VK_VERTEX_INPUT_RATE_VERTEX}, {1, 32, VK_VERTEX_INPUT_RATE_INSTANCE}};
+        VkVertexInputBindingDescription& bind = binds[0];
+        VkVertexInputAttributeDescription attr[3] = {};
         uint32_t attrs = 0;
         switch (input) {
             case NONE: break;
@@ -1276,10 +1297,13 @@ private:
                 bind.stride = 32; bind.inputRate = VK_VERTEX_INPUT_RATE_INSTANCE;
                 attr[0] = {0, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 0}; attr[1] = {1, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 16}; attrs = 2; break;
             case DYN: bind.stride = 16; attr[0] = {0, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 0}; attrs = 1; break;
+            case PLANT:   // Р109: вершина модели + место копии (два vec4 на копию)
+                bind.stride = 4; attr[0] = {0, 0, VK_FORMAT_R32_UINT, 0};
+                attr[1] = {1, 1, VK_FORMAT_R32G32B32A32_SFLOAT, 0}; attr[2] = {2, 1, VK_FORMAT_R32G32B32A32_SFLOAT, 16}; attrs = 3; break;
         }
         VkPipelineVertexInputStateCreateInfo vi{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
-        vi.vertexBindingDescriptionCount = input == NONE ? 0 : 1;
-        vi.pVertexBindingDescriptions = &bind;
+        vi.vertexBindingDescriptionCount = input == NONE ? 0 : (input == PLANT ? 2 : 1);
+        vi.pVertexBindingDescriptions = binds;
         vi.vertexAttributeDescriptionCount = attrs;
         vi.pVertexAttributeDescriptions = attr;
         VkPipelineInputAssemblyStateCreateInfo ia{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
@@ -1346,7 +1370,8 @@ private:
         pSpray_ = makePipeline(dir, "spray", "terrain", INSTANCED, true, false, false);          // Р59
         pDyn_ = makePipeline(dir, "dynwater", "terrain", DYN, true, false, false);               // Р45
         pOverlay_ = makePipeline(dir, "overlay", "overlay", NONE, true, false, false, false);    // Р99: поверх всего
-        return pTerrain_ && pTerrainWater_ && pTile_ && pTileWater_ && pTree_ && pFine_ && pSpray_ && pDyn_ && pOverlay_;
+        pPlant_ = makePipeline(dir, "plant", "terrain", PLANT, false, true, false);              // Р109: травы - копиями
+        return pTerrain_ && pTerrainWater_ && pTile_ && pTileWater_ && pTree_ && pFine_ && pSpray_ && pDyn_ && pOverlay_ && pPlant_;
     }
 
     void shutdown() {
@@ -1364,14 +1389,14 @@ private:
             if (s.acquired) vkDestroySemaphore(dev_, s.acquired, nullptr);
             if (s.pool) vkDestroyCommandPool(dev_, s.pool, nullptr);
         }
-        for (Dyn* d : {&spray_, &dyn_, &fineBlocks_})
+        for (Dyn* d : {&spray_, &dyn_, &fineBlocks_, &plants_})
             for (HostBuf& b : d->per) destroyHost(b);
         destroyHost(readback_);
         for (Block& b : blocks_) { vkDestroyBuffer(dev_, b.buf, nullptr); vkFreeMemory(dev_, b.mem, nullptr); }
         for (Image* im : {&maskTex_, &flowTex_, &fineTex_, &fineMask_, &dummyFloat_, &dummyUint_, &atlasTex_, &skyTex_, &overlayTex_}) destroyImage(*im);
         destroySwapchainParts();
         if (swapchain_) vkDestroySwapchainKHR(dev_, swapchain_, nullptr);
-        for (VkPipeline p : {pTerrain_, pTerrainWater_, pTile_, pTileWater_, pTree_, pFine_, pSpray_, pDyn_, pOverlay_})
+        for (VkPipeline p : {pTerrain_, pTerrainWater_, pTile_, pTileWater_, pTree_, pFine_, pSpray_, pDyn_, pOverlay_, pPlant_})
             if (p) vkDestroyPipeline(dev_, p, nullptr);
         if (layout_) vkDestroyPipelineLayout(dev_, layout_, nullptr);
         if (descPool_) vkDestroyDescriptorPool(dev_, descPool_, nullptr);
@@ -1428,7 +1453,9 @@ private:
     Alloc quadIdx_, tileIdx_, treeAlloc_;
     std::vector<Mesh> meshes_;
     std::vector<MeshId> free_;
-    Dyn spray_, dyn_, fineBlocks_;
+    Dyn spray_, dyn_, fineBlocks_, plants_;
+    uint32_t plantCount_ = 0;
+    VkPipeline pPlant_ = VK_NULL_HANDLE;
     uint32_t treeCount_ = 0, sprayCount_ = 0, dynCount_ = 0, fineCount_ = 0;
     glm::ivec2 fineOrigin_{0};
     int debug_ = 0;

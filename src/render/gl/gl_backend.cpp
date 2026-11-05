@@ -413,6 +413,7 @@ public:
         drawWater(stats);
     }
 
+    void setPlantInstances(std::span<const float>) override {}   // Р109: в OpenGL трав пока нет
     void setOverlay(int w, int h, std::span<const uint8_t> rgba) override {
         if (w <= 0 || h <= 0 || rgba.empty()) { overlayW_ = overlayH_ = 0; return; }
         if (w != overlayW_ || h != overlayH_) {          // размер у текстуры неизменен - пересоздаём

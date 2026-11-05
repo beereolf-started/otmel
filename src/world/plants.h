@@ -1,9 +1,13 @@
 #pragma once
-// Р107: ТРАВЫ И МЕЛКАЯ ПОРОСЛЬ - мелкими вокселями (1/16 блока) на верху травяных блоков вокруг игрока.
+// Р107-Р109: ТРАВЫ И МЕЛКАЯ ПОРОСЛЬ.
 //
-// Что растёт на блоке - решает место: сообщество по шуму пятен и по соседству - луг (трава, клевер, цветы),
-// лес (папоротник, мох, крапива), у воды (камыш с рогозом). Само растение и его форма - жребий блока:
-// одна и та же точка мира - всегда то же растение.
+// Р109: растение - не воксели на блоке, а КОПИЯ ГОТОВОЙ МОДЕЛИ: у каждого вида несколько вариантов модели
+// (мелкие воксели 1/16 блока, корень в середине куска 32³), а в мире - тысячи копий в произвольных точках
+// поверхности со своим поворотом и размером. Видеокарта рисует все копии одной модели одним вызовом, поэтому
+// траву можно ставить густо и далеко. Луговая трава - по пояс.
+//
+// Что растёт - решает место: сообщество по пятнам шума и соседству - луг (трава, клевер, цветы), лес
+// (низкая трава, папоротник, мох, крапива), у воды (камыш с рогозом). Жребий - точка мира: всегда то же.
 #include <cstdint>
 #include <vector>
 
@@ -12,14 +16,16 @@
 
 namespace world {
 
-enum class PlantKind : uint8_t { NONE, GRASS, TALL_GRASS, CLOVER, DANDELION, BLUEBELL, CAMPION, CHAMOMILE, NETTLE, FERN, MOSS, REED, COUNT };
+enum class PlantKind : uint8_t { NONE, GRASS, TALL_GRASS, CLOVER, DANDELION, BLUEBELL, CAMPION, CHAMOMILE, NETTLE, FERN, MOSS, REED,
+                                 SHORT_GRASS, COUNT };
+constexpr int PLANT_VARIANTS = 6;
 const char* plantName(PlantKind k);
 
-/** Растение на блоке (x, z) поверх верхнего вокселя. forest - густота леса 0..1, wetNear - вода в паре блоков. */
-PlantKind plantAt(const TerrainParams& p, int32_t x, int32_t z, Material top, float forest, bool wetNear);
+/** Растение пучка salt на блоке (x, z). forest - густота леса 0..1, wetNear - вода рядом. */
+PlantKind plantAt(const TerrainParams& p, int32_t x, int32_t z, Material top, float forest, bool wetNear, uint32_t salt = 0);
 
-struct PlantVoxel { int8_t x, y, z; Material m; };   // от угла блока над верхом, мелкие воксели (x, z 0..15, y 0..)
-/** Воксели растения: жребий h - форма. */
-void stampPlant(PlantKind k, uint32_t h, std::vector<PlantVoxel>& out);
+struct PlantVoxel { int8_t x, y, z; Material m; };   // мелкие воксели куска 32³, корень - (16, 0, 16)
+/** Воксели модели вида k, вариант v. */
+void stampPlant(PlantKind k, int v, std::vector<PlantVoxel>& out);
 
 }  // namespace world
