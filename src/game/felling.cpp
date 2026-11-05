@@ -190,6 +190,9 @@ std::shared_ptr<world::TreeSkel> crushFallen(const world::TreeSkel& t, const Fal
         const glm::vec3 d = Rt * delta[i];   // сдвиг - в оси дерева
         for (int a = 0; a < 3; ++a) out->nodes[i].p[a] += d[a];
     }
+    // корни остаются у пня - у лежащего ствола их нет
+    for (size_t i = 1; i < out->nodes.size(); ++i)
+        if (t.branches[size_t(t.nodes[i].branch)].root) out->nodes[i].r = 0;
     // листва - вместе с последним узлом своей ветви
     for (world::TreeLeaf& l : out->leaves) {
         const int last = t.branches[size_t(l.branch)].last;

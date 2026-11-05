@@ -831,7 +831,7 @@ int main(int argc, char** argv) {
                 } else if (hands[hand] && hands[hand]->kind == game::ItemKind::AXE && swing[hand] <= 0.15f) {
                     // замах вбок; удар засчитывается в середине прохода, а не в миг нажатия
                     swing[hand] = SWING;
-                    pendingChop = PendingChop{hand, start, dir, tBlock, SWING * 0.36f};
+                    pendingChop = PendingChop{hand, start, dir, tBlock, SWING * 0.42f};   // середина прохода
                 } else if (!hands[hand])
                 for (int i = 1; i <= 6 * 8; ++i) {                          // до 6 блоков, шаг 1/8
                     const glm::dvec3 v = start + dir * (double(i) / 8.0);
@@ -1826,21 +1826,23 @@ int main(int argc, char** argv) {
             const float sway = std::sin(handTime * 1.3f) * 0.012f;
             const float stepA = std::sin(walkPhase) * walkAmp, stepB = std::fabs(std::cos(walkPhase)) * walkAmp;
             const float side = hnd ? 1.0f : -1.0f;
-            const glm::vec3 hand = fwd * (0.42f + 0.0f) + right * (0.27f * side + stepA * 0.05f) - up * (0.30f + stepB * 0.035f + sway);
-            const glm::mat3 cam(right, up, -fwd);
-            // Р93: ЗАМАХ ВБОК. Отвод вправо и назад (0..0.3), резкий проход справа налево (0.3..0.45) - удар
-            // в его середине, - и неспешный возврат.
-            float swY = 0, swR = 0, swF = 0;
+            // Р93: УДАР С ЗАМАХОМ ИЗ-ЗА ПЛЕЧА. Вращение - вокруг кисти (хвата), ось ПОПЕРЁК топорища и наклонена
+            // по диагонали: замах уносит головку назад за плечо и вверх (0..0.35), удар - резкий проход сверху
+            // справа вниз налево лезвием вперёд (0.35..0.5, засчитывается в середине), затем возврат.
+            float chopA = 0, lift = 0, thrust = 0;
             if (swing[hnd] > 0) {
                 const float ph = 1.0f - swing[hnd] / SWING;
                 const auto ease = [](float x) { x = std::clamp(x, 0.0f, 1.0f); return x * x * (3 - 2 * x); };
-                if (ph < 0.3f) { const float a = ease(ph / 0.3f); swY = 0.9f * a; swR = -0.5f * a; swF = -0.12f * a; }
-                else if (ph < 0.45f) { const float b = (ph - 0.3f) / 0.15f; swY = 0.9f - 2.1f * b; swR = -0.5f + 0.9f * b; swF = -0.12f + 0.3f * b; }
-                else { const float c = ease((ph - 0.45f) / 0.55f); swY = -1.2f * (1 - c); swR = 0.4f * (1 - c); swF = 0.18f * (1 - c); }
-                swY *= side; swR *= side;
+                if (ph < 0.35f) { const float a = ease(ph / 0.35f); chopA = 1.45f * a; lift = a; }
+                else if (ph < 0.5f) { const float b = (ph - 0.35f) / 0.15f; chopA = 1.45f - 2.4f * b; lift = 1.0f - b; thrust = std::sin(b * 3.1416f); }
+                else { const float c = ease((ph - 0.5f) / 0.5f); chopA = -0.95f * (1.0f - c); }
             }
-            const glm::quat rq = glm::quat_cast(cam) * glm::angleAxis(swY, glm::vec3(0, 1, 0)) *
-                                 glm::angleAxis(side * 0.28f + swR + sway * 2.0f + stepA * 0.06f, glm::vec3(0, 0, 1)) *
+            const glm::vec3 hand = fwd * (0.42f - 0.08f * lift + 0.12f * thrust) + right * (0.27f * side + stepA * 0.05f + 0.07f * lift * side) -
+                                   up * (0.30f + stepB * 0.035f + sway - 0.16f * lift);
+            const glm::mat3 cam(right, up, -fwd);
+            const glm::vec3 chopAxis = glm::normalize(glm::vec3(1.0f, -0.48f * side, 0.0f));   // в осях камеры
+            const glm::quat rq = glm::quat_cast(cam) * glm::angleAxis(chopA, chopAxis) *
+                                 glm::angleAxis(side * 0.28f + sway * 2.0f + stepA * 0.06f, glm::vec3(0, 0, 1)) *
                                  glm::angleAxis(-0.55f + stepB * 0.05f, glm::vec3(1, 0, 0)) *
                                  glm::angleAxis(side * (1.5708f + 0.45f), glm::vec3(0, 1, 0));   // лезвие - вперёд, от игрока
             const game::ItemModel& im = *want;
