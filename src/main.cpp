@@ -53,6 +53,7 @@
 #include "game/items.h"
 #include "game/felling.h"
 #include "game/tree_body.h"
+#include "game/save.h"
 #include <optional>
 #include "dev_text.h"
 #include "devinfo.h"
@@ -338,7 +339,7 @@ int main(int argc, char** argv) {
     float recordSec = 0;   // со --shot: запись кадров rec_NNN.bmp 15 раз в секунду столько секунд
     int voxelBlocks = 128;
     float atX = 0, atZ = 0, flySpeed = 0, spinRate = 0;
-    bool winter = false, hold = false, autoChop = false;
+    bool winter = false, hold = false, autoChop = false, newWorld = false, forceSave = false;
     float startPitch = -0.35f;
     world::LodSettings lod;
     for (int i = 1; i < argc; ++i) {
@@ -353,6 +354,8 @@ int main(int argc, char** argv) {
         if (a == "--record" && i + 1 < argc) recordSec = std::stof(argv[i + 1]);
         if (a == "--winter") winter = true;
         if (a == "--hold") hold = true;
+        if (a == "--new") newWorld = true;
+        if (a == "--save") forceSave = true;   // Р98: сохранять и в режиме снимка (проверка)   // Р98: не загружать сохранение (оно перезапишется)
         if (a == "--chop") autoChop = true;   // Р93: со --shot - срубить ближайшее дерево (проверка)
         if (a == "--pitch" && i + 1 < argc) startPitch = std::stof(argv[i + 1]);   // наклон камеры на старте   // Р92: топор в правой руке с начала (для снимка)   // Р91: деревья без листвы
         if (a == "--spin" && i + 1 < argc) spinRate = std::stof(argv[i + 1]);   // со --shot: поворот камеры, рад/с
@@ -717,6 +720,50 @@ int main(int argc, char** argv) {
     double sect[NSECT] = {};
     auto lapAt = clock_t_::now();
     const auto lap = [&](int i) { const auto t = clock_t_::now(); sect[i] += std::chrono::duration<double, std::milli>(t - lapAt).count(); lapAt = t; };
+    // Р98: СОХРАНЕНИЕ - загрузка при старте (кроме режима снимка и --new), запись раз в минуту, по F5 и на выходе
+    const std::string savePath = std::string(SDL_GetBasePath()) + "saves/world.bin";
+    const bool useSave = (!shot || forceSave) && !newWorld;
+    if (useSave) {
+        game::SaveData sd;
+        if (game::loadWorld(savePath, sd) && sd.seed == tp.seed) {
+            eye = sd.eye;
+            yaw = sd.yaw;
+            pitch = sd.pitch;
+            player.flying = sd.flying;
+            player.eye = eye;
+            for (const world::Edit& e : sd.edits) edits.set(e.x, e.y, e.z, e.m);
+            for (int h = 0; h < 2; ++h) hands[h] = sd.hands[h];
+            for (auto& [key, c] : sd.cuts) treeCuts[key] = c;
+            for (game::TreeBody& tb : sd.bodies) { FallenTree ft; ft.tb = std::move(tb); fallen.push_back(std::move(ft)); }
+            for (const game::WorldItem& it : sd.items) {
+                items.spawn(it.item, it.body.pos, it.body.rot, it.body.vel, it.body.ang, it.placed);
+                items.list.back().body.asleep = it.body.asleep || it.placed;
+            }
+            toolsSpawned = true;
+            journal::info("сохранение", "загружено: правок {}, деревьев {}, стволов {}, предметов {}", sd.edits.size(), sd.cuts.size(),
+                          sd.bodies.size(), sd.items.size());
+        }
+    }
+    const auto saveNow = [&] {
+        if (!useSave) return;
+        game::SaveData sd;
+        sd.seed = tp.seed;
+        sd.eye = eye;
+        sd.yaw = yaw;
+        sd.pitch = pitch;
+        sd.flying = player.flying;
+        for (const auto& [k, e] : *edits.snapshot()) sd.edits.push_back(e);
+        for (int h = 0; h < 2; ++h) sd.hands[h] = hands[h];
+        for (const auto& [key, c] : treeCuts) sd.cuts.push_back({key, c});
+        for (const FallenTree& ft : fallen) sd.bodies.push_back(ft.tb);
+        sd.items = items.list;
+        const auto t0 = clock_t_::now();
+        if (game::saveWorld(savePath, sd))
+            journal::info("сохранение", "мир сохранён за {:.0f} мс: правок {}, деревьев {}, стволов {}, предметов {}", msSince(t0),
+                          sd.edits.size(), sd.cuts.size(), sd.bodies.size(), sd.items.size());
+        else journal::warn("сохранение", "не удалось записать {}", savePath);
+    };
+    float sinceSave = 0;
     // Р93-Р96: УДАР ИНСТРУМЕНТОМ из руки hand по лучу (start, dir - блоки); tBlock - где луч упёрся в рельеф.
     //   топор: сук лежащего дерева - обрубка; его ствол - раскряжёвка (медленно); стоящее - зарубка; пень - корни;
     //   пила: ствол лежащего - раскряжёвка; стоящее - зарубка (быстрее топора);
@@ -1045,6 +1092,7 @@ int main(int argc, char** argv) {
             }
             if (ev.type == SDL_EVENT_KEY_DOWN && ev.key.key == SDLK_R) { hideRoots = !hideRoots; buildOaks(); }
             if (ev.type == SDL_EVENT_KEY_DOWN && ev.key.key == SDLK_L) leavesOn = !leavesOn;
+            if (ev.type == SDL_EVENT_KEY_DOWN && ev.key.key == SDLK_F5) saveNow();   // Р98: сохранить сейчас
             // Р92: V - положить к вокселю под прицелом, Q - выбросить. Из правой руки, если она пуста - из левой.
             // Р95: зажатая V + ЛКМ/ПКМ - положить из левой/правой руки; зажатая Q + ЛКМ/ПКМ - выбросить
             if (ev.type == SDL_EVENT_MOUSE_BUTTON_DOWN && !typing && (ev.button.button == SDL_BUTTON_LEFT || ev.button.button == SDL_BUTTON_RIGHT) &&
@@ -1186,6 +1234,8 @@ int main(int argc, char** argv) {
                             glm::angleAxis(1.5707963f, glm::vec3(1, 0, 0)), {}, glm::vec3(0.3f * k, 0, 0.2f));
         }
         items.step(voxelQuery, dt, eye * 16.0, 96.0);
+        sinceSave += dt;
+        if (sinceSave > 60.0f) { sinceSave = 0; saveNow(); }   // Р98: раз в минуту
         if (autoChop && warm) {   // Р93: проверка без человека - удар раз в 0.5 с по ближайшему дереву с сеткой
             static float acc = 0;
             static uint64_t target = 0;
@@ -2325,6 +2375,7 @@ int main(int argc, char** argv) {
     }
 
     // Р73: сетки - до gpu.reset(): иначе деструкторы плиток и зоны зовут уже удалённый путь отрисовки
+    saveNow();   // Р98: на выходе
     farTerrain.release();
     voxels.releaseAll();
     gpu.reset();
