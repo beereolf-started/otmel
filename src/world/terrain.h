@@ -158,6 +158,8 @@ fx::q16 temperatureAt(const TerrainParams& p, const Climate& c, int32_t height);
 // Поэтому толщина остаётся прежней. Если когда-нибудь земли захочется меньше, сперва придётся
 // придумать воронке другую опору, а не менять это число.
 constexpr int16_t SOIL_FULL = 3 * VOXELS_PER_BLOCK + 1;
+// Р101: почва - верхние блоки рыхлой толщи; под ней до подошвы - щебень (выветрелая порода)
+constexpr int16_t SOIL_TOP = 4;
 
 // Покров: верхний воксель и слой под ним (3 блока)
 struct Cover {
@@ -214,7 +216,7 @@ inline Material columnMaterial(int32_t top, Cover cv, int32_t wy, int32_t water,
     if (wy > top) return wy <= water ? WATER : AIR;
     if (cv.soil <= 0) return rockAt(rc, wx, wy, wz);   // Р79: круча - земли нет вовсе, сразу порода
     if (wy == top) return cv.top;
-    if (wy > top - cv.soil) return cv.under;           // земли столько, сколько держит уклон
+    if (wy > top - cv.soil) return wy > top - SOIL_TOP ? cv.under : GRAVEL;   // почва, под ней щебень (Р101)
     return rockAt(rc, wx, wy, wz);
 }
 

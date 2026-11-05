@@ -29,7 +29,8 @@ const Pattern PATTERNS[] = {
 
 Item makeStone(world::Material rock, uint32_t seed) {
     uint32_t h = mix(seed);
-    const float rx = 3.0f + 2.5f * unit(h), ry = 2.0f + 1.8f * unit(h), rz = 2.6f + 2.4f * unit(h);
+    // Р101: вдвое крупнее - 10..18 см, их видно на земле
+    const float rx = 6.0f + 5.0f * unit(h), ry = 4.0f + 3.6f * unit(h), rz = 5.2f + 4.8f * unit(h);
     const int sx = int(std::ceil(rx * 2)) + 2, sy = int(std::ceil(ry * 2)) + 2, sz = int(std::ceil(rz * 2)) + 2;
     auto m = blank(sx, sy, sz, 64);
     const float p1 = unit(h) * 6.28f, p2 = unit(h) * 6.28f;
@@ -47,14 +48,17 @@ Item makeStone(world::Material rock, uint32_t seed) {
 
 Item makeStick(uint32_t seed) {
     uint32_t h = mix(seed ^ 0x5A17u);
-    const int len = 10 + int(unit(h) * 7.0f);   // мелких вокселей (1/16 блока): 0.6-1 м
-    auto m = blank(9, len + 2, 9, 16);
-    float x = 4.5f, z = 4.5f, dx = 0, dz = 0;
-    for (int y = 1; y <= len; ++y) {
-        if (unit(h) < 0.3f) { dx = (unit(h) - 0.5f) * 0.9f; dz = (unit(h) - 0.5f) * 0.9f; }   // излом
-        x = std::clamp(x + dx, 0.5f, 8.5f);
-        z = std::clamp(z + dz, 0.5f, 8.5f);
-        m->at(int(x), y, int(z)) = (y % 4 == 0) ? world::BARK2 : world::BARK;
+    // Р101: вдвое крупнее - 1.2..2 м, толщиной ~9 см (воксель 1/32 блока, сечение 3×3)
+    const int len = 38 + int(unit(h) * 26.0f);
+    auto m = blank(22, len + 4, 22, 32);
+    float x = 11.0f, z = 11.0f, dx = 0, dz = 0;
+    for (int y = 2; y <= len + 1; ++y) {
+        if (unit(h) < 0.12f) { dx = (unit(h) - 0.5f) * 0.6f; dz = (unit(h) - 0.5f) * 0.6f; }   // излом
+        x = std::clamp(x + dx, 1.5f, 20.5f);
+        z = std::clamp(z + dz, 1.5f, 20.5f);
+        for (int a = -1; a <= 1; ++a)
+            for (int b = -1; b <= 1; ++b)
+                if (a * a + b * b < 2 || y % 3) m->at(int(x) + a, y, int(z) + b) = (y % 7 == 0) ? world::BARK2 : world::BARK;
     }
     m->finish();
     return Item{ItemKind::TWIG, ItemSize::SMALL, m, world::AIR};

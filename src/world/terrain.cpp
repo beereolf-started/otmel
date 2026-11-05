@@ -222,6 +222,21 @@ int16_t soilFromSlope(int32_t sl) {
     return int16_t(int32_t(SOIL_FULL) * (BARE_TO - sl) / (BARE_TO - BARE_FROM));
 }
 
+// Р101: РЫХЛАЯ ТОЛЩА - НЕ ВЕЗДЕ 49 БЛОКОВ. Обычно почва 3 блока и щебень под ней - всего 5..9 блоков
+// (разброс шумом), дальше сразу порода: в ямах, оврагах и обрывах видно камень. Толща в 49 блоков нужна
+// только воронкам у входов в пещеры (Р84: воронку образует снятая земля) - там она и нарастает плавно,
+// по тому же шуму входов, что решает о воронке. Крутизна, как прежде, снимает толщу целиком.
+int16_t soilAt(const TerrainParams& p, int32_t wx, int32_t wz, int32_t sl) {
+    const int16_t bySlope = soilFromSlope(sl);
+    if (bySlope <= 0) return 0;
+    const float n = (float(gen::value2(wx, wz, 5, p.seed ^ 0x50111u)) / float(fx::ONE) + 1.0f) * 0.5f;
+    const float thin = 5.0f + 4.0f * n;
+    const float e = float(entranceNoise(p, wx, wz)) / float(fx::ONE), from = float(p.caves.entranceFrom) / float(fx::ONE);
+    const float w = std::clamp((e - (from - 0.5f)) / 0.25f, 0.0f, 1.0f);
+    const float total = thin + (float(SOIL_FULL) - thin) * (w * w * (3.0f - 2.0f * w));
+    return int16_t(std::min<float>(float(bySlope), std::round(total)));
+}
+
 Cover coverAt(const TerrainParams& p, const Climate& c, int32_t height, int32_t x, int32_t z, int32_t slope8) {
     const fx::q16 t = temperatureAt(p, c, height);
     // Р87: СОСТАВ ПОЧВЫ - НЕПРЕРЫВНО, ИМЯ - БЛИЖАЙШЕЕ. Доли считаются по четырём доводам, а потом
@@ -437,7 +452,7 @@ void columnHeights(const TerrainParams& p, int32_t chunkX, int32_t chunkZ, Colum
                                     (hx[z][x] + 2 * hx[z + 2][x] + hx[z + 4][x])) / 2;
                 const int32_t gz = ((hx[z + 4][x] + 2 * hx[z + 4][x + 2] + hx[z + 4][x + 4]) -
                                     (hx[z][x] + 2 * hx[z][x + 2] + hx[z][x + 4])) / 2;
-                out.soilThick[z][x] = soilFromSlope(std::max(std::abs(gx), std::abs(gz)));
+                out.soilThick[z][x] = soilAt(p, x0 + x, z0 + z, std::max(std::abs(gx), std::abs(gz)));
             }
     } else {
         // Вне мест с выходом кольцо не нужно: толщина земли идёт только в покров своих столбцов, а
@@ -449,7 +464,7 @@ void columnHeights(const TerrainParams& p, int32_t chunkX, int32_t chunkZ, Colum
                                    (out.h[zc - 1][xc - 1] + 2 * out.h[zc][xc - 1] + out.h[zc + 1][xc - 1]);
                 const int32_t gz = (out.h[zc + 1][xc - 1] + 2 * out.h[zc + 1][xc] + out.h[zc + 1][xc + 1]) -
                                    (out.h[zc - 1][xc - 1] + 2 * out.h[zc - 1][xc] + out.h[zc - 1][xc + 1]);
-                out.soilThick[z][x] = soilFromSlope(std::max(std::abs(gx), std::abs(gz)));
+                out.soilThick[z][x] = soilAt(p, x0 + x, z0 + z, std::max(std::abs(gx), std::abs(gz)));
             }
     }
 
