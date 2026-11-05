@@ -55,6 +55,7 @@
 #include "game/tree_body.h"
 #include "game/save.h"
 #include "game/stoneage.h"
+#include "game/body.h"
 #include <optional>
 #include "dev_text.h"
 #include "devinfo.h"
@@ -343,7 +344,7 @@ int main(int argc, char** argv) {
     float recordSec = 0;   // со --shot: запись кадров rec_NNN.bmp 15 раз в секунду столько секунд
     int voxelBlocks = 128;
     float atX = 0, atZ = 0, flySpeed = 0, spinRate = 0;
-    bool winter = false, hold = false, autoChop = false, newWorld = false, forceSave = false, giveTools = false;
+    bool winter = false, hold = false, autoChop = false, newWorld = false, forceSave = false, giveTools = false, startThird = false;
     float startPitch = -0.35f;
     world::LodSettings lod;
     for (int i = 1; i < argc; ++i) {
@@ -358,7 +359,8 @@ int main(int argc, char** argv) {
         if (a == "--record" && i + 1 < argc) recordSec = std::stof(argv[i + 1]);
         if (a == "--winter") winter = true;
         if (a == "--hold") hold = true;
-        if (a == "--tools") giveTools = true;   // Р99: инструменты у старта (для проверки; в игре их надо сделать)
+        if (a == "--tools") giveTools = true;
+        if (a == "--third") startThird = true;   // Р105: вид из-за плеча с начала   // Р99: инструменты у старта (для проверки; в игре их надо сделать)
         if (a == "--new") newWorld = true;
         if (a == "--save") forceSave = true;   // Р98: сохранять и в режиме снимка (проверка)   // Р98: не загружать сохранение (оно перезапишется)
         if (a == "--chop") autoChop = true;   // Р93: со --shot - срубить ближайшее дерево (проверка)
@@ -452,7 +454,8 @@ int main(int argc, char** argv) {
     std::unordered_map<uint64_t, int> fiberHits;            // соскоблено с дерева (по месту)
     float naturalAt = 1e9f;
     float handTime = 0, walkPhase = 0, walkAmp = 0;   // покачивание предмета в руке
-    float handAge[2] = {0, 0};   // Р104: сколько предмет в руке - двойным щелчком только что взятое не бросаем
+    float handAge[2] = {0, 0};
+    bool thirdPerson = startThird;   // Р105: вид из-за плеча (F4)   // Р104: сколько предмет в руке - двойным щелчком только что взятое не бросаем
     // Р93: рубка. Зарубки деревьев (по месту в лесу - переживают перестройку зоны), падающие и лежащие стволы,
     // щепки, замах топора.
     std::unordered_map<uint64_t, game::TreeCut> treeCuts;
@@ -1296,6 +1299,7 @@ int main(int argc, char** argv) {
             }
             if (ev.type == SDL_EVENT_KEY_DOWN && ev.key.key == SDLK_L) leavesOn = !leavesOn;
             if (ev.type == SDL_EVENT_KEY_DOWN && ev.key.key == SDLK_F5) saveNow();   // Р98: сохранить сейчас
+            if (ev.type == SDL_EVENT_KEY_DOWN && ev.key.key == SDLK_F4) thirdPerson = !thirdPerson;   // Р105: вид из-за плеча
             // Р92: V - положить к вокселю под прицелом, Q - выбросить. Из правой руки, если она пуста - из левой.
             // Р95: зажатая V + ЛКМ/ПКМ - положить из левой/правой руки; зажатая Q + ЛКМ/ПКМ - выбросить
             if (ev.type == SDL_EVENT_MOUSE_BUTTON_DOWN && !typing && (ev.button.button == SDL_BUTTON_LEFT || ev.button.button == SDL_BUTTON_RIGHT) &&
@@ -1649,10 +1653,26 @@ int main(int argc, char** argv) {
         // обратная глубина (Р20): ближняя и дальняя плоскости переставлены местами
         const float farPlane = float(lod.drawDistance) * 1.5f;
         const glm::mat4 proj = glm::perspectiveRH_ZO(glm::radians(70.0f), float(width) / float(std::max(1, height)), farPlane, 0.002f);   // Р56: ближняя плоскость - 3 см (вплотную к коре и листьям)
-        const glm::vec3 eyeAbs = eyeF();          // мировое положение одинарной точностью - для отсечения
         // Р93: отдача удара - взгляд на миг вздрагивает
         const float kp = kick > 0 ? kick * std::sin(kick * 400.0f) : 0.0f;
         const glm::vec3 fwdV = glm::normalize(fwd + glm::vec3(0, kp, 0) + right * (kp * 0.5f));
+        // Р105: ВИД ИЗ-ЗА ПЛЕЧА - камера назад на 2.6 блока, вправо на 0.6, вверх на 0.3; упёрлась в рельеф - ближе
+        glm::dvec3 camEye = eye;
+        if (thirdPerson) {
+            const glm::vec3 up0 = glm::cross(right, fwdV);
+            const glm::dvec3 from = eye * 16.0;
+            const glm::dvec3 want = glm::dvec3(-fwdV * 2.6f + right * 0.6f + up0 * 0.3f);
+            double k = 1.0;
+            for (int i = 1; i <= 26; ++i) {
+                const glm::dvec3 p = from + want * (double(i) / 26.0);
+                if (voxelQuery.solidTerrain(int32_t(std::floor(p.x)), int32_t(std::floor(p.y)), int32_t(std::floor(p.z)))) {
+                    k = std::max(0.0, double(i - 2) / 26.0);
+                    break;
+                }
+            }
+            camEye = (from + want * k) / 16.0;
+        }
+        const glm::vec3 eyeAbs = glm::vec3(camEye);   // мировое положение одинарной точностью - для отсечения
         const glm::mat4 viewProj = proj * glm::lookAt(eyeAbs, eyeAbs + fwdV, glm::vec3(0, 1, 0));
         const Frustum fr(viewProj);
         // Р69: видеокарте - камера относительно начала у куска камеры (целые воксели): малые числа - без дрожи
@@ -1660,8 +1680,8 @@ int main(int argc, char** argv) {
         const glm::dvec3 originOld = glm::dvec3(originV) / 16.0;
         // разность берём в двойной точности и только потом сводим к одинарной: она мала (меньше двух
         // блоков), поэтому у неё остаётся вся точность, и мир перестаёт дёргаться под камерой
-        const glm::vec3 eyeLocal = glm::vec3(eye - originOld);
-        const glm::mat4 viewProjGpu = proj * glm::lookAt(eyeLocal, eyeLocal + fwd, glm::vec3(0, 1, 0));
+        const glm::vec3 eyeLocal = glm::vec3(camEye - originOld);
+        const glm::mat4 viewProjGpu = proj * glm::lookAt(eyeLocal, eyeLocal + fwdV, glm::vec3(0, 1, 0));
         lap(0);
         const auto tUpd = clock_t_::now();
         voxels.update(eye, fwd, fr, 4.0);   // выгрузка готовых столбцов - не дольше 4 мс за кадр
@@ -2407,7 +2427,7 @@ int main(int argc, char** argv) {
         lap(6);
         frame.reset();
         frame.clear(sky);
-        frame.camera({viewProjGpu, glm::vec3(0.4f, 1.0f, 0.25f), eye, voxels.window(),
+        frame.camera({viewProjGpu, glm::vec3(0.4f, 1.0f, 0.25f), camEye, voxels.window(),
                       float(lod.drawDistance) * 0.85f, float(lod.drawDistance), 9000.0f, 0.6f, sky,
                       std::chrono::duration<float>(now - startAt).count(), flowArea, simArea, skyArea, originV});
         chunksDrawn = voxels.draw(fr, frame);
@@ -2462,7 +2482,7 @@ int main(int argc, char** argv) {
             }
             const glm::vec3 up = glm::cross(right, fwdV);
             const glm::mat3 cam(glm::normalize(glm::cross(fwdV, up)), up, -fwdV);
-            drawItem(eye * 16.0 + glm::dvec3(fwdV * 0.4f), glm::quat_cast(cam), cm, co, 512);
+            drawItem(camEye * 16.0 + glm::dvec3(fwdV * 0.4f), glm::quat_cast(cam), cm, co, 512);
         }
         if (craft.stage == 1) {   // Р100: рамка едет за прицелом - на верх блока под ним
             const glm::dvec3 st = eye * 16.0;
@@ -2538,6 +2558,41 @@ int main(int argc, char** argv) {
                 drawItem(craft.corner + glm::dvec3(0.675, 0.01, 0.25), glm::quat(1, 0, 0, 0), cm, co, 64 * 2);   // рамка готового - вдвое меньше
             }
         }
+        // Р105: ТЕЛО - видно из-за плеча. Руки: с предметом чуть вперёд, замах - вверх-назад и удар вперёд-вниз
+        glm::dvec3 bodyHand[2];
+        glm::quat bodyHandRot[2];
+        if (thirdPerson) {
+            static std::vector<std::vector<render::MeshId>> bm;
+            static std::vector<std::vector<glm::ivec3>> bo;
+            const auto& parts = game::bodyParts();
+            if (bm.empty())
+                for (const game::BodyPart& bp : parts) {
+                    std::vector<game::ItemMeshChunk> ch;
+                    game::meshItem(*bp.model, ch);
+                    bm.emplace_back();
+                    bo.emplace_back();
+                    for (const game::ItemMeshChunk& c : ch) { bm.back().push_back(gpu->uploadChunkMesh(c.verts, 0)); bo.back().push_back(c.off); }
+                }
+            game::BodyPose bp;
+            bp.feet = glm::dvec3(eye.x * 16.0, eye.y * 16.0 - player.eyeH, eye.z * 16.0);
+            bp.yaw = yaw;
+            bp.walkPhase = walkPhase;
+            bp.walkAmp = walkAmp;
+            bp.posture = int(player.posture);
+            float chop[2];
+            for (int h = 0; h < 2; ++h) {
+                chop[h] = hands[h] ? 0.5f : 0.0f;
+                if (swing[h] > 0) {
+                    const float ph = 1.0f - swing[h] / SWING;
+                    chop[h] = ph < 0.35f ? 0.5f + 2.2f * (ph / 0.35f) : ph < 0.5f ? 2.7f - 2.0f * ((ph - 0.35f) / 0.15f) : 0.7f - 0.2f * ((ph - 0.5f) / 0.5f);
+                }
+            }
+            bp.chopL = chop[0];
+            bp.chopR = chop[1];
+            std::vector<game::PartXf> xf;
+            game::bodyPose(bp, xf, bodyHand, bodyHandRot);
+            for (size_t i = 0; i < xf.size(); ++i) drawItem(xf[i].pos, xf[i].rot, bm[i], bo[i], 32);
+        }
         // Р92: в руках - у камеры: правая справа внизу, левая слева; черенок наклонён от себя
         for (int hnd = 0; hnd < 2; ++hnd) {
             HandMesh& hm = handMesh[hnd];
@@ -2581,6 +2636,11 @@ int main(int argc, char** argv) {
                                  glm::angleAxis(side * (1.5708f + 0.45f), glm::vec3(0, 1, 0));   // лезвие - вперёд, от игрока
             const game::ItemModel& im = *want;
             const glm::vec3 gl = (im.grip - (glm::vec3(im.center) + 0.5f)) / float(im.res);   // хват от центра, блоки
+            if (thirdPerson) {   // Р105: из-за плеча - в кисти тела, рукоять вперёд от руки
+                const glm::quat hq = bodyHandRot[hnd] * glm::angleAxis(1.5707963f, glm::vec3(1, 0, 0));
+                drawItem(bodyHand[hnd] - glm::dvec3(glm::mat3_cast(hq) * gl), hq, hm.meshes, hm.offs, im.res);
+                continue;
+            }
             const glm::dvec3 hp = eye * 16.0 + glm::dvec3(hand - glm::mat3_cast(rq) * gl);
             drawItem(hp, rq, hm.meshes, hm.offs, im.res);
         }
@@ -2715,7 +2775,7 @@ int main(int argc, char** argv) {
                                                      : "КРАФТ: V+клик - положить в ячейку, ЛКМ/ПКМ - взять; F2 - убрать рамку. Лежит: " + (in.empty() ? std::string("ничего") : in));
                     fresh.push_back(craft.stage == 2 && !name.empty() ? "Готово: " + name + " - возьмите из ячейки справа пустой рукой" : game::recipesHint());
                 }
-                fresh.push_back("E - тёска камня в руке, F2 - крафт на земле, R+клик - второе действие (камень: волокно с молодого дерева; топор: окорка), двойной щелчок - метнуть");
+                fresh.push_back("F4 - вид из-за плеча, E - тёска камня в руке, F2 - крафт на земле, R+клик - второе действие (камень: волокно с молодого дерева; топор: окорка), двойной щелчок - метнуть");
                 fresh.push_back(std::format("руки: левая - {}, правая - {}   (ЛКМ/ПКМ взять; V+ЛКМ/ПКМ положить, Q+ЛКМ/ПКМ бросить; Shift присесть, C лечь, Ctrl бег)",
                                             hands[0] ? game::itemName(*hands[0]) : "пусто", hands[1] ? game::itemName(*hands[1]) : "пусто"));
                 fresh.push_back(std::format("воксели: столбцов {} (ждут {}), кусков {}   плиток {}",

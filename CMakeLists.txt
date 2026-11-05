@@ -58,6 +58,7 @@ add_executable(otmel
     src/game/tree_body.cpp
     src/game/save.cpp
     src/game/stoneage.cpp
+    src/game/body.cpp
     src/render/gl/gl_backend.cpp
     src/render/vk/vk_backend.cpp
 )
