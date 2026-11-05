@@ -137,6 +137,7 @@ Item makeTool(ItemKind kind, world::Material head) {
                         }
                     }
             m->grip = glm::vec3(8.0f, 4.0f, 4.5f);
+            m->tip = glm::vec3(24.0f, 27.0f, 4.5f);   // середина лезвия
             break;
         }
         case ItemKind::SAW: {   // ножовка: полотно 60 см с зубьями и деревянная ручка с проёмом
@@ -186,6 +187,7 @@ Item makeTool(ItemKind kind, world::Material head) {
                         if (y >= 8 && std::fabs(dx) <= half && std::fabs(dz) <= 0.9f) m->at(x, y, z) = st;
                     }
             m->grip = glm::vec3(3.5f, 3.0f, 2.0f);
+            m->tip = glm::vec3(3.5f, 17.5f, 2.0f);
             break;
         }
         case ItemKind::SPEAR: {   // Р99: копьё - древко 1.6 м, наконечник, обмотка
@@ -202,6 +204,7 @@ Item makeTool(ItemKind kind, world::Material head) {
                         if (y >= 99 && std::fabs(dx) <= half && std::fabs(dz) <= 1.1f) m->at(x, y, z) = st;
                     }
             m->grip = glm::vec3(3.5f, 40.0f, 2.0f);
+            m->tip = glm::vec3(3.5f, 111.5f, 2.0f);
             break;
         }
         default: {   // лопата: деревянный черенок 1.1 м, поперечная ручка, железный штык 25 см
@@ -285,11 +288,39 @@ void Items::wake(glm::dvec3 at, double radius) {
 }
 
 void Items::step(world::VoxelQuery& q, float dt, glm::dvec3 near, double radius) {
+    const auto solid = [&q](int32_t x, int32_t y, int32_t z) { return q.solid(x, y, z); };
     for (WorldItem& w : list) {
         if (w.placed || w.body.asleep) continue;
         if (glm::distance(w.body.pos, near) > radius) continue;
         const ItemModel& m = *w.item.model;
-        stepRigid(w.body, m.mass, m.inertia, m.probes, [&q](int32_t x, int32_t y, int32_t z) { return q.solid(x, y, z); }, dt);
+        if (!w.thrown || m.tip.x < 0) {
+            stepRigid(w.body, m.mass, m.inertia, m.probes, solid, dt);
+            continue;
+        }
+        // Р108: брошенное орудие - мелкими шагами; остриё вошло в землю или ствол, двигаясь остриём вперёд
+        // быстрее 4 блоков в секунду, - воткнулось и застыло; иначе отскакивает как обычно
+        const glm::vec3 tipL = (m.tip - (glm::vec3(m.center) + 0.5f)) / float(m.res);
+        const int n = std::max(1, int(std::ceil(std::min(dt, 0.1f) * 240.0f)));
+        for (int k = 0; k < n; ++k) {
+            const glm::mat3 R = glm::mat3_cast(w.body.rot);
+            const glm::vec3 r = R * tipL;
+            const glm::dvec3 tp = w.body.pos + glm::dvec3(r);
+            const glm::vec3 vt = w.body.vel + glm::cross(w.body.ang, r);
+            const float along = glm::dot(vt, glm::normalize(r));
+            if (solid(int32_t(std::floor(tp.x)), int32_t(std::floor(tp.y)), int32_t(std::floor(tp.z)))) {
+                if (along > 4.0f) {
+                    w.placed = true;
+                    w.thrown = false;
+                    w.body.vel = glm::vec3(0);
+                    w.body.ang = glm::vec3(0);
+                    w.body.asleep = true;
+                    break;
+                }
+                w.thrown = false;   // ударилось плашмя - дальше обычное тело
+            }
+            stepRigid(w.body, m.mass, m.inertia, m.probes, solid, std::min(dt, 0.1f) / float(n));
+            if (w.body.asleep) { w.thrown = false; break; }
+        }
     }
 }
 

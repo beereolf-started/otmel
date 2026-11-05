@@ -1257,7 +1257,18 @@ int main(int argc, char** argv) {
                         const bool tool = hands[hand]->tool();
                         // орудие летит остриём вперёд и вращаясь поперёк; камень - кувырком
                         const glm::vec3 ang = tool ? glm::vec3(-std::sin(yaw), 0, std::cos(yaw)) * 9.0f : glm::vec3(float(sp & 255) / 32.0f - 4.0f, float((sp >> 8) & 255) / 32.0f - 4.0f, 3.0f);
-                        items.spawn(*hands[hand], st + dr * 0.6, glm::angleAxis(-yaw, glm::vec3(0, 1, 0)), glm::vec3(dr) * 17.0f + glm::vec3(0, 2.0f, 0), ang);
+                        // Р108: копьё летит остриём вперёд и не кувыркается; брошенное орудие может воткнуться
+                        const bool spear = hands[hand]->kind == game::ItemKind::SPEAR;
+                        glm::quat rq0 = glm::angleAxis(-yaw, glm::vec3(0, 1, 0));
+                        if (spear) {
+                            const glm::vec3 d = glm::normalize(glm::vec3(dr) + glm::vec3(0, 0.08f, 0));
+                            const glm::vec3 ax = glm::cross(glm::vec3(0, 1, 0), d);
+                            const float al = glm::length(ax);
+                            rq0 = al > 1e-5f ? glm::angleAxis(std::atan2(al, d.y), ax / al) : glm::quat(1, 0, 0, 0);
+                        }
+                        items.spawn(*hands[hand], st + dr * 0.6, rq0, glm::vec3(dr) * (spear ? 22.0f : 17.0f) + glm::vec3(0, spear ? 1.0f : 2.0f, 0),
+                                    spear ? glm::vec3(0) : ang);
+                        items.list.back().thrown = tool;
                         journal::info("руки", "метнул: {}", game::itemName(*hands[hand]));
                         hands[hand].reset();
                         swing[hand] = SWING;

@@ -9,7 +9,7 @@ namespace game {
 namespace {
 
 constexpr uint32_t MAGIC = 0x4C4D544Fu;   // "OTML"
-constexpr uint32_t VERSION = 5;   // Р107: срезанные растения, возраст предмета
+constexpr uint32_t VERSION = 6;   // Р108: остриё модели
 
 struct W {
     std::vector<uint8_t> b;
@@ -44,7 +44,7 @@ struct R {
 
 // ─── модель предмета: воксели сжаты отрезками одинакового материала
 void putModel(W& w, const ItemModel& m) {
-    w.pod(m.sx); w.pod(m.sy); w.pod(m.sz); w.pod(m.res); w.pod(m.grip);
+    w.pod(m.sx); w.pod(m.sy); w.pod(m.sz); w.pod(m.res); w.pod(m.grip); w.pod(m.tip);
     uint32_t runs = 0;
     const size_t at = w.b.size();
     w.pod(runs);
@@ -60,7 +60,7 @@ void putModel(W& w, const ItemModel& m) {
 }
 std::shared_ptr<ItemModel> getModel(R& r) {
     auto m = std::make_shared<ItemModel>();
-    r.pod(m->sx); r.pod(m->sy); r.pod(m->sz); r.pod(m->res); r.pod(m->grip);
+    r.pod(m->sx); r.pod(m->sy); r.pod(m->sz); r.pod(m->res); r.pod(m->grip); r.pod(m->tip);
     uint32_t runs = 0;
     r.pod(runs);
     if (!r.ok || m->sx <= 0 || m->sy <= 0 || m->sz <= 0 || size_t(m->sx) * m->sy * m->sz > (64u << 20)) { r.ok = false; return m; }
